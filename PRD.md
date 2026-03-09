@@ -83,6 +83,8 @@ The CLI that manages agent lifecycle. Already implemented.
 - `xnullclaw <agent> drain` — return any buffered unsolicited output since last drain (cron results, alerts, heartbeats)
 - `xnullclaw <agent> watch` — block and stream agent output as it arrives (for long-running monitoring)
 - `xnullclaw <agent> costs [--json] [--today|--month]` — read agent's costs.jsonl, return summary
+- `xnullclaw <agent> config get [key]` — read agent config (full or specific key)
+- `xnullclaw <agent> config set <key> <value>` — set a config value (see supported keys below)
 
 The mux uses `xnullclaw` for ALL agent interactions — it never calls Docker directly.
 This keeps the wrapper as the single abstraction layer over container details.
@@ -706,6 +708,44 @@ Designed to work indefinitely, but with known limits:
 - These changes persist (written to the agent's `config.json`)
 - Agent restart required for config changes to take effect (mux handles this automatically)
 
+**Wrapper `config set` — pragmatic supported keys:**
+
+The wrapper supports a flat set of common config mutations. No arbitrary JSON path
+walking — just the knobs people actually turn:
+
+```bash
+xnullclaw alice config set model "openai/gpt-4o"
+xnullclaw alice config set temperature 0.9
+xnullclaw alice config set autonomy supervised
+xnullclaw alice config set system_prompt "You are a security researcher..."
+xnullclaw alice config set max_actions_per_hour 50
+xnullclaw alice config set memory_backend sqlite
+xnullclaw alice config set cost_daily_limit 25
+xnullclaw alice config set cost_enabled true
+
+xnullclaw alice config get model
+# → openai/gpt-4o
+xnullclaw alice config get                    # dump full config
+```
+
+**Supported keys and their JSON paths:**
+
+| Key | JSON path | Type |
+|-----|-----------|------|
+| `model` | `agents.defaults.model.primary` | string |
+| `temperature` | `default_temperature` | float |
+| `autonomy` | `autonomy.level` | string (supervised/autonomous/full/yolo) |
+| `system_prompt` | `agents.defaults.system_prompt` | string |
+| `max_actions_per_hour` | `autonomy.max_actions_per_hour` | int |
+| `memory_backend` | `memory.backend` | string |
+| `cost_enabled` | `cost.enabled` | bool |
+| `cost_daily_limit` | `cost.daily_limit_usd` | float |
+| `cost_monthly_limit` | `cost.monthly_limit_usd` | float |
+
+The wrapper reads `config.json`, modifies the specific field, writes it back.
+If a key is not in the table above, the wrapper rejects it with an error.
+This keeps it simple and avoids accidentally breaking config structure.
+
 ### 4.7 Cost Tracking and Awareness
 
 The mux and its agents consume paid API resources. The mux MUST track costs across
@@ -805,6 +845,22 @@ The mux monitors total system costs and can warn proactively:
 }
 ```
 
+**Agent cost consolidation (periodic):**
+
+Nullclaw has a `CostTracker` module (`src/cost.zig`) that writes to `costs.jsonl`,
+but it needs `cost.enabled=true` in the agent config. The wrapper's `generate_config()`
+MUST set this by default for all new agents.
+
+The mux runs a background consolidation loop:
+1. Every 15 minutes (configurable), call `xnullclaw <agent> costs --json --since <last_check>`
+   for each running agent
+2. Store the agent cost snapshots in the mux's `costs` table (with `category='agent'`)
+3. Check against per-agent and total budgets, alert if thresholds crossed
+4. On-demand: when user asks for costs, fetch fresh data immediately
+
+This means the mux always has a reasonably current cost picture without hammering
+the agents. Fresh data is at most 15 minutes stale, or instant when explicitly asked.
+
 The mux enforces budgets from its side (it can stop sending messages to expensive
 agents), AND nullclaw enforces from the agent side (agents refuse to call providers
 when over budget). Belt and suspenders.
@@ -899,7 +955,7 @@ Evaluated alternatives:
 - `openai-go` is official, stable, minimal (thin REST wrapper)
 - Full control over Telegram UX, memory, media routing, voice handling
 - The hard parts (memory, media, voice) are the same regardless of loop choice
-- Future option: expose tools as MCP server later if we want nullclaw-as-mux too
+- No MCP for the mux at this stage — keep it simple
 
 **Loop behavior:**
 - Max iterations per turn: configurable (default 20)
@@ -1182,7 +1238,7 @@ When the user refers to an agent by name, nickname, or emoji — resolve it.
 | Agent communication | **`xnullclaw` CLI** (stdin/stdout) | Wrapper handles HTTP/Docker internally |
 | Agent lifecycle | **`xnullclaw` CLI** | start/stop/restart/setup/clone/status |
 | Mux memory | **SQLite** (`~/.xnullclaw/.mux/`) | Tiered: messages, facts, agent_state, compactions |
-| MCP SDK | **`modelcontextprotocol/go-sdk`** (optional, future) | For exposing mux tools to nullclaw agents later |
+| ~~MCP SDK~~ | Skipped for now | Not needed at this stage |
 
 **Rejected alternatives:**
 - OpenAI Agents SDK → Python/TS only, no official Go version
@@ -1342,7 +1398,8 @@ xnullclaw alice ls [path]
 ```bash
 xnullclaw alice start --mux       # start agent in mux mode
 xnullclaw alice stop               # stop agent
-xnullclaw alice status             # detailed status
+xnullclaw alice status             # detailed status (human-readable)
+xnullclaw alice status --json      # → {"status":"running","uptime":"2h34m","restarts":0,...}
 xnullclaw list --json              # all agents as JSON
 xnullclaw running --json           # running agents as JSON
 ```
@@ -1441,6 +1498,138 @@ Nullclaw agents can take time to think (especially with tool use chains). The mu
 5. Optionally: poll the agent or retry
 
 Agent-side timeout is configurable via `agents.defaults.message_timeout_secs` (default: 600s = 10 minutes).
+
+### 5.9 Telegram Message Splitting
+
+Telegram messages are capped at **4096 characters**. Agent responses and mux
+summaries can exceed this. The mux MUST split long messages cleanly.
+
+**Splitting rules:**
+
+1. If message ≤ 3800 chars (4096 minus margin for emoji badge header) → send as-is
+2. If message > 3800 chars → split into parts:
+   - Split at paragraph boundaries (double newline) when possible
+   - If no paragraph break fits, split at the last newline before the limit
+   - If no newline fits (e.g., giant code block), split at 3800 chars
+3. Each part gets a header: `🍎 alice (1/3):`, `🍎 alice (2/3):`, `🍎 alice (3/3):`
+4. Parts are sent sequentially with minimal delay (~100ms between sends)
+5. Code blocks (triple backticks) are never split mid-block — the split point
+   moves before the opening ``` if the block would be broken
+
+**Examples:**
+```
+Short response → single message:
+  🍎 alice: The server is healthy.
+
+Long response → split:
+  🍎 alice (1/2): Here's the full analysis of the codebase...
+  [4000 chars of content]
+
+  🍎 alice (2/2): ...and the remaining findings.
+  [2000 chars of content]
+```
+
+### 5.10 Concurrent Agent Interactions
+
+The mux handles multiple agent conversations concurrently. Sending to alice
+MUST NOT block sending to bob.
+
+**Per-agent message queue:**
+
+Each agent has an independent goroutine with a message queue (Go channel):
+
+```
+                    ┌─ alice queue ─→ goroutine ─→ xnullclaw alice send
+User message ──→ mux loop
+                    ├─ bob queue   ─→ goroutine ─→ xnullclaw bob send
+                    └─ carol queue ─→ goroutine ─→ xnullclaw carol send
+```
+
+- User sends "alice, check logs" → queued to alice's goroutine
+- User immediately sends "bob, check email" → queued to bob's goroutine
+- Both execute concurrently — bob doesn't wait for alice
+- Responses arrive in whatever order agents finish, each relayed to Telegram immediately
+- If user sends two messages to the same agent, they queue in order (FIFO per agent)
+
+**Agentic loop interaction:**
+
+The mux's agentic loop (section 4.9) may issue multiple tool calls in one response
+(e.g., `send_to_agent("alice", ...)` and `send_to_agent("bob", ...)` in parallel).
+The `executeToolCalls()` function runs these concurrently via goroutines and collects
+results before returning to the loop.
+
+For `send_to_all` and `send_to_some`, the wrapper itself fans out in parallel and
+collects all responses before returning.
+
+**Typing indicators:**
+
+When any agent is thinking, the mux sends Telegram's "typing..." action. Multiple
+concurrent agents = continuous typing indicator until all respond.
+
+### 5.11 Container Health Awareness
+
+Agents run in Docker containers with `--restart unless-stopped`. If a container
+crashes, Docker restarts it automatically. The mux doesn't manage restarts —
+Docker does. But the mux MUST be aware of container health.
+
+**What the mux monitors:**
+
+The mux's `watch` goroutine per agent (section 4.2.1) naturally detects container
+exits — the `docker logs --follow` stream ends. On detection:
+
+1. Log the event: "alice container exited"
+2. Wait briefly (5s) for Docker's auto-restart
+3. Check status via `xnullclaw alice status`
+4. If back up → note the restart in agent_state, check uptime
+5. If still down after 30s → alert user: "🍎 alice crashed and hasn't restarted. Last logs: ..."
+
+**Uptime tracking:**
+
+The wrapper's `status` command includes container uptime. The mux tracks this:
+
+```bash
+xnullclaw alice status --json
+# → {"status":"running","uptime":"2h34m","restarts":0,"started":"2026-03-09T12:00:00Z"}
+```
+
+If restarts > 0 and uptime is short (container keeps crashing and restarting), the
+mux alerts:
+```
+⚠️ 🍎 alice has restarted 3 times in the last hour. Uptime only 45s.
+Last log lines:
+  error: out of memory at src/agent.zig:142
+  panic: allocation failure
+
+Likely cause: memory limit too low. Want me to check her config?
+```
+
+**Periodic health check:**
+
+Every 5 minutes, the mux runs `xnullclaw running --json` and compares against its
+known agent_state. This catches:
+- Agents that disappeared without the watcher noticing
+- Agents started externally (via CLI, not mux)
+- Port changes, status mismatches
+
+### 5.12 Whisper Correction Learning
+
+When Whisper misrecognizes a word and the user corrects it, the mux stores the
+correction in the `facts` table for future use:
+
+```
+User: 🎤 "tell Ellis to check the logs"
+Mux:  🎙️ heard: "tell Ellis to check the logs"
+      → routes to 🍎 alice (matched via correction dictionary)
+
+User: "no, I said bob!"
+Mux:  → re-routes to 🍊 bob: "check the logs"
+      → stores fact: type='pattern', content='"Ellis" in voice → user meant bob'
+      → updates correction_dictionary: bob += ["Ellis"]
+```
+
+Corrections persist across restarts (stored in `facts` with `type='pattern'`).
+The correction dictionary in config is the seed — learned corrections augment it.
+Over time, the mux builds a personalized speech model for the user's voice.
 
 ## 6. Message Flow Examples
 
