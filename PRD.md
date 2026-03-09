@@ -80,6 +80,9 @@ The CLI that manages agent lifecycle. Already implemented.
 - `xnullclaw <agent> send "message"` — send a message to an agent's webhook, return the response (used by mux)
 - `xnullclaw <agent> endpoint` — print the agent's HTTP endpoint URL (for mux discovery)
 - `xnullclaw running` — list only running agents with their endpoints (machine-readable, for mux)
+- `xnullclaw <agent> drain` — return any buffered unsolicited output since last drain (cron results, alerts, heartbeats)
+- `xnullclaw <agent> watch` — block and stream agent output as it arrives (for long-running monitoring)
+- `xnullclaw <agent> costs [--json] [--today|--month]` — read agent's costs.jsonl, return summary
 
 The mux uses `xnullclaw` for ALL agent interactions — it never calls Docker directly.
 This keeps the wrapper as the single abstraction layer over container details.
@@ -160,15 +163,61 @@ The mux is not a command parser — it is an AI that understands natural languag
 **The mux MUST:**
 - Determine whether the user is talking to IT (the mux) or to an agent
 - Detect when the user is addressing a specific agent by name, context, or topic
-- Pass through messages transparently when clearly directed at an agent
+- Pass through messages transparently when clearly directed at an agent (see passthrough rules below)
 - Handle ambiguous intent by asking for clarification or using context
 - Understand follow-up messages belong to the same agent conversation
 - Recognize when the user switches topics/agents mid-conversation
+
+**Passthrough rules — mux as transparent relay:**
+
+When the user addresses an agent directly, the mux is a **transparent pipe** — it
+forwards the message to the agent with minimal intervention. The mux does NOT
+rephrase, summarize, or add its own interpretation.
+
+However, the mux MAY apply lightweight corrections before forwarding:
+- Fix obvious spelling/typos (e.g., "chekc" → "check")
+- Fix grammar/structure that would confuse the agent (broken sentences, missing words)
+- Correct technical terms the mux knows the user meant (from learned patterns)
+- These corrections are **silent** — the mux does not announce them
+
+The mux MUST NOT:
+- Rephrase the user's intent or add instructions the user didn't give
+- Filter or censor the user's message
+- Add context the user didn't ask for (unless a passthrough rule says otherwise)
+- Hold back a message because it "seems wrong" — the user decides, not the mux
+
+**Passthrough rules are runtime-configurable.** The user can tweak them at any time:
+
+```
+User: "From now on, always add 'be concise' when you forward to alice"
+→ mux stores rule: alice passthrough append "be concise"
+
+User: "Stop correcting my spelling when talking to bob"
+→ mux stores rule: bob passthrough corrections=off
+
+User: "When I send code to carol, don't touch it at all — raw passthrough"
+→ mux stores rule: carol passthrough raw=true (zero modification)
+
+User: "For all agents, translate my Spanish to English before forwarding"
+→ mux stores rule: global passthrough translate=es→en
+
+User: "Remove that translation rule"
+→ mux removes the rule
+```
+
+Rules are stored in the mux's long-term memory (`facts` table) and loaded into the
+system prompt so the model applies them consistently. Rules can be:
+- **Per-agent**: apply only when forwarding to a specific agent
+- **Global**: apply to all agent-directed messages
+- **Typed**: apply only to certain message types (code, voice transcriptions, etc.)
 
 **Examples:**
 ```
 User: "Ask alice to check the server logs"
 → mux routes to alice: "check the server logs"
+
+User: "alice chekc the sever logs pls"
+→ mux routes to alice: "check the server logs pls" (silent typo fix)
 
 User: "What did she find?"
 → mux routes to alice (follow-up, same context)
@@ -197,15 +246,76 @@ URLs, manages ports, or talks to Docker directly.
 - Support sending to all running agents at once via `xnullclaw send-all "message"` (wrapper fans out in parallel)
 - Support sending to a named subset via `xnullclaw send-some "alice,bob" "message"`
 - Collect and synthesize responses from multiple agents
-- Prefix agent responses with agent identifier: `[alice] response text...`
+- Prefix agent responses with emoji badge + name: `🍎 alice: response text...`
 - Track which agent the user is currently "talking to" for follow-ups
-- Handle agent errors/timeouts gracefully: `[alice] (offline)` or `[alice] (timeout — still thinking)`
+- Handle agent errors/timeouts gracefully: `🍎 alice: (offline)` or `🍎 alice: (timeout — still thinking)`
 
 **The mux MUST support these interaction patterns:**
 - **One-to-one**: user talks to a single agent (most common)
 - **Broadcast**: user sends a message to all running agents — no enumeration required
 - **Selective**: user sends to a subset of agents ("ask alice and bob to...")
 - **Orchestrated**: mux decides which agent(s) should handle a request based on their roles/capabilities
+
+### 4.2.1 Proactive Agent Output
+
+Agents are not purely request/response — they can produce output autonomously from
+internal heartbeats, cron jobs, monitoring alerts, scheduled tasks, or background work.
+
+**ALL agent output MUST flow through the mux to Telegram.** No agent output should be
+silently lost in container logs.
+
+**How it works:**
+
+Nullclaw agents write logs to stdout inside their Docker containers. The wrapper
+tails the container logs in real-time and filters for structured output lines
+(JSON events from cron completions, heartbeat pings, alerts, etc.).
+
+The mux runs a background goroutine per running agent that watches for output:
+
+```bash
+# Real-time stream (mux uses this — one goroutine per agent, long-lived)
+xnullclaw alice watch
+# → tails container logs, filters for structured output events
+# → prints each event as JSON line to stdout as it arrives
+# → blocks indefinitely until agent stops or watch is killed
+# Example output:
+# {"type":"cron","task":"backup","result":"3 files archived","ts":"2026-03-09T14:00:00Z"}
+# {"type":"alert","message":"API returned 503","severity":"high","ts":"2026-03-09T14:05:12Z"}
+
+# One-shot drain (useful for manual checks or catch-up after mux restart)
+xnullclaw alice drain
+# → returns any buffered unsolicited output since last drain, then exits
+```
+
+**The wrapper implements `watch` using `docker logs --follow --since`**, tracking
+the last-read timestamp to avoid duplicates. Events are identified by a prefix
+convention in agent log output (e.g., lines starting with `[EVENT]` JSON).
+
+**The mux starts a `watch` goroutine for every running agent at mux startup.**
+When a new agent starts, a new watcher is spawned. When an agent stops, the
+watcher exits cleanly. This gives near-instant relay (<1s) of agent output.
+
+**The mux MUST:**
+- Monitor all running agents for unprompted output (heartbeats, cron results, alerts)
+- Relay ALL agent output to Telegram with the agent's emoji badge:
+  ```
+  🍎 alice: [cron] Daily backup completed. 3 files archived, 12 MB total.
+  🍊 bob: [alert] API endpoint returned 503 — monitoring.
+  🍋 carol: [heartbeat] Build pipeline healthy. Last run: 2m ago.
+  ```
+- Tag the output type when detectable: `[cron]`, `[alert]`, `[heartbeat]`, `[task]`
+- Batch rapid-fire output to avoid Telegram spam (e.g., buffer 5s, send as one message)
+- Allow the user to mute/unmute agents: "mute carol's heartbeats" or `/mute carol heartbeat`
+- Allow per-agent output filters: only relay alerts, suppress heartbeats, etc.
+
+**Output types:**
+| Type | Source | Default relay |
+|------|--------|---------------|
+| Cron results | Scheduled tasks completing | Always relay |
+| Alerts | Monitoring / threshold triggers | Always relay (high priority) |
+| Heartbeats | Periodic health pings | Muted by default (opt-in) |
+| Task progress | Long-running work updates | Relay (batched) |
+| Errors | Agent crashes, tool failures | Always relay (high priority) |
 
 ### 4.3 Agent Lifecycle Management
 
@@ -220,11 +330,28 @@ All lifecycle operations go through the `xnullclaw` CLI.
 - List running agents with endpoints: `xnullclaw running`
 - Report agent status to the user proactively (e.g., "alice just crashed, restarting...")
 
-**The mux SHOULD be able to:**
-- Create new agents (`xnullclaw <agent> setup`)
-- Clone agents (`xnullclaw <agent> clone <source>`)
-- Modify agent configuration (edit config.json: model, temperature, system prompt, autonomy level, etc.)
+**The mux MUST be able to:**
+- Create new agents from scratch (`xnullclaw <agent> setup`) — assigns next emoji, generates config
+- Configure new agents fully: model, provider, temperature, system prompt, autonomy level, tools, memory backend
+- Clone agents from existing ones (`xnullclaw <agent> clone <source>`) — new identity, independent config/data
+- Modify any agent configuration (edit config.json fields) with auto-restart
 - Destroy agents (with user confirmation)
+
+**Agent creation flow (mux-driven):**
+```
+User: "Create a new agent for code review, call it dave"
+Mux:  → setup_agent("dave")
+      → update_agent_config("dave", "agents.defaults.system_prompt", "You are a senior code reviewer...")
+      → update_agent_config("dave", "agents.defaults.model.primary", "openai/gpt-4o")
+      → update_agent_config("dave", "autonomy.level", "supervised")
+      → start_agent("dave")
+User sees: 🍇 dave is ready. Configured as a code review agent with GPT-4o, supervised mode.
+
+User: "Actually, clone alice's setup for a new agent called eve"
+Mux:  → clone_agent("eve", "alice")
+      → start_agent("eve")
+User sees: 🍓 eve is ready. Cloned from 🍎 alice's config. Independent data.
+```
 
 ### 4.4 Voice Input (Whisper)
 
@@ -233,54 +360,325 @@ All lifecycle operations go through the `xnullclaw` CLI.
 - Transcribe audio using OpenAI Whisper API
 - Process the transcription as if it were a text message
 - Apply intelligent correction to transcription artifacts (names, technical terms, agent names the user commonly says)
-- Show the transcription to the user before acting: `[heard] "ask alice to check the server logs"`
+- Show the transcription to the user before acting: `🎙️ heard: "ask alice to check the server logs"`
 - Allow the user to correct: replying "no, I said BOB" re-routes accordingly
 
 **The mux SHOULD:**
 - Learn the user's speech patterns over time (common words, agent names, technical jargon)
 - Maintain a custom vocabulary/corrections dictionary
 
+### 4.4.1 Text-to-Speech Output (TTS)
+
+The mux can speak back to the user via OpenAI TTS. This is opt-in and complementary
+to text — **text is always sent**, TTS is an additional audio message.
+
+**The mux MUST:**
+- Generate voice responses via OpenAI TTS API when TTS mode is enabled
+- Always send the text version of the response (TTS is additive, never a replacement)
+- Send both: first the text message, then the voice note (Telegram voice message)
+- Allow enabling/disabling TTS: "speak to me" / "stop speaking" / config toggle
+- Use a configurable voice, changeable at any time via tool or voice command
+- Supported OpenAI TTS voices: alloy, ash, ballad, coral, echo, fable, onyx, nova, sage, shimmer
+- Voice can be changed by the user: "change your voice to coral" or "use the ash voice"
+- The mux itself can select a voice contextually (e.g., different tone for alerts vs casual chat)
+
+**TTS applies to:**
+- Mux's own responses (summaries, status updates, orchestration replies)
+- Agent responses relayed by the mux (spoken version of what the agent said)
+
+**TTS does NOT apply to:**
+- Raw file deliveries, code blocks, or structured data (these are text-only)
+- Heartbeats, cron output, or batched status updates (too noisy for voice)
+
+**Config:**
+```json
+{
+  "voice": {
+    "tts_enabled": false,
+    "tts_voice": "nova",
+    "tts_for_agents": true,
+    "tts_max_length": 4000
+  }
+}
+```
+
+When `tts_max_length` is exceeded, only the text is sent with a note: "Response too
+long for voice. Read above."
+
+### 4.4.2 Agent Audio/Voice Passthrough
+
+When an agent produces audio or voice content (voice notes, generated music, audio
+analysis results, TTS from the agent itself), the mux MUST pass it through to Telegram
+as-is — the user hears/sees the original audio from the agent.
+
+**The mux MUST:**
+- Detect audio files in agent responses (`outbox/*.ogg`, `*.mp3`, `*.wav`, etc.)
+- Send them as Telegram voice messages or audio files (preserving format)
+- Also include any text the agent sent alongside the audio
+- The mux remains aware of what the agent sent (for context/memory) but does not
+  re-encode, transcribe, or alter the agent's audio
+
+**Example flow:**
+```
+User: "bob, read this article aloud"
+Bob:  → generates outbox/reading.ogg (TTS of article)
+     ← "Here's the article read aloud. See outbox/reading.ogg"
+Mux:  → sends to Telegram:
+       🍊 bob: Here's the article read aloud.
+       🎤 (voice message: reading.ogg)
+```
+
+**The mux logs the content** (stores text description in memory/agent_state)
+but the audio itself is delivered untouched to the user.
+
 ### 4.5 Conversation Memory and Long-Term Stability
 
 The mux is an always-on 24/7 orchestrator. Its memory system must be designed for
 **indefinite operation** — months or years of continuous use without degradation.
 
-**Memory tiers:**
+#### 4.5.1 Memory Tiers
 
-| Tier | What | Storage | Lifecycle |
-|------|------|---------|-----------|
-| **Working context** | Current conversation turn, recent messages | In-memory (Go structs) | Sent to the model as context window |
-| **Short-term history** | Recent conversation messages (last N hours/messages) | SQLite `messages` table | Auto-compacted: older messages are summarized and promoted to long-term |
-| **Long-term facts** | Important facts, decisions, user preferences, agent roles | SQLite `facts` table | Persistent, searchable, manually or auto-curated |
-| **Agent summaries** | What each agent is doing, last interaction, current task | SQLite `agent_state` table | Updated after every agent interaction |
-| **Compaction log** | Summaries of compacted conversation blocks | SQLite `compactions` table | Append-only archive, queryable for "what happened last week" |
+| Tier | What | Storage | Token budget | Lifecycle |
+|------|------|---------|-------------|-----------|
+| **System prompt** | Role, tools, passthrough rules, agent identities | In-memory | ~4k tokens (fixed) | Rebuilt each turn |
+| **Agent summaries** | Per-agent: status, current task, last interaction, role | SQLite `agent_state` | ~200 tokens/agent (~2k for 10 agents) | Updated after every agent interaction |
+| **Long-term facts** | Important facts, decisions, preferences, rules | SQLite `facts` | ~4k tokens (top-K by relevance) | Persistent, scored, pruned |
+| **Compaction summaries** | Condensed blocks of past conversation | SQLite `compactions` | ~4k tokens (most recent N blocks) | Append-only, oldest dropped from context |
+| **Rolling window** | Recent messages in full detail | SQLite `messages` + in-memory | Remainder (~110k tokens for 128k model) | FIFO, compacted when evicted |
 
-**Compaction strategy (critical for 24/7 stability):**
+**Total context budget**: managed explicitly. Each tier has a token ceiling. The rolling
+window gets whatever remains after the fixed tiers are assembled. This guarantees the
+model never sees a truncated or overflowed context.
 
-The mux's context window is finite. As conversation history grows, the mux MUST compact
-it without losing important information:
+```
+┌─────────────────────────────────────────────┐
+│ Context window (e.g., 128k tokens)          │
+├──────────────┬──────────────────────────────┤
+│ System       │ ~4k   (fixed)               │
+│ Agent states │ ~2k   (scales with agents)   │
+│ Facts        │ ~4k   (top-K retrieved)      │
+│ Compactions  │ ~4k   (last N blocks)        │
+│ Messages     │ ~114k (rolling window, FIFO) │
+└──────────────┴──────────────────────────────┘
+```
 
-1. **Rolling window**: Keep the last N messages (e.g., 50) in full detail
-2. **Auto-summarize**: When messages exceed the window, the mux summarizes the oldest
-   block into a concise paragraph and stores it in the compaction log
-3. **Fact extraction**: Before compacting, the mux extracts important facts
-   (decisions, preferences, agent assignments) and stores them in `facts`
-4. **Agent state refresh**: After each agent interaction, update the agent's summary
-   in `agent_state` — the mux always knows what each agent is working on
-5. **Context assembly**: Each new turn, the model receives:
-   - System prompt (role, tools, instructions)
-   - Long-term facts (retrieved by relevance to current message)
-   - Agent summaries (all active agents)
-   - Recent compaction summaries (last 2-3 blocks)
-   - Full recent messages (the rolling window)
+Token counts are **measured, not estimated** — the mux counts tokens (via tiktoken or
+the model's tokenizer) when assembling context. If agent count grows and pushes the
+agent state tier over budget, the mux summarizes less-active agents more aggressively.
+
+#### 4.5.2 Message Types in the Rolling Window
+
+Not all messages are equal. The rolling window contains:
+
+| Message type | Source | Volume | Retention priority |
+|---|---|---|---|
+| User messages | Telegram input | Low (human-paced) | High — keep longest |
+| Mux responses | Model output | Low | High |
+| Agent responses | `send_to_agent` results | Medium | Medium — summarize large ones |
+| Agent proactive output | `watch` stream (cron, alerts) | **High** (can be continuous) | Low — compact aggressively |
+| Tool call/result pairs | Agentic loop internals | High | Low — compact after turn ends |
+
+**Critical insight**: agent proactive output (heartbeats, cron results) can generate
+far more volume than user conversation. Without special handling, 10 agents with
+5-minute heartbeats = 120 messages/hour flooding the window.
+
+**Solution — two-stream architecture:**
+
+The rolling window has two streams with independent budgets:
+
+```
+Rolling window (~114k tokens):
+├── Conversation stream (90%): user ↔ mux ↔ agent request/response
+└── Background stream (10%):   agent proactive output (cron, alerts, heartbeats)
+```
+
+Background stream messages are compacted much more aggressively:
+- Heartbeats: only keep the latest per agent (replace, don't accumulate)
+- Cron results: keep for 1 compaction cycle, then summarize
+- Alerts: keep until acknowledged, then compact
+- Errors: keep until resolved
+
+This prevents autonomous agent chatter from drowning out the user's conversation.
+
+#### 4.5.3 Compaction Engine
+
+Compaction is the process of evicting old messages from the rolling window without
+losing important information. It runs as a **background operation** between user turns.
+
+**Trigger**: compaction fires when the rolling window exceeds 80% of its token budget.
+This gives headroom — compaction happens before the limit, not at it.
+
+**Compaction steps (single cycle):**
+
+```
+1. SELECT oldest block of messages (e.g., oldest 25% of rolling window)
+2. In a SEPARATE model call (cheap, fast model like gpt-4o-mini):
+   a. Summarize the block into 1-3 paragraphs → store in `compactions` table
+   b. Extract facts (decisions, preferences, rules) → upsert into `facts` table
+   c. Update agent_state for any agents mentioned → upsert into `agent_state`
+3. DELETE the original messages from the rolling window
+4. If compactions table exceeds its token budget, drop the oldest compaction
+```
+
+**Compaction model**: uses a cheaper/faster model than the main mux model.
+Configurable — default `gpt-4o-mini`. This keeps compaction costs low since it
+runs frequently.
+
+**Compaction timing:**
+- After each user turn completes (non-blocking, background goroutine)
+- Periodically if no user activity (every 30 min during idle periods)
+- Forced when token budget is at 90% (synchronous, blocks next turn)
+
+**What compaction extracts:**
+
+Facts are typed and tagged:
+```sql
+CREATE TABLE facts (
+    id        INTEGER PRIMARY KEY,
+    type      TEXT NOT NULL,  -- 'preference', 'decision', 'rule', 'knowledge', 'pattern'
+    content   TEXT NOT NULL,  -- the fact itself
+    source    TEXT,           -- which compaction/interaction produced it
+    agent     TEXT,           -- related agent (nullable)
+    score     REAL DEFAULT 1.0,  -- relevance score (decays over time)
+    created   DATETIME,
+    accessed  DATETIME,       -- last time this fact was included in context
+    access_count INTEGER DEFAULT 0
+);
+```
+
+#### 4.5.4 Fact Management (Long-Term Knowledge)
+
+Facts are the mux's permanent knowledge. They survive compaction, restarts, and
+months of operation. But they must be actively managed or they become noise.
+
+**Fact lifecycle:**
+
+```
+  Created (score=1.0)
+      │
+      ├─── accessed by context assembly → score boosted, access_count++
+      │
+      ├─── not accessed for 30 days → score decays (×0.9 per week)
+      │
+      ├─── score < 0.1 → candidate for pruning review
+      │
+      └─── pruning review (periodic model call):
+           ├── still relevant → score reset to 0.5
+           ├── outdated → deleted
+           └── contradicts newer fact → merged or deleted
+```
+
+**Fact retrieval for context assembly:**
+
+Each turn, the mux retrieves facts relevant to the current message. This is NOT
+"dump all facts" — it's a retrieval step:
+
+1. **Keyword match**: extract keywords from current message, match against facts
+2. **Agent match**: if message targets an agent, include that agent's facts
+3. **Type priority**: `rule` and `preference` facts always included (these are
+   the user's standing instructions). `knowledge` and `pattern` only if relevant.
+4. **Score sort**: among matches, pick top-K by score (budget: ~4k tokens)
+5. **Always include**: passthrough rules, agent roles, active user preferences
+
+This keeps the fact injection focused. With 500 stored facts, maybe 20-30 enter
+context for a given turn.
+
+**Deduplication**: before inserting a new fact, check for semantic overlap with
+existing facts (simple: substring/keyword match. Future: embedding similarity).
+Merge or replace rather than accumulate duplicates.
+
+#### 4.5.5 Agent State Tracking
+
+Each agent has a persistent summary in `agent_state`:
+
+```sql
+CREATE TABLE agent_state (
+    agent       TEXT PRIMARY KEY,
+    emoji       TEXT,
+    status      TEXT,           -- 'running', 'stopped', 'error'
+    role        TEXT,           -- what this agent does (user-defined or inferred)
+    model       TEXT,           -- current model
+    current_task TEXT,          -- what it's working on right now
+    last_message TEXT,          -- last message sent to it
+    last_response TEXT,         -- last response (truncated to ~500 chars)
+    last_interaction DATETIME,
+    error       TEXT,           -- last error if any
+    updated     DATETIME
+);
+```
+
+Updated **after every interaction** with the agent (send, lifecycle change, config
+change, proactive output). The mux always has a current picture of all agents
+without needing to query them.
+
+**Agent state is always included in context** (it's small — ~200 tokens per agent).
+This means the model can answer "what is alice doing?" instantly from memory.
+
+#### 4.5.6 Compaction Log (Historical Memory)
+
+The compaction log is an append-only archive of summarized conversation blocks:
+
+```sql
+CREATE TABLE compactions (
+    id         INTEGER PRIMARY KEY,
+    period_start DATETIME,
+    period_end   DATETIME,
+    summary    TEXT,            -- 1-3 paragraph summary of the conversation block
+    agents     TEXT,            -- comma-separated agents mentioned
+    token_count INTEGER,
+    created    DATETIME
+);
+```
+
+Used for:
+- "What happened yesterday?" → query by date range
+- "What did I ask bob to do last week?" → query by agent + date
+- Context assembly: include the most recent N compaction summaries
+
+**Retention**: compaction summaries are never deleted from SQLite. Only the most
+recent N are included in context (budget: ~4k tokens). Older ones remain queryable
+via the `recall` tool.
+
+#### 4.5.7 Restart Recovery
+
+On mux restart (crash, reboot, manual restart):
+
+1. Load config from `~/.xnullclaw/.mux/config.json`
+2. Open SQLite `memory.db` — all tiers are intact
+3. Rebuild working context:
+   - Load agent_state → know all agents and their status
+   - Load recent messages from rolling window → resume conversation
+   - Load facts → standing knowledge restored
+   - Load recent compactions → recent history context
+4. Start `watch` goroutines for all running agents
+5. Resume Telegram polling
+6. First model call includes everything — the model picks up where it left off
+
+**No amnesia.** The mux should behave as if it never restarted. If the restart
+was long (hours), the mux can note: "I was restarted. Catching up on agent status..."
+and drain any buffered agent output.
+
+#### 4.5.8 Scaling Boundaries
+
+Designed to work indefinitely, but with known limits:
+
+| Dimension | Comfortable range | Degradation mode |
+|-----------|------------------|-----------------|
+| Agents | 1–20 | >20: summarize inactive agents more aggressively |
+| Facts | 1–1000 | >1000: increase pruning frequency, tighter relevance threshold |
+| Messages/day | 1–500 | >500: compact more aggressively, shorter rolling window |
+| Compactions | 1–10,000 | >10k: no issue (SQLite handles this), just not all in context |
+| SQLite DB size | <100 MB | >100 MB: vacuum periodically, archive old compactions |
+| Uptime | Indefinite | Memory is all in SQLite — process memory stays bounded |
 
 **The mux MUST:**
 - Never lose important facts during compaction
 - Survive restarts without amnesia (all tiers persist in SQLite)
-- Be able to answer "what happened yesterday?" from compaction logs
+- Answer "what happened yesterday/last week?" from compaction logs
 - Track user preferences learned over time ("I prefer alice for code tasks")
-- Self-maintain: periodically review and prune stale facts
+- Self-maintain: periodically review and prune stale facts (weekly model call)
 - Handle context overflow gracefully — degrade by dropping old summaries, not crashing
+- Keep Go process memory bounded — no unbounded in-memory growth
 
 **The mux MUST maintain:**
 - Its own conversation history with the user (persistent, compacted, across restarts)
@@ -288,6 +686,7 @@ it without losing important information:
 - Knowledge of each agent's configuration (model, role, capabilities)
 - Context about recent interactions (which agent was last addressed, ongoing tasks)
 - User preferences and patterns learned over time
+- Passthrough rules and standing instructions
 
 **The mux uses this memory to:**
 - Route follow-up messages correctly without explicit agent naming
@@ -295,6 +694,7 @@ it without losing important information:
 - Provide situational awareness: "you asked bob to research X an hour ago, he's probably done"
 - Avoid re-asking agents for information the mux already knows
 - Maintain personality consistency and user rapport across days/weeks
+- Apply standing rules and preferences consistently even after compaction
 
 ### 4.6 Agent Configuration Management
 
@@ -306,7 +706,110 @@ it without losing important information:
 - These changes persist (written to the agent's `config.json`)
 - Agent restart required for config changes to take effect (mux handles this automatically)
 
-### 4.7 Telegram Commands (fallback for explicit control)
+### 4.7 Cost Tracking and Awareness
+
+The mux and its agents consume paid API resources. The mux MUST track costs across
+the entire system and make them visible — no surprise bills.
+
+**Two cost domains:**
+
+| Domain | What | How tracked |
+|--------|------|-------------|
+| **Mux costs** | Agentic loop calls, compaction, Whisper, TTS, fact pruning | Mux tracks directly from OpenAI API responses (tokens + pricing) |
+| **Agent costs** | Each agent's provider API calls | Nullclaw writes to `costs.jsonl` inside the container — mapped to `~/.xnullclaw/<agent>/data/.nullclaw/state/costs.jsonl` |
+
+**Mux cost tracking (SQLite):**
+
+```sql
+CREATE TABLE costs (
+    id          INTEGER PRIMARY KEY,
+    timestamp   DATETIME NOT NULL,
+    category    TEXT NOT NULL,  -- 'loop', 'compaction', 'whisper', 'tts', 'pruning'
+    model       TEXT,           -- 'gpt-5.4', 'gpt-4o-mini', 'whisper-1', 'tts-1'
+    agent       TEXT,           -- which agent this was for (nullable)
+    input_tokens  INTEGER,
+    output_tokens INTEGER,
+    cost_usd    REAL NOT NULL
+);
+```
+
+Recorded after every API call. The mux knows the exact cost of every operation.
+
+**Agent cost reading:**
+
+The wrapper reads each agent's `costs.jsonl` file:
+```bash
+xnullclaw alice costs              # human-readable summary
+xnullclaw alice costs --json       # machine-readable for mux
+xnullclaw alice costs --today      # today's costs only
+xnullclaw alice costs --month      # this month
+```
+
+**Mux cost aggregation:**
+
+The mux can produce a full system cost picture on demand:
+
+```
+User: "how much is all this costing me?"
+
+Mux:  📊 Cost report (today):
+
+      Mux operations:           $0.42
+        Agentic loop (12 turns): $0.31
+        Compaction (3 cycles):   $0.04
+        Whisper (2 transcripts): $0.02
+        TTS (4 messages):        $0.05
+
+      Agents:
+        🍎 alice:  $1.20  (47 requests, gpt-4o)
+        🍊 bob:    $0.85  (23 requests, gpt-4o-mini)
+        🍋 carol:  $0.00  (stopped)
+
+      Total today:  $2.47
+      This month:   $38.12
+      Budget:       $100/month (38% used)
+```
+
+**Budget alerts:**
+
+The mux monitors total system costs and can warn proactively:
+
+- **Warning threshold** (configurable, default 80%): "Heads up — we're at $80 of your $100 monthly budget."
+- **Hard limit** (optional): mux refuses to start new agent interactions, tells user
+- **Per-agent limits**: "alice has used $25 today, which seems high. Want me to check what she's doing?"
+- **Anomaly detection**: if an agent's cost spikes (e.g., stuck in a tool loop), alert immediately
+
+**Mux config for costs:**
+```json
+{
+  "costs": {
+    "track": true,
+    "monthly_budget_usd": 100,
+    "daily_budget_usd": 10,
+    "warn_at_percent": 80,
+    "per_agent_daily_limit_usd": 25,
+    "report_currency": "USD"
+  }
+}
+```
+
+**Nullclaw agent-side config** (generated by wrapper):
+```json
+{
+  "cost": {
+    "enabled": true,
+    "daily_limit_usd": 25,
+    "monthly_limit_usd": 100,
+    "warn_at_percent": 80
+  }
+}
+```
+
+The mux enforces budgets from its side (it can stop sending messages to expensive
+agents), AND nullclaw enforces from the agent side (agents refuse to call providers
+when over budget). Belt and suspenders.
+
+### 4.8 Telegram Commands (fallback for explicit control)
 
 In addition to natural language, the mux MUST support explicit commands:
 
@@ -323,10 +826,12 @@ In addition to natural language, the mux MUST support explicit commands:
 | `/config <agent> <key> <value>` | Modify agent config |
 | `/mux` | Talk to the mux itself (force context) |
 | `/history [agent]` | Show recent conversation summary |
+| `/costs [agent]` | Show cost report (today, or per agent) |
+| `/budget [limit]` | Show or set monthly budget |
 
 These commands exist as a reliable fallback. In normal use, the AI handles intent from natural language.
 
-### 4.8 Agentic Loop Architecture
+### 4.9 Agentic Loop Architecture
 
 The mux is itself an agent — it runs a continuous tool-calling loop powered by
 OpenAI's Responses API. This is the core of the orchestration.
@@ -405,7 +910,7 @@ Evaluated alternatives:
   summaries + compaction summaries + recent messages (see 4.5 Memory)
 - On max iterations exceeded: inform user, save context, don't crash
 
-### 4.9 Tool Definitions
+### 4.10 Tool Definitions
 
 The mux exposes tools to the OpenAI model via function calling. Each tool maps
 to a `xnullclaw` CLI call or an internal operation.
@@ -471,6 +976,58 @@ list_agent_files(agent: str, path: str) -> [str]
 ```
 transcribe_audio(file_id: str) -> str
     Transcribe a Telegram voice/audio file via Whisper.
+
+speak(text: str) -> str
+    Generate TTS audio via OpenAI TTS and send as Telegram voice message.
+    Text version is always sent alongside. Returns "sent".
+
+set_voice(voice: str) -> str
+    Change the TTS voice. Options: alloy, ash, ballad, coral, echo, fable,
+    onyx, nova, sage, shimmer. Persists in config. Returns confirmation.
+
+toggle_tts(enabled: bool) -> str
+    Enable or disable TTS output. Returns new state.
+```
+
+**Agent output monitoring tools:**
+```
+drain_agent(agent: str) -> str
+    Return any buffered unsolicited output from an agent since last drain.
+
+drain_all() -> [{agent: str, output: str}]
+    Drain unsolicited output from ALL running agents.
+
+mute_agent(agent: str, types: [str]) -> str
+    Mute specific output types from an agent (heartbeat, cron, etc.).
+
+unmute_agent(agent: str, types: [str]) -> str
+    Unmute specific output types from an agent.
+```
+
+**Cost tools:**
+```
+get_costs(period: str) -> object
+    Get full system cost report. Period: "today", "week", "month", "all".
+    Returns mux costs + per-agent costs breakdown.
+
+get_agent_costs(agent: str, period: str) -> object
+    Get cost details for a specific agent.
+
+set_budget(scope: str, limit_usd: float, period: str) -> str
+    Set budget limit. Scope: "total", agent name. Period: "daily", "monthly".
+```
+
+**Passthrough rule tools:**
+```
+set_passthrough_rule(scope: str, rule: str) -> str
+    Add or update a passthrough rule. Scope: agent name or "global".
+    Example: set_passthrough_rule("alice", "append 'be concise'")
+
+remove_passthrough_rule(scope: str, rule_id: str) -> str
+    Remove a passthrough rule by ID.
+
+list_passthrough_rules() -> [{scope: str, rule: str, id: str}]
+    List all active passthrough rules.
 ```
 
 **Mux memory tools:**
@@ -488,6 +1045,128 @@ get_conversation_summary(agent: str) -> str
 All agent-facing tools use the `xnullclaw` CLI with stdin/stdout for message passing.
 The mux never directly constructs Docker commands or HTTP requests to agents.
 The AI model decides which tools to call — the model IS the router.
+
+### 4.11 Agent Identity
+
+Every agent has a **display identity** — an emoji badge and a short, speakable name.
+This makes it instant to recognize who's talking in the Telegram chat, and easy to
+address agents by voice or text.
+
+**Identity components:**
+
+| Component | Purpose | Example |
+|-----------|---------|---------|
+| **Emoji badge** | Visual identifier — one colorful emoji from a curated pool | 🍎 |
+| **Display name** | Short, easy-to-say name — the "friendly" name | alice |
+| **Internal name** | Container/folder name — may match display name, doesn't have to | alice |
+
+**Emoji pool — colorful, distinct, pronounceable:**
+
+Drawn from easily distinguishable emoji groups: fruits, vegetables, flowers, animals,
+gems, weather, space. Each agent gets a unique emoji assigned at setup time.
+
+Default pool (first picks in order):
+```
+🍎 🍊 🍋 🍇 🍓 🫐 🍑 🥝 🍒 🥭
+🌻 🌸 🌵 🍀 🌺 🪻 🌷 🪷 🌿 🍄
+🐙 🦊 🐝 🦉 🐋 🦎 🐺 🦜 🐬 🦋
+💎 🔮 ⭐ 🌙 ❄️ 🔥 🌈 ⚡ 🪐 🌊
+```
+
+**Assignment rules:**
+- First agent gets 🍎, second 🍊, etc. (sequential from pool)
+- User can override via config or voice: "give bob the octopus"
+- Emoji must be unique across all agents — no duplicates
+- Cloned agents get the next available emoji, not the source's
+- Destroyed agents release their emoji back to the pool
+
+**Display format in Telegram:**
+
+All messages from agents are prefixed with their badge + name:
+
+```
+🍎 alice: The API is responding normally. Status 200 on all endpoints.
+
+🍊 bob: I found 3 relevant articles about the topic. Here's a summary...
+
+🍋 carol: Build completed successfully. All 847 tests passing.
+```
+
+For multi-agent responses (broadcast, orchestrated):
+```
+You: "everyone, status report"
+
+🍎 alice: All monitoring checks green. No alerts in the last 24h.
+🍊 bob: Research task 60% complete. Estimating 2 more hours.
+🍋 carol: Idle. No pending tasks.
+```
+
+**Fuzzy name matching (for voice and typos):**
+
+The mux must resolve agent references from imprecise input — spoken names from
+Whisper transcription, typos, nicknames, or partial matches.
+
+Resolution order:
+1. **Exact match** — "alice" → alice
+2. **Case-insensitive** — "Alice", "ALICE" → alice
+3. **Prefix match** — "al" → alice (if unambiguous)
+4. **Phonetic/fuzzy match** — "ellis", "allice", "alyss" → alice
+5. **Emoji reference** — "the apple one", "apple agent" → 🍎 alice
+6. **Correction dictionary** — explicit mappings from config (Whisper artifacts)
+7. **Context** — if ambiguous, use conversation context (last addressed agent)
+8. **Ask** — if still ambiguous: "Did you mean 🍎 alice or 🍊 bob?"
+
+The correction dictionary in mux config (section 5.3) maps known Whisper
+misrecognitions to agent names. The mux can also learn new corrections:
+"No, I said alice" → mux remembers that variant for next time.
+
+**Identity in the mux config (`~/.xnullclaw/.mux/config.json`):**
+
+```json
+{
+  "agents": {
+    "default": "alice",
+    "auto_start": ["alice", "bob"],
+    "identities": {
+      "alice": { "emoji": "🍎", "aliases": ["al"] },
+      "bob":   { "emoji": "🍊", "aliases": ["robert"] },
+      "carol": { "emoji": "🍋" }
+    }
+  }
+}
+```
+
+If no identity is configured for an agent, the mux auto-assigns the next available
+emoji from the pool when the agent first appears.
+
+**Identity in the wrapper (`~/.xnullclaw/<agent>/.meta`):**
+
+The wrapper stores the assigned emoji in the agent's meta file so it persists
+across mux restarts and is available to `xnullclaw list`:
+
+```
+EMOJI=🍎
+```
+
+`xnullclaw list` output:
+```
+🍎  alice    running   openai/gpt-4o         (mux)
+🍊  bob      running   openai/gpt-4o-mini    (mux)
+🍋  carol    stopped   anthropic/claude-sonnet
+    dave     stopped   openai/gpt-4o         (no identity)
+```
+
+**The mux system prompt includes agent identities** so the model knows the mapping:
+
+```
+Active agents:
+  🍎 alice — code review and monitoring (running)
+  🍊 bob — research and analysis (running)
+  🍋 carol — build automation (stopped)
+
+When relaying agent responses, always prefix with their emoji and name.
+When the user refers to an agent by name, nickname, or emoji — resolve it.
+```
 
 ## 5. Technical Specification
 
@@ -547,7 +1226,11 @@ xnullclaw/                          ← this repo
 ```
 ~/.xnullclaw/.mux/
 ├── config.json          ← mux configuration
-├── memory.db            ← SQLite (messages, facts, agent_state, compactions)
+├── memory.db            ← SQLite database (4 tables):
+│                           messages     — rolling window (FIFO, compacted)
+│                           facts        — long-term knowledge (scored, pruned)
+│                           agent_state  — per-agent status/task/role
+│                           compactions  — summarized conversation blocks (append-only)
 └── media/               ← temp storage for Telegram media downloads
 ```
 
@@ -571,7 +1254,12 @@ Lives at `~/.xnullclaw/.mux/config.json`:
 
   "agents": {
     "default": "alice",
-    "auto_start": ["alice", "bob"]
+    "auto_start": ["alice", "bob"],
+    "identities": {
+      "alice": { "emoji": "🍎", "aliases": ["al"] },
+      "bob":   { "emoji": "🍊", "aliases": ["robert"] },
+      "carol": { "emoji": "🍋" }
+    }
   },
 
   "voice": {
@@ -721,7 +1409,7 @@ and sends them as Telegram media attachments alongside the text response.
 
 ```
 Agent response: "Here's the chart you asked for. See outbox/chart.png"
-→ Mux sends: [alice] Here's the chart you asked for.
+→ Mux sends: 🍎 alice: Here's the chart you asked for.
 → Mux sends: 📎 chart.png (as Telegram photo)
 ```
 
@@ -749,7 +1437,7 @@ Nullclaw agents can take time to think (especially with tool use chains). The mu
 1. Send "thinking..." indicator to Telegram (typing action)
 2. POST to agent with a generous HTTP timeout (120s+)
 3. If agent responds within timeout → relay response
-4. If timeout → inform user: `[alice] Still working... (timeout after 120s)`
+4. If timeout → inform user: `🍎 alice: Still working... (timeout after 120s)`
 5. Optionally: poll the agent or retry
 
 Agent-side timeout is configurable via `agents.defaults.message_timeout_secs` (default: 600s = 10 minutes).
@@ -763,7 +1451,7 @@ User:  "alice, check if the API is responding"
 Mux AI: → calls send_to_agent("alice", "check if the API is responding")
 Agent:  ← {"response": "The API at api.example.com is returning 200 OK..."}
 Mux AI: → formats and sends to Telegram
-User sees: [alice] The API at api.example.com is returning 200 OK...
+User sees: 🍎 alice: The API at api.example.com is returning 200 OK...
 ```
 
 ### 6.2 Voice Message
@@ -773,7 +1461,7 @@ User:  🎤 (voice message)
 Mux:   → calls transcribe_audio(file_id)
 Whisper: ← "tell Ellis to check the server"
 Mux AI: → recognizes "Ellis" → "alice" (from correction dictionary)
-Mux:   → sends to Telegram: [heard] "tell alice to check the server"
+Mux:   → sends to Telegram: 🎙️ heard: "tell alice to check the server"
 Mux AI: → calls send_to_agent("alice", "check the server")
 ...
 ```
@@ -787,9 +1475,9 @@ Mux AI: → calls send_to_all("stop all background tasks")
 Agents: ← [3 responses]
 Mux AI: → synthesizes and sends:
 User sees:
-  [alice] All background tasks stopped. 2 cron jobs paused.
-  [bob] Stopped web scraping job. No other tasks running.
-  [carol] No background tasks were active.
+  🍎 alice: All background tasks stopped. 2 cron jobs paused.
+  🍊 bob: Stopped web scraping job. No other tasks running.
+  🍋 carol: No background tasks were active.
 ```
 
 ### 6.4 Lifecycle Management
@@ -834,7 +1522,7 @@ Mux:   → downloads photo from Telegram
        (wrapper copies to alice's inbox/, sends message)
 Alice: → reads inbox/photo.jpg, transcribes
        ← "The whiteboard contains: 1) API redesign... 2) ..."
-User sees: [alice] The whiteboard contains: 1) API redesign... 2) ...
+User sees: 🍎 alice: The whiteboard contains: 1) API redesign... 2) ...
 ```
 
 ```
@@ -845,7 +1533,7 @@ Bob:   → generates chart, writes to outbox/sales_chart.png
 Mux:   → detects file reference, retrieves outbox/sales_chart.png
        → sends to Telegram as photo with caption
 User sees:
-  [bob] Here's last month's sales chart.
+  🍊 bob: Here's last month's sales chart.
   📎 sales_chart.png (as inline photo)
 ```
 
@@ -862,10 +1550,12 @@ User sees:
 - [ ] Go project scaffold (`mux/`, `.tool-versions` with asdf golang)
 - [ ] Telegram bot connection (long-polling, text messages)
 - [ ] OpenAI integration with function calling (tool use)
+- [ ] Agent identity system: emoji pool, auto-assignment, .meta persistence
 - [ ] xnullclaw wrapper: add `send` (stdin/stdout), `running --json`, `--mux` flag
 - [ ] Core tools: `send_to_agent`, `list_agents`, `agent_status`
 - [ ] Basic intent routing (AI determines agent vs mux)
-- [ ] Response formatting with agent prefixes
+- [ ] Response formatting with emoji badge + name prefixes
+- [ ] Fuzzy name matching (case-insensitive, prefix, correction dictionary)
 
 ### Phase 2 — Memory + Stability
 - [ ] SQLite memory system (messages, facts, agent_state, compactions tables)
@@ -881,17 +1571,23 @@ User sees:
 - [ ] Whisper transcription integration
 - [ ] Transcription correction dictionary
 - [ ] Show-before-act flow (display transcription, then process)
+- [ ] TTS output via OpenAI TTS API (text always sent alongside voice)
+- [ ] Agent audio/voice passthrough (agent-produced audio → Telegram as-is)
 - [ ] xnullclaw wrapper: add `send-file`, `get-file`, `ls`, `clean-outbox`
 - [ ] Inbound media: photos, documents, audio, video → agent inbox/
 - [ ] Outbound media: agent outbox/ → Telegram (auto-detect type, send as photo/audio/document/video)
 - [ ] File reference detection in agent responses
 
-### Phase 4 — Agent Lifecycle via Mux
+### Phase 4 — Agent Lifecycle + Proactive Output
 - [ ] Tools: `start_agent`, `stop_agent`, `restart_agent`
-- [ ] Tools: `setup_agent`, `clone_agent`
+- [ ] Tools: `setup_agent`, `clone_agent` (mux creates + fully configures new agents)
 - [ ] `update_agent_config` + auto-restart
 - [ ] `get_agent_config` tool
 - [ ] Proactive health monitoring and alerting
+- [ ] xnullclaw wrapper: add `drain`, `watch` commands for unsolicited agent output
+- [ ] Agent output monitoring: relay all cron results, alerts, errors to Telegram
+- [ ] Output batching (prevent Telegram spam from rapid agent output)
+- [ ] Per-agent output mute/filter controls
 
 ### Phase 5 — Advanced Orchestration
 - [ ] `send_to_all` — broadcast to all running agents (no enumeration)
@@ -920,10 +1616,13 @@ User sees:
 
 ## 9. Success Criteria
 
-1. User can talk to any agent by name via a single Telegram bot
+1. User can talk to any agent by name (or emoji, or nickname) via a single Telegram bot
 2. Mux correctly routes >95% of messages without explicit commands
 3. Voice messages work with <5s latency (transcribe + route + response display)
-4. Agent lifecycle (start/stop/restart) manageable entirely from Telegram
+4. Agent lifecycle (start/stop/restart/create/configure) manageable entirely from Telegram
 5. Mux maintains useful context across conversations (no "who is alice?" amnesia)
 6. Zero host ports exposed in mux mode
 7. All containers maintain hardened security posture
+8. All agent output (cron, alerts, heartbeats, errors) reaches user via Telegram promptly
+9. Agent emoji badges are visually distinct and consistent across restarts
+10. TTS works bidirectionally: user voice → Whisper → text, mux/agent text → TTS → voice
