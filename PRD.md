@@ -1063,11 +1063,21 @@ unmute_agent(agent: str, types: [str]) -> str
 **Persona tools:**
 ```
 set_persona(field: str, value: str) -> str
-    Update persona: name, personality, communication_style, language,
-    extra_instructions. Persists to config.
+    Update text field: name, language, bio, extra_instructions. Persists.
+
+set_persona_dimension(dimension: str, value: float) -> str
+    Set a personality dimension (0.0-1.0): warmth, humor, verbosity,
+    proactiveness, formality, empathy, sarcasm, autonomy, interpretation,
+    creativity. Returns new value + effect description.
 
 get_persona() -> object
-    Return current persona settings.
+    Return full persona: text fields + all dimension values.
+
+reset_persona() -> str
+    Reset all fields and dimensions to defaults.
+
+apply_persona_preset(preset: str) -> str
+    Apply named preset: professional, casual, assistant, minimal, creative.
 ```
 
 **Cost tools:**
@@ -1411,13 +1421,50 @@ When the user talks to YOU, respond directly. You handle:
 
 **b) Persona (user-customizable, loaded from config):**
 
+The mux persona is defined as **numeric dimension sliders** (0.0–1.0) plus free-form
+text fields. Inspired by AIEOS (AI Entity Object Specification) — an open standard
+for portable AI personality as structured JSON.
+
+**Persona dimensions (all 0.0–1.0):**
+
+| Dimension | 0.0 (low) | 0.5 (balanced) | 1.0 (high) | Default |
+|-----------|-----------|----------------|------------|---------|
+| `warmth` | Cold, robotic | Friendly | Warm, caring, personal | 0.6 |
+| `humor` | Strictly serious | Occasional wit | Playful, jokes, sarcasm | 0.4 |
+| `verbosity` | Terse, minimal | Balanced | Detailed, thorough | 0.3 |
+| `proactiveness` | Only responds when asked | Suggests when relevant | Anticipates, volunteers info | 0.7 |
+| `formality` | Casual, slang OK | Professional casual | Formal, proper | 0.4 |
+| `empathy` | Matter-of-fact | Acknowledges feelings | Emotionally attuned | 0.5 |
+| `sarcasm` | Never sarcastic | Light irony | Sharp, witty | 0.2 |
+| `autonomy` | Always asks before acting | Acts on clear intent | Takes initiative freely | 0.6 |
+| `interpretation` | Literal passthrough | Light cleanup | Heavily interprets/refines | 0.2 |
+| `creativity` | Straightforward, predictable | Balanced | Novel approaches, surprises | 0.5 |
+
+**How dimensions translate to behavior:**
+
+The dimensions are injected into the system prompt as behavioral instructions.
+The prompt assembler reads the numeric values and generates natural language
+directives the model can follow:
+
 ```
-Your name is {name}.
-{personality}
-{communication_style}
-{language}
-{extra_instructions}
+# Example: warmth=0.6, humor=0.4, verbosity=0.3, proactiveness=0.7, sarcasm=0.2
+
+Your communication style:
+- Be warm and approachable but not overly familiar (warmth: 0.6)
+- Use occasional humor and light wit when appropriate (humor: 0.4)
+- Keep responses concise — bullet points over paragraphs (verbosity: 0.3)
+- Proactively suggest actions and flag issues without being asked (proactiveness: 0.7)
+- Rarely use sarcasm, keep it very mild when you do (sarcasm: 0.2)
 ```
+
+**Text fields (free-form):**
+
+| Field | Purpose | Default |
+|-------|---------|---------|
+| `name` | What the mux calls itself | `"mux"` |
+| `language` | Response language | `"en"` |
+| `bio` | Short self-description / identity statement | `""` |
+| `extra_instructions` | Standing behavioral instructions | `""` |
 
 **Persona config (`~/.xnullclaw/.mux/config.json`):**
 
@@ -1425,40 +1472,93 @@ Your name is {name}.
 {
   "persona": {
     "name": "mux",
-    "personality": "You are concise, direct, and competent. You have a dry sense of humor. You care about efficiency and don't waste the user's time.",
-    "communication_style": "Short sentences. No fluff. Use bullet points for lists. Emoji only when labeling agents.",
     "language": "en",
-    "extra_instructions": ""
+    "bio": "",
+    "extra_instructions": "",
+    "dimensions": {
+      "warmth": 0.6,
+      "humor": 0.4,
+      "verbosity": 0.3,
+      "proactiveness": 0.7,
+      "formality": 0.4,
+      "empathy": 0.5,
+      "sarcasm": 0.2,
+      "autonomy": 0.6,
+      "interpretation": 0.2,
+      "creativity": 0.5
+    }
   }
 }
 ```
 
-**Examples of persona tweaking at runtime:**
+**Tweaking at runtime — natural language or explicit:**
 
 ```
-User: "call yourself Nova from now on"
-Mux:  → updates persona.name = "Nova"
+User: "call yourself Nova"
+Mux:  → set_persona("name", "Nova")
       → "Done. I'm Nova now."
 
-User: "be more casual, use slang, be funny"
-Mux:  → updates persona.personality
-      → "aight, vibe shift complete. your agents are still running btw 🤙"
+User: "be funnier"
+Mux:  → set_persona_dimension("humor", 0.7)
+      → set_persona_dimension("sarcasm", 0.4)
+      → "Humor cranked up. Let's see if I can make you laugh."
 
-User: "actually, be professional again but keep the name"
-Mux:  → updates persona.personality back to professional tone
-      → "Understood. Professional mode restored. All systems nominal."
+User: "too much, dial the sarcasm back"
+Mux:  → set_persona_dimension("sarcasm", 0.15)
+      → "Fair enough. Keeping it light."
+
+User: "be more proactive about monitoring agents"
+Mux:  → set_persona_dimension("proactiveness", 0.9)
+      → "Got it. I'll flag things before you ask."
+
+User: "when I talk to agents, just pass my words through raw, don't touch them"
+Mux:  → set_persona_dimension("interpretation", 0.0)
+      → "Full passthrough mode. Your words, untouched."
 
 User: "speak to me in Spanish"
-Mux:  → updates persona.language = "es"
+Mux:  → set_persona("language", "es")
       → "Entendido. A partir de ahora responderé en español."
 
-User: "when reporting agent status, always include uptime and cost"
-Mux:  → updates persona.extra_instructions
-      → "Noted. Status reports will now include uptime and cost."
+User: "give me your current settings"
+Mux:  → get_persona()
+      → "Nova | warmth 0.6 | humor 0.7 | verbosity 0.3 | proactiveness 0.9
+         formality 0.4 | empathy 0.5 | sarcasm 0.15 | autonomy 0.6
+         interpretation 0.0 | creativity 0.5 | lang: es"
+
+User: "reset everything to defaults"
+Mux:  → reset_persona()
+      → "Back to factory settings."
 ```
 
 **Persona changes persist** — written to config.json immediately. On restart,
 the mux retains its personality. The user never has to re-teach it.
+
+**Dimension presets (shortcuts):**
+
+The mux understands named presets that set multiple dimensions at once:
+
+| Preset | Sets |
+|--------|------|
+| `professional` | formality=0.8, humor=0.1, sarcasm=0.0, verbosity=0.4, warmth=0.3 |
+| `casual` | formality=0.2, humor=0.6, sarcasm=0.3, verbosity=0.3, warmth=0.7 |
+| `assistant` | proactiveness=0.8, autonomy=0.7, empathy=0.6, verbosity=0.4 |
+| `minimal` | verbosity=0.1, humor=0.0, sarcasm=0.0, proactiveness=0.3 |
+| `creative` | creativity=0.9, humor=0.5, interpretation=0.6, autonomy=0.7 |
+
+```
+User: "switch to casual mode"
+Mux:  → applies casual preset
+      → "done, keeping it chill 👍"
+```
+
+Presets change only the dimensions they define — others stay as-is.
+
+**AIEOS compatibility (future):**
+
+The persona dimensions are a pragmatic subset of AIEOS's psychology + linguistics
+sections. The config can optionally include a full AIEOS `soul_document` field
+for tools or agents that speak AIEOS natively. For now, the 10 dimensions above
+cover the practical tuning space without overcomplicating things.
 
 **Persona tools:**
 
@@ -1466,11 +1566,21 @@ The model can modify its own persona via tools:
 
 ```
 set_persona(field: str, value: str) -> str
-    Update persona field: name, personality, communication_style, language,
-    extra_instructions. Persists to config. Returns confirmation.
+    Update text field: name, language, bio, extra_instructions.
+    Persists to config. Returns confirmation.
+
+set_persona_dimension(dimension: str, value: float) -> str
+    Set a personality dimension (0.0–1.0). Returns new value + effect description.
 
 get_persona() -> object
-    Return current persona settings.
+    Return full persona: text fields + all dimensions.
+
+reset_persona() -> str
+    Reset all dimensions and text fields to defaults.
+
+apply_persona_preset(preset: str) -> str
+    Apply a named preset (professional, casual, assistant, minimal, creative).
+    Only changes the dimensions defined in the preset.
 ```
 
 **What persona does NOT affect:**
