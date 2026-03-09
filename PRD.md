@@ -1282,11 +1282,16 @@ xnullclaw/                          ← this repo
 ```
 ~/.xnullclaw/.mux/
 ├── config.json          ← mux configuration
-├── memory.db            ← SQLite database (4 tables):
+├── memory.db            ← SQLite database (5 tables):
 │                           messages     — rolling window (FIFO, compacted)
 │                           facts        — long-term knowledge (scored, pruned)
 │                           agent_state  — per-agent status/task/role
 │                           compactions  — summarized conversation blocks (append-only)
+│                           costs        — mux API cost log
+├── logs/                ← structured JSON logs (rotated daily, 7 day retention)
+│   ├── mux.log          ← main mux log
+│   ├── agents.log       ← agent interaction log
+│   └── costs.log        ← cost events
 └── media/               ← temp storage for Telegram media downloads
 ```
 
@@ -1330,9 +1335,135 @@ Lives at `~/.xnullclaw/.mux/config.json`:
   "memory": {
     "db_path": "memory.db",
     "summary_interval_messages": 20
+  },
+
+  "logging": {
+    "level": "info",
+    "dir": "logs",
+    "rotate_days": 7
   }
 }
 ```
+
+### 5.3.1 Mux System Prompt
+
+The system prompt is the core of the mux's behavior. It's assembled dynamically
+each turn from fixed instructions + live state. This is what makes the mux an
+intelligent orchestrator rather than a dumb router.
+
+**System prompt structure (assembled per turn):**
+
+```
+┌─────────────────────────────────────────────┐
+│ 1. Identity + role                     ~200 │
+│ 2. Tools available                     ~800 │
+│ 3. Passthrough rules (user-configured) ~300 │
+│ 4. Agent roster (live state)           ~500 │
+│ 5. Long-term facts (top-K relevant)   ~4000 │
+│ 6. Recent compaction summaries        ~2000 │
+│                               total: ~8000  │
+└─────────────────────────────────────────────┘
+```
+
+**1. Identity + role (fixed):**
+
+```
+You are the mux — a personal AI orchestrator managing a fleet of AI agents.
+You run 24/7 as the user's intelligence layer between them and their agents.
+
+Your job:
+- Route messages to the right agent(s) based on intent
+- Manage agent lifecycle (start, stop, create, configure, clone, destroy)
+- Synthesize multi-agent responses when useful
+- Maintain situational awareness of all agents
+- Remember user preferences and apply them consistently
+- Be transparent: always prefix agent output with their emoji + name
+
+You are NOT a chatbot. You are an operator. Be concise, direct, competent.
+When the user addresses an agent, be a transparent pipe — forward the message
+with minimal intervention (silent typo fixes only, unless passthrough rules say
+otherwise). Do not add your own commentary to agent-directed messages.
+
+When the user talks to YOU (the mux), respond directly. You handle:
+- Agent management ("start alice", "what's bob doing?", "create a new agent")
+- System status ("costs?", "who's running?", "what happened today?")
+- Multi-agent coordination ("ask everyone to...", "have alice and bob collaborate on...")
+- Memory/preferences ("remember that I prefer...", "what did I say about...?")
+- Voice/TTS settings ("change your voice", "mute carol's heartbeats")
+```
+
+**2. Tools available (fixed, from tool definitions):**
+
+Injected from the tool schema (section 4.10). The model sees all available tools
+and their parameter schemas. This is standard OpenAI function calling — no special
+formatting needed.
+
+**3. Passthrough rules (dynamic, from facts table):**
+
+```
+Active passthrough rules:
+- GLOBAL: fix obvious typos/grammar silently before forwarding
+- alice: append "be concise" to all forwarded messages
+- bob: no spelling corrections (raw passthrough for code)
+- GLOBAL: translate Spanish to English before forwarding
+```
+
+Loaded from `facts` table where `type='rule'`. Updated when user changes rules.
+
+**4. Agent roster (dynamic, from agent_state table):**
+
+```
+Active agents:
+  🍎 alice — code review and monitoring (running, gpt-4o, uptime 14h, last msg 5m ago)
+  🍊 bob — research and analysis (running, gpt-4o-mini, uptime 14h, last msg 2h ago)
+  🍋 carol — build automation (stopped)
+  🍇 dave — security scanning (running, claude-sonnet, uptime 1h, last msg 1h ago)
+
+Default agent: alice (messages go to her unless another agent is addressed)
+Current conversation context: user was talking to alice about API monitoring
+
+Correction dictionary (for voice):
+  alice: ellis, allice, alyss
+  bob: bop, barb
+```
+
+Rebuilt from `agent_state` table each turn. Includes status, model, uptime,
+last interaction time, and current task. This gives the model full awareness
+of the fleet without needing to call any tools.
+
+**5. Long-term facts (dynamic, retrieved per turn):**
+
+Top-K facts relevant to the current message (see 4.5.4 for retrieval logic).
+Example:
+```
+Known facts:
+- User prefers alice for code-related tasks
+- User's timezone is UTC-5
+- bob was assigned to research Acme Corp competitors on 2026-03-08
+- User dislikes verbose agent responses — prefers bullet points
+- carol's build pipeline config is at /workspace/ci/pipeline.yml
+```
+
+**6. Recent compaction summaries (dynamic):**
+
+Last 2-3 compaction blocks to give the model recent historical context:
+```
+Recent history:
+[2026-03-09 10:00-12:00] User worked with alice on API monitoring setup.
+  Configured alerting thresholds. alice found 3 endpoints with high latency.
+  User asked bob to research competitor APIs for comparison.
+[2026-03-09 08:00-10:00] Morning check-in. All agents healthy. User asked
+  for cost report — $2.30 yesterday. Adjusted bob's temperature to 0.5.
+```
+
+**After the system prompt, the rolling window of recent messages follows** — these
+are the actual conversation turns (user messages, mux responses, tool calls/results).
+
+**The system prompt is token-budgeted** (see 4.5.1). If the agent roster grows
+large or facts accumulate, the assembler trims by:
+- Summarizing inactive agents more aggressively (one line instead of three)
+- Including fewer facts (tighter relevance threshold)
+- Including fewer compaction summaries (2 instead of 3)
 
 ### 5.4 Mux ↔ Agent Communication
 
@@ -1630,6 +1761,117 @@ Mux:  → re-routes to 🍊 bob: "check the logs"
 Corrections persist across restarts (stored in `facts` with `type='pattern'`).
 The correction dictionary in config is the seed — learned corrections augment it.
 Over time, the mux builds a personalized speech model for the user's voice.
+
+### 5.13 Mux Logging
+
+The mux writes structured logs to files, not stdout (it's a background daemon).
+
+**Log location:** `~/.xnullclaw/.mux/logs/`
+
+```
+~/.xnullclaw/.mux/logs/
+├── mux.log              ← main mux log (rotated)
+├── mux.log.1            ← previous rotation
+├── agents.log           ← agent interaction log (sends, responses, lifecycle)
+└── costs.log            ← cost events (each API call with tokens + USD)
+```
+
+**Log format:** structured JSON lines (one JSON object per line), parseable by
+standard tools (`jq`, etc.):
+
+```json
+{"ts":"2026-03-09T14:32:01Z","level":"info","msg":"agent response","agent":"alice","tokens":1240,"latency_ms":3200}
+{"ts":"2026-03-09T14:32:02Z","level":"info","msg":"telegram send","chat_id":123456,"parts":1}
+{"ts":"2026-03-09T14:35:00Z","level":"warn","msg":"agent restart detected","agent":"bob","restarts":2,"uptime":"12s"}
+```
+
+**Rotation:** daily rotation, keep last 7 days. Configurable in mux config.
+
+**Log levels:** `debug`, `info`, `warn`, `error`. Default: `info`. Configurable.
+
+The `xnullclaw mux logs [-f]` command tails `mux.log` (with optional follow).
+
+### 5.14 Graceful Shutdown and Startup
+
+**Shutdown sequence (mux stop):**
+
+When the mux receives a stop signal (SIGTERM, SIGINT, or `xnullclaw mux stop`):
+
+1. Stop accepting new Telegram messages
+2. Wait for in-flight agent calls to complete (timeout: 30s)
+3. Send final message to Telegram: "Mux going offline. Agents will be stopped."
+4. Stop all mux-controlled agents: `xnullclaw <agent> stop` for each agent
+   that was started with `--mux` (the mux tracks which agents it manages)
+5. Flush pending log writes
+6. Close SQLite database cleanly
+7. Exit
+
+If in-flight calls don't complete within 30s, the mux logs the timeout and
+proceeds with shutdown — agent containers will timeout on their own.
+
+**Startup sequence (mux start):**
+
+1. Load config from `~/.xnullclaw/.mux/config.json`
+2. Open SQLite `memory.db` — restore all memory tiers
+3. Start logging
+4. Start mux-controlled agents listed in `agents.auto_start`:
+   `xnullclaw <agent> start --mux` for each
+5. Wait for agents to become healthy (poll status, timeout 60s per agent)
+6. Start `watch` goroutines for all running agents
+7. Start Telegram polling
+8. Start background goroutines (cost consolidation, health checks, compaction)
+9. Send startup message to Telegram: "Mux online. Agents: 🍎 alice (running), 🍊 bob (running)."
+
+**Mux tracks which agents it controls:**
+
+The mux stores in its config which agents are "mux-managed" (started via `--mux`).
+On shutdown, only those agents are stopped. Agents running in direct mode
+(their own Telegram bot) are left alone.
+
+```json
+{
+  "agents": {
+    "auto_start": ["alice", "bob"],
+    "mux_managed": ["alice", "bob", "carol"]
+  }
+}
+```
+
+`mux_managed` is updated at runtime: when the mux starts an agent, it's added.
+When the user destroys one via mux, it's removed.
+
+### 5.15 Telegram Rate Limits
+
+**DM is the best option.** Telegram rate limits for bots:
+
+| Chat type | Limit | Notes |
+|-----------|-------|-------|
+| **Private/DM** | ~1 msg/sec (~60/min) | Short bursts tolerated |
+| Group | 20 msgs/min | 3x worse than DM |
+| Channel | 20 msgs/min | Same as group |
+
+A group or channel would *reduce* throughput vs DM. The mux uses DM exclusively.
+
+**Practical impact:**
+
+With ~60 msgs/min capacity and typical usage (a few agent responses + occasional
+splits), rate limits are unlikely to be hit in normal operation. The worst case
+is a broadcast to 10 agents, all responding with long messages requiring 2-3 splits
+each — that's ~30 messages, which at 1/sec takes 30 seconds. Acceptable.
+
+**Rate limit handling:**
+
+The mux maintains a Telegram send queue with pacing:
+- Messages are sent through a single goroutine with a token bucket (1 msg/sec sustained)
+- Bursts up to 3 msgs/sec are allowed briefly
+- If Telegram returns 429 (Too Many Requests), respect `retry_after` exactly
+- A 429 blocks ALL sends (not just the offending chat), so avoiding it is critical
+- Queue priority: user-facing responses > agent alerts > heartbeats > proactive output
+
+**Optimization — fewer messages:**
+- Use `sendMediaGroup` for multiple files (up to 10 in one API call, counts as 1 message)
+- Combine multi-agent broadcast results into a single message when possible
+- Batch proactive output (already specified in 4.2.1 — 5s buffer window)
 
 ## 6. Message Flow Examples
 
