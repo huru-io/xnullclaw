@@ -1060,6 +1060,16 @@ unmute_agent(agent: str, types: [str]) -> str
     Unmute specific output types from an agent.
 ```
 
+**Persona tools:**
+```
+set_persona(field: str, value: str) -> str
+    Update persona: name, personality, communication_style, language,
+    extra_instructions. Persists to config.
+
+get_persona() -> object
+    Return current persona settings.
+```
+
 **Cost tools:**
 ```
 get_costs(period: str) -> object
@@ -1355,7 +1365,7 @@ intelligent orchestrator rather than a dumb router.
 
 ```
 ┌─────────────────────────────────────────────┐
-│ 1. Identity + role                     ~200 │
+│ 1. Persona + role (user-customizable)  ~400 │
 │ 2. Tools available                     ~800 │
 │ 3. Passthrough rules (user-configured) ~300 │
 │ 4. Agent roster (live state)           ~500 │
@@ -1365,10 +1375,18 @@ intelligent orchestrator rather than a dumb router.
 └─────────────────────────────────────────────┘
 ```
 
-**1. Identity + role (fixed):**
+**1. Persona + role (customizable):**
+
+The mux has a **persona** — its name, personality, tone, and communication style.
+This is NOT hardcoded. The user can shape it at any time via natural language or
+config, and it persists across restarts.
+
+The system prompt's identity block is assembled from two parts:
+
+**a) Core role (fixed — always present, not user-editable):**
 
 ```
-You are the mux — a personal AI orchestrator managing a fleet of AI agents.
+You are a personal AI orchestrator managing a fleet of AI agents.
 You run 24/7 as the user's intelligence layer between them and their agents.
 
 Your job:
@@ -1379,18 +1397,89 @@ Your job:
 - Remember user preferences and apply them consistently
 - Be transparent: always prefix agent output with their emoji + name
 
-You are NOT a chatbot. You are an operator. Be concise, direct, competent.
 When the user addresses an agent, be a transparent pipe — forward the message
 with minimal intervention (silent typo fixes only, unless passthrough rules say
 otherwise). Do not add your own commentary to agent-directed messages.
 
-When the user talks to YOU (the mux), respond directly. You handle:
+When the user talks to YOU, respond directly. You handle:
 - Agent management ("start alice", "what's bob doing?", "create a new agent")
 - System status ("costs?", "who's running?", "what happened today?")
 - Multi-agent coordination ("ask everyone to...", "have alice and bob collaborate on...")
 - Memory/preferences ("remember that I prefer...", "what did I say about...?")
 - Voice/TTS settings ("change your voice", "mute carol's heartbeats")
 ```
+
+**b) Persona (user-customizable, loaded from config):**
+
+```
+Your name is {name}.
+{personality}
+{communication_style}
+{language}
+{extra_instructions}
+```
+
+**Persona config (`~/.xnullclaw/.mux/config.json`):**
+
+```json
+{
+  "persona": {
+    "name": "mux",
+    "personality": "You are concise, direct, and competent. You have a dry sense of humor. You care about efficiency and don't waste the user's time.",
+    "communication_style": "Short sentences. No fluff. Use bullet points for lists. Emoji only when labeling agents.",
+    "language": "en",
+    "extra_instructions": ""
+  }
+}
+```
+
+**Examples of persona tweaking at runtime:**
+
+```
+User: "call yourself Nova from now on"
+Mux:  → updates persona.name = "Nova"
+      → "Done. I'm Nova now."
+
+User: "be more casual, use slang, be funny"
+Mux:  → updates persona.personality
+      → "aight, vibe shift complete. your agents are still running btw 🤙"
+
+User: "actually, be professional again but keep the name"
+Mux:  → updates persona.personality back to professional tone
+      → "Understood. Professional mode restored. All systems nominal."
+
+User: "speak to me in Spanish"
+Mux:  → updates persona.language = "es"
+      → "Entendido. A partir de ahora responderé en español."
+
+User: "when reporting agent status, always include uptime and cost"
+Mux:  → updates persona.extra_instructions
+      → "Noted. Status reports will now include uptime and cost."
+```
+
+**Persona changes persist** — written to config.json immediately. On restart,
+the mux retains its personality. The user never has to re-teach it.
+
+**Persona tools:**
+
+The model can modify its own persona via tools:
+
+```
+set_persona(field: str, value: str) -> str
+    Update persona field: name, personality, communication_style, language,
+    extra_instructions. Persists to config. Returns confirmation.
+
+get_persona() -> object
+    Return current persona settings.
+```
+
+**What persona does NOT affect:**
+- Core routing logic (always works the same regardless of personality)
+- Agent emoji badges and prefixes (always present)
+- Tool execution (tools work identically regardless of tone)
+- Memory and compaction behavior (system-level, not persona-level)
+
+Persona only shapes how the mux *talks* — not how it *works*.
 
 **2. Tools available (fixed, from tool definitions):**
 
