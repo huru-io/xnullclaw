@@ -1,0 +1,660 @@
+#!/usr/bin/env bash
+# xnullclaw - Multi-agent nullclaw wrapper with hardened Docker isolation
+#
+# Each agent lives in ~/.xnullclaw/<name>/ with its own config and data.
+# Agents run in Docker with: read-only rootfs, all caps dropped,
+# no-new-privileges, no exposed ports (Telegram uses outbound polling).
+#
+# Usage:  xnullclaw <agent> <command> [args...]
+#         xnullclaw <global-command>
+
+set -euo pipefail
+
+# ── Configuration ────────────────────────────────────────────────
+XNULLCLAW_HOME="${XNULLCLAW_HOME:-$HOME/.xnullclaw}"
+DOCKER_IMAGE="${XNULLCLAW_IMAGE:-nullclaw:latest}"
+CONTAINER_PREFIX="xnc"
+REPO_URL="https://github.com/nullclaw/nullclaw.git"
+BUILD_DIR="$XNULLCLAW_HOME/.tmp/nullclaw"
+
+# ── Helpers ──────────────────────────────────────────────────────
+die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+info() { printf '\033[34m::\033[0m %s\n' "$*"; }
+warn() { printf '\033[33m!!\033[0m %s\n' "$*" >&2; }
+ok()   { printf '\033[32mok:\033[0m %s\n' "$*"; }
+
+container_name() { echo "${CONTAINER_PREFIX}-${1}"; }
+agent_dir()      { echo "${XNULLCLAW_HOME}/${1}"; }
+
+validate_name() {
+    [[ "$1" =~ ^[a-zA-Z][a-zA-Z0-9_-]*$ ]] || \
+        die "Invalid agent name '$1'. Use letters, digits, hyphens, underscores. Must start with a letter."
+}
+
+agent_exists() { [[ -d "$(agent_dir "$1")" && -f "$(agent_dir "$1")/config.json" ]]; }
+
+is_running() { docker ps -q -f "name=^$(container_name "$1")\$" 2>/dev/null | grep -q .; }
+
+image_exists() { docker image inspect "$DOCKER_IMAGE" &>/dev/null; }
+
+# ── Meta file (key=value store per agent) ────────────────────────
+read_meta() {
+    local meta; meta="$(agent_dir "$1")/.meta"
+    if [[ -f "$meta" ]]; then
+        grep "^${2}=" "$meta" 2>/dev/null | head -1 | cut -d= -f2- || echo "${3:-}"
+    else
+        echo "${3:-}"
+    fi
+}
+
+write_meta() {
+    local meta; meta="$(agent_dir "$1")/.meta"
+    if [[ -f "$meta" ]] && grep -q "^${2}=" "$meta" 2>/dev/null; then
+        sed -i "s|^${2}=.*|${2}=${3}|" "$meta"
+    else
+        echo "${2}=${3}" >> "$meta"
+    fi
+}
+
+next_port() {
+    local port=3001
+    while true; do
+        local used=false
+        local metas
+        metas=$(compgen -G "$XNULLCLAW_HOME"/*/.meta 2>/dev/null || true)
+        for meta in $metas; do
+            [[ -f "$meta" ]] && grep -q "^HOST_PORT=${port}$" "$meta" && { used=true; break; }
+        done
+        $used || { echo "$port"; return; }
+        ((port++))
+    done
+}
+
+ensure_image() {
+    if ! image_exists; then
+        warn "Docker image '${DOCKER_IMAGE}' not found."
+        read -rp "Build it now from GitHub? [Y/n] " ans
+        [[ "${ans:-y}" =~ ^[Yy] ]] || die "Cannot proceed without the Docker image."
+        cmd_image_build
+    fi
+}
+
+# ── Image commands ───────────────────────────────────────────────
+cmd_image_build() {
+    mkdir -p "$XNULLCLAW_HOME/.tmp"
+    if [[ -d "$BUILD_DIR/.git" ]]; then
+        info "Using existing repo at ${BUILD_DIR}"
+    else
+        info "Cloning nullclaw..."
+        git clone "$REPO_URL" "$BUILD_DIR"
+    fi
+    info "Building Docker image (compiling Zig — may take a few minutes)..."
+    docker build -t "$DOCKER_IMAGE" "$BUILD_DIR"
+    ok "Image '${DOCKER_IMAGE}' built."
+}
+
+cmd_image_update() {
+    mkdir -p "$XNULLCLAW_HOME/.tmp"
+    if [[ -d "$BUILD_DIR/.git" ]]; then
+        info "Pulling latest changes..."
+        git -C "$BUILD_DIR" pull --ff-only
+    else
+        info "Cloning nullclaw..."
+        git clone "$REPO_URL" "$BUILD_DIR"
+    fi
+    info "Rebuilding Docker image (no cache)..."
+    docker build --no-cache -t "$DOCKER_IMAGE" "$BUILD_DIR"
+    ok "Image '${DOCKER_IMAGE}' updated."
+}
+
+cmd_image_status() {
+    if image_exists; then
+        docker image inspect "$DOCKER_IMAGE" --format \
+            "Image:   {{index .RepoTags 0}}
+Created: {{.Created}}
+Size:    {{.Size}}
+ID:      {{.ID}}"
+    else
+        echo "Image '${DOCKER_IMAGE}' not found."
+        echo "Build it:  xnullclaw image build"
+    fi
+}
+
+# ── Config template ──────────────────────────────────────────────
+generate_config() {
+    cat <<'CONF'
+{
+  "default_temperature": 0.7,
+
+  "models": {
+    "providers": {
+      "openai": {
+        "api_key": "sk-PASTE_YOUR_OPENAI_KEY_HERE"
+      },
+      "openrouter": {
+        "api_key": "sk-or-PASTE_KEY_IF_USING_OPENROUTER"
+      },
+      "anthropic": {
+        "api_key": "sk-ant-PASTE_KEY_IF_USING_ANTHROPIC"
+      }
+    }
+  },
+
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "openai/gpt-4o"
+      },
+      "heartbeat": {
+        "every": "30m"
+      }
+    }
+  },
+
+  "channels": {
+    "cli": true,
+    "telegram": {
+      "accounts": {
+        "main": {
+          "bot_token": "PASTE_TELEGRAM_BOT_TOKEN",
+          "allow_from": ["PASTE_YOUR_TELEGRAM_USER_ID"],
+          "reply_in_private": true
+        }
+      }
+    }
+  },
+
+  "memory": {
+    "backend": "sqlite",
+    "auto_save": true,
+    "search": {
+      "enabled": true,
+      "provider": "none",
+      "query": {
+        "max_results": 6,
+        "min_score": 0.0,
+        "merge_strategy": "rrf"
+      }
+    },
+    "lifecycle": {
+      "hygiene_enabled": true,
+      "archive_after_days": 7,
+      "purge_after_days": 30,
+      "conversation_retention_days": 30
+    }
+  },
+
+  "autonomy": {
+    "level": "supervised",
+    "workspace_only": true,
+    "max_actions_per_hour": 20
+  },
+
+  "gateway": {
+    "port": 3000,
+    "require_pairing": true
+  },
+
+  "tunnel": {
+    "provider": "none"
+  },
+
+  "secrets": {
+    "encrypt": true
+  },
+
+  "security": {
+    "sandbox": {
+      "backend": "auto"
+    },
+    "resources": {
+      "max_memory_mb": 512,
+      "max_cpu_percent": 80
+    },
+    "audit": {
+      "enabled": true,
+      "retention_days": 90
+    }
+  },
+
+  "runtime": {
+    "kind": "native"
+  }
+}
+CONF
+}
+
+# ── Docker run helpers ───────────────────────────────────────────
+# Common hardening args for all docker run invocations
+docker_hardened_args() {
+    local dir="$1"
+    echo \
+        --read-only \
+        --tmpfs /tmp:size=64M,noexec,nosuid \
+        --security-opt no-new-privileges:true \
+        --cap-drop ALL \
+        --user "$(id -u):$(id -g)" \
+        -v "${dir}/data:/nullclaw-data" \
+        -v "${dir}/config.json:/nullclaw-data/.nullclaw/config.json:ro"
+}
+
+# ── Agent: setup ─────────────────────────────────────────────────
+cmd_setup() {
+    local agent="$1"
+    validate_name "$agent"
+    local dir; dir="$(agent_dir "$agent")"
+
+    if agent_exists "$agent"; then
+        die "Agent '${agent}' already exists at ${dir}. Use 'clone' to duplicate."
+    fi
+
+    mkdir -p "${dir}/data/.nullclaw" "${dir}/data/workspace"
+    generate_config > "${dir}/config.json"
+    write_meta "$agent" "CREATED" "$(date -Iseconds)"
+
+    ok "Agent '${agent}' created."
+    cat <<EOF
+
+  Directory: ${dir}/
+
+  ┌─ EDIT BEFORE STARTING ─────────────────────────────────────┐
+  │                                                             │
+  │  \$ ${EDITOR:-vi} ${dir}/config.json
+  │                                                             │
+  │  REQUIRED:                                                  │
+  │    Set your OpenAI API key:                                 │
+  │      models.providers.openai.api_key                        │
+  │                                                             │
+  │  REQUIRED — Telegram:                                       │
+  │    1. Create a bot via @BotFather on Telegram               │
+  │    2. Set channels.telegram.accounts.main.bot_token         │
+  │    3. Set allow_from to your Telegram user ID               │
+  │       (use @userinfobot on Telegram to get your ID)         │
+  │                                                             │
+  │    Each agent needs its OWN Telegram bot.                   │
+  │    Create a separate bot via @BotFather for each agent.     │
+  │                                                             │
+  │  OPTIONAL — Switch provider:                                │
+  │    agents.defaults.model.primary can be:                    │
+  │      "openai/gpt-4o"                                        │
+  │      "openai/gpt-4o-mini"                                   │
+  │      "openrouter/anthropic/claude-sonnet-4"                 │
+  │      "anthropic/claude-sonnet-4"                            │
+  │                                                             │
+  └─────────────────────────────────────────────────────────────┘
+
+  Then:
+    xnullclaw ${agent} start      # always-on daemon (Telegram)
+    xnullclaw ${agent} cli        # interactive local chat
+
+EOF
+}
+
+# ── Agent: start ─────────────────────────────────────────────────
+cmd_start() {
+    local agent="$1"
+    shift
+    agent_exists "$agent" || die "Agent '${agent}' not found. Run: xnullclaw ${agent} setup"
+    is_running "$agent"   && die "Agent '${agent}' is already running. Use 'restart' to restart."
+    ensure_image
+
+    local dir;   dir="$(agent_dir "$agent")"
+    local cname; cname=$(container_name "$agent")
+
+    # Parse optional --port flag
+    local expose_port=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --port)
+                if [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]]; then
+                    expose_port="$2"; shift 2
+                else
+                    expose_port=$(next_port); shift
+                fi
+                ;;
+            *) die "Unknown flag: $1" ;;
+        esac
+    done
+
+    # Clean up any stopped container with the same name
+    docker rm "$cname" 2>/dev/null || true
+
+    # Build docker run command
+    local -a run_args=(
+        docker run -d
+        --name "$cname"
+        --restart unless-stopped
+        --read-only
+        --tmpfs /tmp:size=64M,noexec,nosuid
+        --security-opt no-new-privileges:true
+        --cap-drop ALL
+        --user "$(id -u):$(id -g)"
+        -v "${dir}/data:/nullclaw-data"
+        -v "${dir}/config.json:/nullclaw-data/.nullclaw/config.json:ro"
+    )
+
+    if [[ -n "$expose_port" ]]; then
+        run_args+=(
+            -p "127.0.0.1:${expose_port}:3000"
+            -e "NULLCLAW_GATEWAY_HOST=0.0.0.0"
+            -e "NULLCLAW_ALLOW_PUBLIC_BIND=true"
+        )
+        write_meta "$agent" "HOST_PORT" "$expose_port"
+        info "Starting agent '${agent}' (port ${expose_port})..."
+    else
+        info "Starting agent '${agent}' (no port exposed)..."
+    fi
+
+    run_args+=("$DOCKER_IMAGE" gateway)
+
+    "${run_args[@]}" >/dev/null
+
+    sleep 1
+
+    ok "Agent '${agent}' started."
+    echo ""
+    if [[ -n "$expose_port" ]]; then
+        echo "  Gateway: http://127.0.0.1:${expose_port}"
+        local code
+        code=$(docker logs "$cname" 2>&1 | grep -oP 'pairing code: \K\d+' || true)
+        [[ -n "$code" ]] && echo "  Pairing: curl -s -X POST http://127.0.0.1:${expose_port}/pair -H 'X-Pairing-Code: ${code}'"
+    else
+        echo "  No port exposed (Telegram uses outbound polling)."
+    fi
+    echo "  Logs:    xnullclaw ${agent} logs -f"
+    echo "  Stop:    xnullclaw ${agent} stop"
+    echo ""
+}
+
+# ── Agent: stop ──────────────────────────────────────────────────
+cmd_stop() {
+    local agent="$1"
+    if is_running "$agent"; then
+        local cname; cname=$(container_name "$agent")
+        info "Stopping agent '${agent}'..."
+        docker stop "$cname" >/dev/null
+        docker rm "$cname" >/dev/null 2>&1 || true
+        ok "Agent '${agent}' stopped."
+    else
+        warn "Agent '${agent}' is not running."
+    fi
+}
+
+# ── Agent: restart ───────────────────────────────────────────────
+cmd_restart() {
+    local agent="$1"
+    shift
+    cmd_stop "$agent" 2>/dev/null || true
+    cmd_start "$agent" "$@"
+}
+
+# ── Agent: status ────────────────────────────────────────────────
+cmd_status() {
+    local agent="$1"
+    agent_exists "$agent" || die "Agent '${agent}' not found."
+
+    local dir; dir="$(agent_dir "$agent")"
+
+    echo "Agent:     ${agent}"
+    echo "Directory: ${dir}"
+
+    if is_running "$agent"; then
+        local cname; cname=$(container_name "$agent")
+        local started ports
+        started=$(docker inspect "$cname" --format '{{.State.StartedAt}}' 2>/dev/null || echo "?")
+        ports=$(docker port "$cname" 2>/dev/null || true)
+
+        echo "Status:    running"
+        echo "Started:   ${started}"
+        echo "Container: ${cname}"
+        if [[ -n "$ports" ]]; then
+            echo "Port:      ${ports}"
+        else
+            echo "Port:      none (outbound-only)"
+        fi
+    else
+        echo "Status:    stopped"
+    fi
+}
+
+# ── Agent: logs ──────────────────────────────────────────────────
+cmd_logs() {
+    local agent="$1"; shift
+    is_running "$agent" || die "Agent '${agent}' is not running."
+    local cname; cname=$(container_name "$agent")
+    docker logs "$@" "$cname" 2>&1
+}
+
+# ── Agent: cli ───────────────────────────────────────────────────
+cmd_cli() {
+    local agent="$1"; shift
+    agent_exists "$agent" || die "Agent '${agent}' not found. Run: xnullclaw ${agent} setup"
+    ensure_image
+
+    local dir; dir="$(agent_dir "$agent")"
+
+    docker run --rm -it \
+        --read-only \
+        --tmpfs /tmp:size=64M,noexec,nosuid \
+        --security-opt no-new-privileges:true \
+        --cap-drop ALL \
+        --user "$(id -u):$(id -g)" \
+        -v "${dir}/data:/nullclaw-data" \
+        -v "${dir}/config.json:/nullclaw-data/.nullclaw/config.json:ro" \
+        "$DOCKER_IMAGE" \
+        agent "$@"
+}
+
+# ── Agent: clone ─────────────────────────────────────────────────
+cmd_clone() {
+    local agent="$1" source="$2"
+    local with_data="${3:-}"
+    validate_name "$agent"
+    agent_exists "$source" || die "Source agent '${source}' not found."
+    agent_exists "$agent"  && die "Agent '${agent}' already exists."
+
+    local src_dir; src_dir="$(agent_dir "$source")"
+    local dst_dir; dst_dir="$(agent_dir "$agent")"
+
+    info "Cloning '${source}' -> '${agent}'..."
+
+    mkdir -p "${dst_dir}/data/.nullclaw" "${dst_dir}/data/workspace"
+    cp "${src_dir}/config.json" "${dst_dir}/config.json"
+
+    write_meta "$agent" "CREATED" "$(date -Iseconds)"
+    write_meta "$agent" "CLONED_FROM" "$source"
+
+    if [[ "$with_data" == "--with-data" ]]; then
+        info "Copying data (memory, workspace, secrets)..."
+        cp -a "${src_dir}/data/." "${dst_dir}/data/"
+        info "Data copied."
+    fi
+
+    ok "Agent '${agent}' cloned from '${source}'."
+    cat <<EOF
+
+  Directory: ${dst_dir}/
+
+  IMPORTANT — Review the config before starting:
+    \$ ${EDITOR:-vi} ${dst_dir}/config.json
+
+    - You MUST set a DIFFERENT Telegram bot_token.
+      Each agent needs its own bot (@BotFather).
+    - API keys are shared from the source config.
+      Change them if you want separate billing/accounts.
+
+  Start: xnullclaw ${agent} start
+
+EOF
+}
+
+# ── Agent: destroy ───────────────────────────────────────────────
+cmd_destroy() {
+    local agent="$1"
+    local dir; dir="$(agent_dir "$agent")"
+
+    [[ -d "$dir" ]] || die "Agent '${agent}' not found."
+
+    echo "This will PERMANENTLY DELETE agent '${agent}' and ALL its data."
+    echo "Directory: ${dir}"
+    echo ""
+    read -rp "Type the agent name to confirm: " confirm
+    [[ "$confirm" == "$agent" ]] || die "Aborted."
+
+    is_running "$agent" && cmd_stop "$agent"
+
+    rm -rf "$dir"
+    ok "Agent '${agent}' destroyed."
+}
+
+# ── Global: list ─────────────────────────────────────────────────
+cmd_list() {
+    if [[ ! -d "$XNULLCLAW_HOME" ]]; then
+        echo "No agents yet. Create one: xnullclaw <name> setup"
+        return
+    fi
+
+    local found=false
+    printf "\033[1m%-20s %-10s %-12s %s\033[0m\n" "AGENT" "STATUS" "CREATED" "CLONED_FROM"
+
+    for dir in "$XNULLCLAW_HOME"/*/; do
+        [[ -d "$dir" ]] || continue
+        local name; name=$(basename "$dir")
+        [[ "$name" == ".tmp" ]] && continue
+        [[ -f "${dir}/config.json" ]] || continue
+
+        found=true
+        local created cloned status
+
+        created=$(read_meta "$name" "CREATED" "-")
+        cloned=$(read_meta "$name" "CLONED_FROM" "")
+
+        if is_running "$name"; then
+            status="\033[32mrunning\033[0m"
+        else
+            status="stopped"
+        fi
+
+        printf "%-20s %-10b %-12s %s\n" \
+            "$name" "$status" "${created%%T*}" "$cloned"
+    done
+
+    $found || echo "No agents yet. Create one: xnullclaw <name> setup"
+}
+
+# ── Help ─────────────────────────────────────────────────────────
+show_help() {
+    cat <<'EOF'
+xnullclaw - Multi-agent nullclaw wrapper with hardened Docker isolation
+
+USAGE
+  xnullclaw <agent> <command> [args...]
+  xnullclaw <global-command>
+
+AGENT COMMANDS
+  setup                    Create agent with default config
+  start                    Start always-on daemon (Telegram, no port exposed)
+  start --port [PORT]      Start with HTTP gateway exposed on localhost
+  stop                     Stop agent
+  restart                  Restart agent
+  status                   Show agent info
+  logs [-f] [--tail N]     View/follow container logs
+  cli [args...]            Interactive local chat (or -m "msg" for one-shot)
+  clone <source>           Clone config from another agent (fresh data)
+  clone <source> --with-data   Clone config AND memory/data
+  destroy                  Permanently delete agent + all data
+
+GLOBAL COMMANDS
+  list                     List all agents and their status
+  image build              Build Docker image from GitHub
+  image update             Pull latest source + rebuild (no cache)
+  image status             Show image info
+  help                     Show this help
+
+EXAMPLES
+  xnullclaw alice setup                  Create agent 'alice'
+  xnullclaw alice start                  Always-on Telegram agent
+  xnullclaw alice start --port 3001      Also expose HTTP gateway
+  xnullclaw alice cli                    Interactive chat session
+  xnullclaw alice cli -m "Hello"         One-shot message
+  xnullclaw alice logs -f                Follow live logs
+  xnullclaw bob clone alice              New agent from alice's config
+  xnullclaw bob clone alice --with-data  Clone with memory/history
+  xnullclaw list                         Show all agents
+
+FILE LAYOUT
+  ~/.xnullclaw/
+  ├── .tmp/nullclaw/                Git clone for building image
+  └── <agent>/
+      ├── .meta                     Metadata (managed by xnullclaw)
+      ├── config.json               Nullclaw config (edit this)
+      └── data/                     All agent data (persistent)
+          ├── .nullclaw/            Secrets, auth, cron (auto-managed)
+          └── workspace/            Memory, files (auto-managed)
+
+DOCKER HARDENING (applied automatically)
+  - Read-only root filesystem
+  - All Linux capabilities dropped
+  - no-new-privileges flag
+  - No ports exposed by default
+  - /tmp as noexec tmpfs
+  - Runs as host user (no root in container)
+  - Config mounted read-only
+
+TELEGRAM
+  Each agent MUST have its own Telegram bot token.
+  Telegram uses outbound long-polling — no inbound ports needed.
+  Create a separate bot via @BotFather for each agent.
+
+ENVIRONMENT
+  XNULLCLAW_HOME    Base directory   (default: ~/.xnullclaw)
+  XNULLCLAW_IMAGE   Docker image     (default: nullclaw:latest)
+EOF
+}
+
+# ── Main router ──────────────────────────────────────────────────
+main() {
+    [[ $# -ge 1 ]] || { show_help; exit 0; }
+
+    case "$1" in
+        help|--help|-h)
+            show_help
+            ;;
+        list|ls)
+            cmd_list
+            ;;
+        image)
+            [[ $# -ge 2 ]] || die "Usage: xnullclaw image <build|update|status>"
+            case "$2" in
+                build)  cmd_image_build ;;
+                update) cmd_image_update ;;
+                status) cmd_image_status ;;
+                *)      die "Unknown: image $2. Try: build, update, status" ;;
+            esac
+            ;;
+        *)
+            local agent="$1"
+            [[ $# -ge 2 ]] || die "Usage: xnullclaw <agent> <command>. Run 'xnullclaw help' for details."
+            local cmd="$2"
+            shift 2
+
+            case "$cmd" in
+                setup)    cmd_setup "$agent" ;;
+                start)    cmd_start "$agent" "$@" ;;
+                stop)     cmd_stop "$agent" ;;
+                restart)  cmd_restart "$agent" "$@" ;;
+                status)   cmd_status "$agent" ;;
+                logs)     cmd_logs "$agent" "$@" ;;
+                cli)      cmd_cli "$agent" "$@" ;;
+                clone)
+                    [[ $# -ge 1 ]] || die "Usage: xnullclaw <agent> clone <source> [--with-data]"
+                    cmd_clone "$agent" "$@"
+                    ;;
+                destroy)  cmd_destroy "$agent" ;;
+                *)        die "Unknown command: ${cmd}. Run 'xnullclaw help' for details." ;;
+            esac
+            ;;
+    esac
+}
+
+main "$@"
