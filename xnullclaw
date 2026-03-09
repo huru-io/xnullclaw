@@ -17,6 +17,14 @@ CONTAINER_PREFIX="xnc"
 REPO_URL="https://github.com/nullclaw/nullclaw.git"
 BUILD_DIR="$XNULLCLAW_HOME/.tmp/nullclaw"
 
+# ── Emoji identity pool ─────────────────────────────────────────
+EMOJI_POOL=(
+    "🍎" "🍊" "🍋" "🍇" "🍓" "🫐" "🍑" "🥝" "🍒" "🥭"
+    "🌻" "🌸" "🌵" "🍀" "🌺" "🪻" "🌷" "🪷" "🌿" "🍄"
+    "🐙" "🦊" "🐝" "🦉" "🐋" "🦎" "🐺" "🦜" "🐬" "🦋"
+    "💎" "🔮" "⭐" "🌙" "❄️" "🔥" "🌈" "⚡" "🪐" "🌊"
+)
+
 # ── Helpers ──────────────────────────────────────────────────────
 die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 info() { printf '\033[34m::\033[0m %s\n' "$*"; }
@@ -68,6 +76,29 @@ next_port() {
         $used || { echo "$port"; return; }
         ((port++))
     done
+}
+
+next_emoji() {
+    # Collect all emojis currently assigned to existing agents
+    local -A used_emojis
+    local metas
+    metas=$(compgen -G "$XNULLCLAW_HOME"/*/.meta 2>/dev/null || true)
+    for meta in $metas; do
+        local e
+        e=$(grep "^EMOJI=" "$meta" 2>/dev/null | head -1 | cut -d= -f2- || true)
+        [[ -n "$e" ]] && used_emojis["$e"]=1
+    done
+
+    # Find first unused emoji from the pool
+    for emoji in "${EMOJI_POOL[@]}"; do
+        if [[ -z "${used_emojis[$emoji]+x}" ]]; then
+            echo "$emoji"
+            return
+        fi
+    done
+
+    # All 40 emojis taken — fallback
+    echo "🤖"
 }
 
 ensure_image() {
@@ -252,7 +283,10 @@ cmd_setup() {
     generate_config > "${dir}/config.json"
     write_meta "$agent" "CREATED" "$(date -Iseconds)"
 
-    ok "Agent '${agent}' created."
+    local emoji; emoji=$(next_emoji)
+    write_meta "$agent" "EMOJI" "$emoji"
+
+    ok "Agent '${agent}' created. ${emoji}"
     cat <<EOF
 
   Directory: ${dir}/
@@ -301,8 +335,9 @@ cmd_start() {
     local dir;   dir="$(agent_dir "$agent")"
     local cname; cname=$(container_name "$agent")
 
-    # Parse optional --port flag
+    # Parse optional --port and --mux flags
     local expose_port=""
+    local mux_mode=false
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --port)
@@ -311,6 +346,11 @@ cmd_start() {
                 else
                     expose_port=$(next_port); shift
                 fi
+                ;;
+            --mux)
+                mux_mode=true
+                expose_port=$(next_port)
+                shift
                 ;;
             *) die "Unknown flag: $1" ;;
         esac
@@ -339,8 +379,16 @@ cmd_start() {
             -e "NULLCLAW_GATEWAY_HOST=0.0.0.0"
             -e "NULLCLAW_ALLOW_PUBLIC_BIND=true"
         )
+        if $mux_mode; then
+            run_args+=(
+                -e "NULLCLAW_REQUIRE_PAIRING=false"
+            )
+            write_meta "$agent" "MUX_MODE" "true"
+            info "Starting agent '${agent}' in mux mode (port ${expose_port})..."
+        else
+            info "Starting agent '${agent}' (port ${expose_port})..."
+        fi
         write_meta "$agent" "HOST_PORT" "$expose_port"
-        info "Starting agent '${agent}' (port ${expose_port})..."
     else
         info "Starting agent '${agent}' (no port exposed)..."
     fi
@@ -394,8 +442,13 @@ cmd_status() {
     agent_exists "$agent" || die "Agent '${agent}' not found."
 
     local dir; dir="$(agent_dir "$agent")"
+    local emoji; emoji=$(read_meta "$agent" "EMOJI" "")
 
-    echo "Agent:     ${agent}"
+    if [[ -n "$emoji" ]]; then
+        echo "Agent:     ${emoji}  ${agent}"
+    else
+        echo "Agent:     ${agent}"
+    fi
     echo "Directory: ${dir}"
 
     if is_running "$agent"; then
@@ -464,13 +517,16 @@ cmd_clone() {
     write_meta "$agent" "CREATED" "$(date -Iseconds)"
     write_meta "$agent" "CLONED_FROM" "$source"
 
+    local emoji; emoji=$(next_emoji)
+    write_meta "$agent" "EMOJI" "$emoji"
+
     if [[ "$with_data" == "--with-data" ]]; then
         info "Copying data (memory, workspace, secrets)..."
         cp -a "${src_dir}/data/." "${dst_dir}/data/"
         info "Data copied."
     fi
 
-    ok "Agent '${agent}' cloned from '${source}'."
+    ok "Agent '${agent}' cloned from '${source}'. ${emoji}"
     cat <<EOF
 
   Directory: ${dst_dir}/
@@ -515,7 +571,7 @@ cmd_list() {
     fi
 
     local found=false
-    printf "\033[1m%-20s %-10s %-12s %s\033[0m\n" "AGENT" "STATUS" "CREATED" "CLONED_FROM"
+    printf "\033[1m%-4s %-18s %-10s %-12s %s\033[0m\n" "" "AGENT" "STATUS" "CREATED" "CLONED_FROM"
 
     for dir in "$XNULLCLAW_HOME"/*/; do
         [[ -d "$dir" ]] || continue
@@ -524,10 +580,11 @@ cmd_list() {
         [[ -f "${dir}/config.json" ]] || continue
 
         found=true
-        local created cloned status
+        local created cloned status emoji
 
         created=$(read_meta "$name" "CREATED" "-")
         cloned=$(read_meta "$name" "CLONED_FROM" "")
+        emoji=$(read_meta "$name" "EMOJI" " ")
 
         if is_running "$name"; then
             status="\033[32mrunning\033[0m"
@@ -535,11 +592,733 @@ cmd_list() {
             status="stopped"
         fi
 
-        printf "%-20s %-10b %-12s %s\n" \
-            "$name" "$status" "${created%%T*}" "$cloned"
+        printf "%-4s %-18s %-10b %-12s %s\n" \
+            "$emoji" "$name" "$status" "${created%%T*}" "$cloned"
     done
 
     $found || echo "No agents yet. Create one: xnullclaw <name> setup"
+}
+
+# ── Agent: send ──────────────────────────────────────────────────
+cmd_send() {
+    local agent="$1"
+    agent_exists "$agent" || die "Agent '${agent}' not found."
+    is_running "$agent"   || die "Agent '${agent}' is not running."
+
+    local port; port=$(read_meta "$agent" "HOST_PORT" "")
+    [[ -n "$port" ]] || die "Agent '${agent}' has no exposed port. Start with --port or --mux."
+
+    local message
+    message=$(cat)
+    [[ -n "$message" ]] || die "No message on stdin. Usage: echo 'hello' | xnullclaw ${agent} send"
+
+    local token; token=$(read_meta "$agent" "AUTH_TOKEN" "")
+    local -a curl_args=(
+        curl -s -S --max-time 600 --connect-timeout 5
+        -X POST "http://127.0.0.1:${port}/webhook"
+        -H "Content-Type: application/json"
+    )
+    [[ -n "$token" ]] && curl_args+=(-H "Authorization: Bearer ${token}")
+
+    local payload
+    payload=$(python3 -c "import json,sys; print(json.dumps({'message': sys.stdin.read()}))" <<< "$message")
+    curl_args+=(-d "$payload")
+
+    "${curl_args[@]}"
+}
+
+# ── Global: send-all ────────────────────────────────────────────
+cmd_send_all() {
+    local message
+    message=$(cat)
+    [[ -n "$message" ]] || die "No message on stdin. Usage: echo 'hello' | xnullclaw send-all"
+
+    local -a agents=()
+    for dir in "$XNULLCLAW_HOME"/*/; do
+        [[ -d "$dir" ]] || continue
+        local name; name=$(basename "$dir")
+        [[ "$name" == ".tmp" || "$name" == ".mux" ]] && continue
+        [[ -f "${dir}/config.json" ]] || continue
+        is_running "$name" && agents+=("$name")
+    done
+
+    [[ ${#agents[@]} -gt 0 ]] || die "No running agents found."
+
+    local tmpdir; tmpdir=$(mktemp -d)
+    trap "rm -rf '$tmpdir'" RETURN
+
+    for agent in "${agents[@]}"; do
+        (
+            local resp
+            resp=$(echo "$message" | cmd_send "$agent" 2>/dev/null || echo '{"error":"failed"}')
+            echo "$resp" > "${tmpdir}/${agent}"
+        ) &
+    done
+    wait
+
+    # Build JSON object from results
+    python3 -c "
+import json, sys, os
+results = {}
+tmpdir = sys.argv[1]
+for name in sorted(os.listdir(tmpdir)):
+    with open(os.path.join(tmpdir, name)) as f:
+        content = f.read().strip()
+    try:
+        results[name] = json.loads(content)
+    except (json.JSONDecodeError, ValueError):
+        results[name] = content
+print(json.dumps(results, indent=2))
+" "$tmpdir"
+}
+
+# ── Global: send-some ───────────────────────────────────────────
+cmd_send_some() {
+    local agent_list="$1"
+    [[ -n "$agent_list" ]] || die "Usage: echo 'msg' | xnullclaw send-some alice,bob"
+
+    local message
+    message=$(cat)
+    [[ -n "$message" ]] || die "No message on stdin."
+
+    IFS=',' read -ra agents <<< "$agent_list"
+    [[ ${#agents[@]} -gt 0 ]] || die "No agents specified."
+
+    # Validate all agents first
+    for agent in "${agents[@]}"; do
+        agent_exists "$agent" || die "Agent '${agent}' not found."
+        is_running "$agent"   || die "Agent '${agent}' is not running."
+    done
+
+    local tmpdir; tmpdir=$(mktemp -d)
+    trap "rm -rf '$tmpdir'" RETURN
+
+    for agent in "${agents[@]}"; do
+        (
+            local resp
+            resp=$(echo "$message" | cmd_send "$agent" 2>/dev/null || echo '{"error":"failed"}')
+            echo "$resp" > "${tmpdir}/${agent}"
+        ) &
+    done
+    wait
+
+    python3 -c "
+import json, sys, os
+results = {}
+tmpdir = sys.argv[1]
+for name in sorted(os.listdir(tmpdir)):
+    with open(os.path.join(tmpdir, name)) as f:
+        content = f.read().strip()
+    try:
+        results[name] = json.loads(content)
+    except (json.JSONDecodeError, ValueError):
+        results[name] = content
+print(json.dumps(results, indent=2))
+" "$tmpdir"
+}
+
+# ── Global: running ─────────────────────────────────────────────
+cmd_running() {
+    local json_mode=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json) json_mode=true; shift ;;
+            *) die "Unknown flag: $1" ;;
+        esac
+    done
+
+    local -a running_agents=()
+    for dir in "$XNULLCLAW_HOME"/*/; do
+        [[ -d "$dir" ]] || continue
+        local name; name=$(basename "$dir")
+        [[ "$name" == ".tmp" || "$name" == ".mux" ]] && continue
+        [[ -f "${dir}/config.json" ]] || continue
+        is_running "$name" && running_agents+=("$name")
+    done
+
+    if [[ ${#running_agents[@]} -eq 0 ]]; then
+        if $json_mode; then
+            echo "[]"
+        else
+            echo "No running agents."
+        fi
+        return
+    fi
+
+    if $json_mode; then
+        python3 -c "
+import json, subprocess, sys, os
+from datetime import datetime, timezone
+
+home = os.environ.get('XNULLCLAW_HOME', os.path.expanduser('~/.xnullclaw'))
+agents = sys.argv[1:]
+results = []
+for name in agents:
+    cname = 'xnc-' + name
+    entry = {'name': name, 'status': 'running'}
+
+    # Port
+    try:
+        port_lines = subprocess.check_output(
+            ['docker', 'port', cname], stderr=subprocess.DEVNULL, text=True
+        ).strip()
+        if port_lines:
+            port = int(port_lines.split(':')[-1])
+            entry['port'] = port
+    except Exception:
+        pass
+
+    # Uptime
+    try:
+        started = subprocess.check_output(
+            ['docker', 'inspect', '--format', '{{.State.StartedAt}}', cname],
+            stderr=subprocess.DEVNULL, text=True
+        ).strip()
+        entry['started'] = started
+        start_dt = datetime.fromisoformat(started.replace('Z', '+00:00'))
+        now = datetime.now(timezone.utc)
+        delta = now - start_dt
+        hours, rem = divmod(int(delta.total_seconds()), 3600)
+        mins = rem // 60
+        entry['uptime'] = f'{hours}h{mins:02d}m' if hours > 0 else f'{mins}m'
+    except Exception:
+        entry['uptime'] = '?'
+
+    # Restart count
+    try:
+        restarts = subprocess.check_output(
+            ['docker', 'inspect', '--format', '{{.RestartCount}}', cname],
+            stderr=subprocess.DEVNULL, text=True
+        ).strip()
+        entry['restarts'] = int(restarts)
+    except Exception:
+        entry['restarts'] = 0
+
+    # Emoji from .meta
+    try:
+        meta_path = os.path.join(home, name, '.meta')
+        with open(meta_path) as f:
+            for line in f:
+                if line.startswith('EMOJI='):
+                    entry['emoji'] = line.strip().split('=', 1)[1]
+                    break
+    except Exception:
+        pass
+
+    results.append(entry)
+
+print(json.dumps(results, indent=2))
+" "${running_agents[@]}"
+    else
+        printf "\033[1m%-20s %-8s %-8s %-10s %s\033[0m\n" "AGENT" "PORT" "UPTIME" "RESTARTS" "EMOJI"
+        for name in "${running_agents[@]}"; do
+            local cname; cname=$(container_name "$name")
+            local port uptime restarts emoji
+
+            port=$(docker port "$cname" 2>/dev/null | head -1 | awk -F: '{print $NF}' || true)
+            [[ -z "$port" ]] && port="-"
+
+            local started_at
+            started_at=$(docker inspect "$cname" --format '{{.State.StartedAt}}' 2>/dev/null || echo "")
+            if [[ -n "$started_at" ]]; then
+                local start_epoch now_epoch diff_s hours mins
+                start_epoch=$(date -d "$started_at" +%s 2>/dev/null || echo 0)
+                now_epoch=$(date +%s)
+                diff_s=$((now_epoch - start_epoch))
+                hours=$((diff_s / 3600))
+                mins=$(( (diff_s % 3600) / 60 ))
+                if [[ $hours -gt 0 ]]; then
+                    uptime="${hours}h$(printf '%02d' "$mins")m"
+                else
+                    uptime="${mins}m"
+                fi
+            else
+                uptime="?"
+            fi
+
+            restarts=$(docker inspect "$cname" --format '{{.RestartCount}}' 2>/dev/null || echo "0")
+            emoji=$(read_meta "$name" "EMOJI" "")
+
+            printf "%-20s %-8s %-8s %-10s %s\n" "$name" "$port" "$uptime" "$restarts" "$emoji"
+        done
+    fi
+}
+
+# ── Global: list --json ─────────────────────────────────────────
+cmd_list_json() {
+    if [[ ! -d "$XNULLCLAW_HOME" ]]; then
+        echo "[]"
+        return
+    fi
+
+    python3 -c "
+import json, subprocess, sys, os
+
+home = os.environ.get('XNULLCLAW_HOME', os.path.expanduser('~/.xnullclaw'))
+results = []
+
+for name in sorted(os.listdir(home)):
+    agent_dir = os.path.join(home, name)
+    if name.startswith('.') or not os.path.isdir(agent_dir):
+        continue
+    config_path = os.path.join(agent_dir, 'config.json')
+    if not os.path.isfile(config_path):
+        continue
+
+    entry = {'name': name}
+
+    # Status
+    try:
+        out = subprocess.check_output(
+            ['docker', 'ps', '-q', '-f', 'name=^xnc-' + name + '\$'],
+            stderr=subprocess.DEVNULL, text=True
+        ).strip()
+        entry['status'] = 'running' if out else 'stopped'
+    except Exception:
+        entry['status'] = 'stopped'
+
+    # Read .meta
+    meta_path = os.path.join(agent_dir, '.meta')
+    meta = {}
+    if os.path.isfile(meta_path):
+        with open(meta_path) as f:
+            for line in f:
+                line = line.strip()
+                if '=' in line:
+                    k, v = line.split('=', 1)
+                    meta[k] = v
+
+    entry['created'] = meta.get('CREATED', '')
+    if 'EMOJI' in meta:
+        entry['emoji'] = meta['EMOJI']
+
+    # Read model from config
+    try:
+        with open(config_path) as f:
+            cfg = json.load(f)
+        model = cfg.get('agents', {}).get('defaults', {}).get('model', {}).get('primary', '')
+        entry['model'] = model
+    except Exception:
+        entry['model'] = ''
+
+    results.append(entry)
+
+print(json.dumps(results, indent=2))
+"
+}
+
+# ── Agent: status --json ────────────────────────────────────────
+cmd_status_json() {
+    local agent="$1"
+    agent_exists "$agent" || die "Agent '${agent}' not found."
+
+    local dir; dir="$(agent_dir "$agent")"
+    local cname; cname=$(container_name "$agent")
+
+    if is_running "$agent"; then
+        python3 -c "
+import json, subprocess, sys, os
+from datetime import datetime, timezone
+
+agent = sys.argv[1]
+cname = sys.argv[2]
+agent_dir = sys.argv[3]
+result = {'status': 'running'}
+
+# Started at + uptime
+try:
+    started = subprocess.check_output(
+        ['docker', 'inspect', '--format', '{{.State.StartedAt}}', cname],
+        stderr=subprocess.DEVNULL, text=True
+    ).strip()
+    result['started'] = started
+    start_dt = datetime.fromisoformat(started.replace('Z', '+00:00'))
+    now = datetime.now(timezone.utc)
+    delta = now - start_dt
+    hours, rem = divmod(int(delta.total_seconds()), 3600)
+    mins = rem // 60
+    result['uptime'] = f'{hours}h{mins:02d}m' if hours > 0 else f'{mins}m'
+except Exception:
+    result['uptime'] = '?'
+
+# Restart count
+try:
+    restarts = subprocess.check_output(
+        ['docker', 'inspect', '--format', '{{.RestartCount}}', cname],
+        stderr=subprocess.DEVNULL, text=True
+    ).strip()
+    result['restarts'] = int(restarts)
+except Exception:
+    result['restarts'] = 0
+
+# Port
+try:
+    port_out = subprocess.check_output(
+        ['docker', 'port', cname], stderr=subprocess.DEVNULL, text=True
+    ).strip()
+    if port_out:
+        result['port'] = int(port_out.split(':')[-1])
+except Exception:
+    pass
+
+# Mux mode from .meta
+meta_path = os.path.join(agent_dir, '.meta')
+meta = {}
+if os.path.isfile(meta_path):
+    with open(meta_path) as f:
+        for line in f:
+            line = line.strip()
+            if '=' in line:
+                k, v = line.split('=', 1)
+                meta[k] = v
+
+result['mux_mode'] = meta.get('MUX_MODE', 'false').lower() == 'true'
+
+print(json.dumps(result, indent=2))
+" "$agent" "$cname" "$dir"
+    else
+        echo '{"status":"stopped"}'
+    fi
+}
+
+# ── Agent: config get ───────────────────────────────────────────
+cmd_config_get() {
+    local agent="$1"
+    local key="${2:-}"
+    agent_exists "$agent" || die "Agent '${agent}' not found."
+
+    local config_file; config_file="$(agent_dir "$agent")/config.json"
+
+    if [[ -z "$key" ]]; then
+        cat "$config_file"
+        return
+    fi
+
+    python3 -c "
+import json, sys
+
+key = sys.argv[2]
+with open(sys.argv[1]) as f:
+    cfg = json.load(f)
+
+key_map = {
+    'model':                'agents.defaults.model.primary',
+    'temperature':          'default_temperature',
+    'autonomy':             'autonomy.level',
+    'system_prompt':        'agents.defaults.system_prompt',
+    'max_actions_per_hour': 'autonomy.max_actions_per_hour',
+    'memory_backend':       'memory.backend',
+    'cost_enabled':         'cost.enabled',
+    'cost_daily_limit':     'cost.daily_limit_usd',
+    'cost_monthly_limit':   'cost.monthly_limit_usd',
+}
+
+if key not in key_map:
+    supported = ', '.join(sorted(key_map.keys()))
+    print(f'error: unknown key \"{key}\". Supported: {supported}', file=sys.stderr)
+    sys.exit(1)
+
+path = key_map[key]
+parts = path.split('.')
+obj = cfg
+for p in parts:
+    if isinstance(obj, dict) and p in obj:
+        obj = obj[p]
+    else:
+        print('(not set)', file=sys.stderr)
+        sys.exit(0)
+
+if isinstance(obj, str):
+    print(obj)
+else:
+    print(json.dumps(obj))
+" "$config_file" "$key"
+}
+
+# ── Agent: config set ───────────────────────────────────────────
+cmd_config_set() {
+    local agent="$1" key="$2" value="$3"
+    agent_exists "$agent" || die "Agent '${agent}' not found."
+
+    local config_file; config_file="$(agent_dir "$agent")/config.json"
+
+    python3 -c "
+import json, sys
+
+config_path = sys.argv[1]
+key = sys.argv[2]
+value = sys.argv[3]
+
+key_map = {
+    'model':                ('agents.defaults.model.primary',   'string'),
+    'temperature':          ('default_temperature',             'float'),
+    'autonomy':             ('autonomy.level',                  'string'),
+    'system_prompt':        ('agents.defaults.system_prompt',   'string'),
+    'max_actions_per_hour': ('autonomy.max_actions_per_hour',   'int'),
+    'memory_backend':       ('memory.backend',                  'string'),
+    'cost_enabled':         ('cost.enabled',                    'bool'),
+    'cost_daily_limit':     ('cost.daily_limit_usd',            'float'),
+    'cost_monthly_limit':   ('cost.monthly_limit_usd',          'float'),
+}
+
+if key not in key_map:
+    supported = ', '.join(sorted(key_map.keys()))
+    print(f'error: unknown key \"{key}\". Supported: {supported}', file=sys.stderr)
+    sys.exit(1)
+
+json_path, val_type = key_map[key]
+
+# Cast value
+if val_type == 'float':
+    value = float(value)
+elif val_type == 'int':
+    value = int(value)
+elif val_type == 'bool':
+    value = value.lower() in ('true', '1', 'yes')
+
+with open(config_path) as f:
+    cfg = json.load(f)
+
+# Navigate and set nested key
+parts = json_path.split('.')
+obj = cfg
+for p in parts[:-1]:
+    if p not in obj:
+        obj[p] = {}
+    obj = obj[p]
+obj[parts[-1]] = value
+
+with open(config_path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+    f.write('\n')
+
+print(f'{key} = {json.dumps(value)}')
+" "$config_file" "$key" "$value"
+}
+
+# ── Agent: costs ────────────────────────────────────────────────
+cmd_costs() {
+    local agent="$1"; shift
+    agent_exists "$agent" || die "Agent '${agent}' not found."
+
+    local json_mode=false
+    local period="all"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --json)  json_mode=true; shift ;;
+            --today) period="today"; shift ;;
+            --month) period="month"; shift ;;
+            *) die "Unknown flag: $1" ;;
+        esac
+    done
+
+    local costs_file; costs_file="$(agent_dir "$agent")/data/.nullclaw/state/costs.jsonl"
+
+    if [[ ! -f "$costs_file" ]]; then
+        if $json_mode; then
+            echo '{"total_usd":0,"requests":0,"period":"'"$period"'"}'
+        else
+            echo "No cost data for agent '${agent}'."
+        fi
+        return
+    fi
+
+    python3 -c "
+import json, sys
+from datetime import datetime, date
+
+costs_file = sys.argv[1]
+period = sys.argv[2]
+json_mode = sys.argv[3] == 'true'
+
+today = date.today()
+entries = []
+with open(costs_file) as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+            entries.append(entry)
+        except json.JSONDecodeError:
+            continue
+
+# Filter by period
+filtered = []
+for e in entries:
+    ts = e.get('timestamp', e.get('ts', ''))
+    try:
+        dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+        entry_date = dt.date()
+    except Exception:
+        entry_date = None
+
+    if period == 'today' and entry_date != today:
+        continue
+    if period == 'month' and (entry_date is None or entry_date.year != today.year or entry_date.month != today.month):
+        continue
+    filtered.append(e)
+
+total_usd = sum(e.get('cost_usd', e.get('cost', 0)) for e in filtered)
+total_input = sum(e.get('input_tokens', 0) for e in filtered)
+total_output = sum(e.get('output_tokens', 0) for e in filtered)
+count = len(filtered)
+
+if json_mode:
+    result = {
+        'total_usd': round(total_usd, 4),
+        'requests': count,
+        'input_tokens': total_input,
+        'output_tokens': total_output,
+        'period': period,
+    }
+    print(json.dumps(result, indent=2))
+else:
+    period_label = {'all': 'All time', 'today': 'Today', 'month': 'This month'}[period]
+    print(f'Cost summary ({period_label}):')
+    print(f'  Requests:      {count}')
+    print(f'  Input tokens:  {total_input:,}')
+    print(f'  Output tokens: {total_output:,}')
+    print(f'  Total cost:    \${total_usd:.4f}')
+" "$costs_file" "$period" "$json_mode"
+}
+
+# ── Agent: drain ────────────────────────────────────────────────
+cmd_drain() {
+    local agent="$1"
+    agent_exists "$agent" || die "Agent '${agent}' not found."
+    is_running "$agent"   || die "Agent '${agent}' is not running."
+
+    local cname; cname=$(container_name "$agent")
+    local last_drain; last_drain=$(read_meta "$agent" "LAST_DRAIN" "")
+
+    local -a log_args=(docker logs)
+    if [[ -n "$last_drain" ]]; then
+        log_args+=(--since "$last_drain")
+    fi
+    log_args+=("$cname")
+
+    # Update drain timestamp before reading (use current time)
+    write_meta "$agent" "LAST_DRAIN" "$(date -Iseconds)"
+
+    # Get logs and filter for structured output events
+    "${log_args[@]}" 2>&1 | grep -E '^\[EVENT\]|^\{' || true
+}
+
+# ── Agent: watch ────────────────────────────────────────────────
+cmd_watch() {
+    local agent="$1"
+    agent_exists "$agent" || die "Agent '${agent}' not found."
+    is_running "$agent"   || die "Agent '${agent}' is not running."
+
+    local cname; cname=$(container_name "$agent")
+    local since; since=$(date -Iseconds)
+
+    exec docker logs --follow --since "$since" "$cname" 2>&1
+}
+
+# ── Mux management ──────────────────────────────────────────────
+cmd_mux() {
+    local subcmd="${1:-}"
+    [[ -n "$subcmd" ]] || die "Usage: xnullclaw mux <start|stop|status|logs>"
+    shift
+
+    local mux_dir="$XNULLCLAW_HOME/.mux"
+    local mux_pid_file="$mux_dir/mux.pid"
+    local mux_log_dir="$mux_dir/logs"
+    local mux_log_file="$mux_log_dir/mux.log"
+
+    case "$subcmd" in
+        start)
+            mkdir -p "$mux_dir" "$mux_log_dir"
+
+            # Check if already running
+            if [[ -f "$mux_pid_file" ]]; then
+                local pid; pid=$(cat "$mux_pid_file")
+                if kill -0 "$pid" 2>/dev/null; then
+                    die "Mux is already running (PID ${pid})."
+                fi
+                # Stale PID file
+                rm -f "$mux_pid_file"
+            fi
+
+            local mux_bin="${XNULLCLAW_MUX_BIN:-xnc-mux}"
+            command -v "$mux_bin" &>/dev/null || die "Mux binary '${mux_bin}' not found in PATH."
+
+            info "Starting mux..."
+            nohup "$mux_bin" >> "$mux_log_file" 2>&1 &
+            local pid=$!
+            echo "$pid" > "$mux_pid_file"
+            ok "Mux started (PID ${pid}). Log: ${mux_log_file}"
+            ;;
+
+        stop)
+            if [[ ! -f "$mux_pid_file" ]]; then
+                die "Mux is not running (no PID file)."
+            fi
+            local pid; pid=$(cat "$mux_pid_file")
+            if kill -0 "$pid" 2>/dev/null; then
+                info "Stopping mux (PID ${pid})..."
+                kill -TERM "$pid"
+                # Wait up to 5 seconds for graceful shutdown
+                local i=0
+                while kill -0 "$pid" 2>/dev/null && [[ $i -lt 10 ]]; do
+                    sleep 0.5
+                    ((i++))
+                done
+                if kill -0 "$pid" 2>/dev/null; then
+                    warn "Mux did not stop gracefully, sending SIGKILL..."
+                    kill -KILL "$pid" 2>/dev/null || true
+                fi
+                rm -f "$mux_pid_file"
+                ok "Mux stopped."
+            else
+                rm -f "$mux_pid_file"
+                warn "Mux was not running (stale PID). Cleaned up."
+            fi
+            ;;
+
+        status)
+            if [[ -f "$mux_pid_file" ]]; then
+                local pid; pid=$(cat "$mux_pid_file")
+                if kill -0 "$pid" 2>/dev/null; then
+                    echo "Mux:    running (PID ${pid})"
+                    echo "Log:    ${mux_log_file}"
+                    # Show uptime from PID file modification time
+                    local started
+                    started=$(stat -c '%Y' "$mux_pid_file" 2>/dev/null || echo "")
+                    if [[ -n "$started" ]]; then
+                        local now diff_s hours mins
+                        now=$(date +%s)
+                        diff_s=$((now - started))
+                        hours=$((diff_s / 3600))
+                        mins=$(( (diff_s % 3600) / 60 ))
+                        if [[ $hours -gt 0 ]]; then
+                            echo "Uptime: ${hours}h$(printf '%02d' "$mins")m"
+                        else
+                            echo "Uptime: ${mins}m"
+                        fi
+                    fi
+                else
+                    echo "Mux:    not running (stale PID file)"
+                    rm -f "$mux_pid_file"
+                fi
+            else
+                echo "Mux:    not running"
+            fi
+            ;;
+
+        logs)
+            if [[ -f "$mux_log_file" ]]; then
+                tail "$@" "$mux_log_file"
+            else
+                echo "No mux log file found at ${mux_log_file}."
+            fi
+            ;;
+
+        *) die "Unknown mux command: ${subcmd}. Try: start, stop, status, logs" ;;
+    esac
 }
 
 # ── Help ─────────────────────────────────────────────────────────
@@ -555,36 +1334,76 @@ AGENT COMMANDS
   setup                    Create agent with default config
   start                    Start always-on daemon (Telegram, no port exposed)
   start --port [PORT]      Start with HTTP gateway exposed on localhost
+  start --mux              Start in mux mode (auto-port, no pairing)
   stop                     Stop agent
   restart                  Restart agent
-  status                   Show agent info
+  status [--json]          Show agent info (optionally as JSON)
   logs [-f] [--tail N]     View/follow container logs
   cli [args...]            Interactive local chat (or -m "msg" for one-shot)
   clone <source>           Clone config from another agent (fresh data)
   clone <source> --with-data   Clone config AND memory/data
   destroy                  Permanently delete agent + all data
+  send                     Send message from stdin to agent webhook
+  config get [key]         Read agent config (full dump or specific key)
+  config set <key> <val>   Set agent config value (see CONFIG KEYS)
+  costs [--json] [--today|--month]  View agent cost summary
+  drain                    Return buffered unsolicited output since last drain
+  watch                    Stream agent output in real-time
 
 GLOBAL COMMANDS
-  list                     List all agents and their status
+  list [--json]            List all agents and their status
+  running [--json]         List only running agents with ports and uptime
+  send-all                 Send stdin message to ALL running agents (parallel)
+  send-some <a,b,...>      Send stdin message to named agents (parallel)
+  mux start                Start the mux orchestrator process
+  mux stop                 Stop the mux process
+  mux status               Show mux process status
+  mux logs [-f] [--tail N] View mux process logs
   image build              Build Docker image from GitHub
   image update             Pull latest source + rebuild (no cache)
   image status             Show image info
   help                     Show this help
 
+CONFIG KEYS (for 'config set' / 'config get')
+  model                    agents.defaults.model.primary (string)
+  temperature              default_temperature (float)
+  autonomy                 autonomy.level (string)
+  system_prompt            agents.defaults.system_prompt (string)
+  max_actions_per_hour     autonomy.max_actions_per_hour (int)
+  memory_backend           memory.backend (string)
+  cost_enabled             cost.enabled (bool)
+  cost_daily_limit         cost.daily_limit_usd (float)
+  cost_monthly_limit       cost.monthly_limit_usd (float)
+
 EXAMPLES
   xnullclaw alice setup                  Create agent 'alice'
   xnullclaw alice start                  Always-on Telegram agent
   xnullclaw alice start --port 3001      Also expose HTTP gateway
+  xnullclaw alice start --mux            Start for mux orchestration
   xnullclaw alice cli                    Interactive chat session
   xnullclaw alice cli -m "Hello"         One-shot message
   xnullclaw alice logs -f                Follow live logs
   xnullclaw bob clone alice              New agent from alice's config
   xnullclaw bob clone alice --with-data  Clone with memory/history
   xnullclaw list                         Show all agents
+  xnullclaw list --json                  Show all agents as JSON
+  xnullclaw running --json               Running agents with ports
+  echo "hello" | xnullclaw alice send    Send message to agent
+  echo "stop" | xnullclaw send-all       Broadcast to all agents
+  echo "hi" | xnullclaw send-some a,b    Send to specific agents
+  xnullclaw alice config get model       Read agent's model
+  xnullclaw alice config set model "openai/gpt-4o"
+  xnullclaw alice costs --today          Today's costs
+  xnullclaw alice drain                  Get buffered output
+  xnullclaw alice watch                  Stream live output
+  xnullclaw mux start                    Start mux orchestrator
 
 FILE LAYOUT
   ~/.xnullclaw/
   ├── .tmp/nullclaw/                Git clone for building image
+  ├── .mux/                         Mux process data
+  │   ├── mux.pid                   Mux PID file
+  │   └── logs/mux.log              Mux process log
   └── <agent>/
       ├── .meta                     Metadata (managed by xnullclaw)
       ├── config.json               Nullclaw config (edit this)
@@ -607,8 +1426,9 @@ TELEGRAM
   Create a separate bot via @BotFather for each agent.
 
 ENVIRONMENT
-  XNULLCLAW_HOME    Base directory   (default: ~/.xnullclaw)
-  XNULLCLAW_IMAGE   Docker image     (default: nullclaw:latest)
+  XNULLCLAW_HOME    Base directory    (default: ~/.xnullclaw)
+  XNULLCLAW_IMAGE   Docker image      (default: nullclaw:latest)
+  XNULLCLAW_MUX_BIN Mux binary name   (default: xnc-mux)
 EOF
 }
 
@@ -621,7 +1441,29 @@ main() {
             show_help
             ;;
         list|ls)
-            cmd_list
+            shift
+            if [[ "${1:-}" == "--json" ]]; then
+                cmd_list_json
+            else
+                cmd_list
+            fi
+            ;;
+        running)
+            shift
+            cmd_running "$@"
+            ;;
+        send-all)
+            shift
+            cmd_send_all
+            ;;
+        send-some)
+            shift
+            [[ $# -ge 1 ]] || die "Usage: echo 'msg' | xnullclaw send-some alice,bob"
+            cmd_send_some "$1"
+            ;;
+        mux)
+            shift
+            cmd_mux "$@"
             ;;
         image)
             [[ $# -ge 2 ]] || die "Usage: xnullclaw image <build|update|status>"
@@ -643,7 +1485,13 @@ main() {
                 start)    cmd_start "$agent" "$@" ;;
                 stop)     cmd_stop "$agent" ;;
                 restart)  cmd_restart "$agent" "$@" ;;
-                status)   cmd_status "$agent" ;;
+                status)
+                    if [[ "${1:-}" == "--json" ]]; then
+                        cmd_status_json "$agent"
+                    else
+                        cmd_status "$agent"
+                    fi
+                    ;;
                 logs)     cmd_logs "$agent" "$@" ;;
                 cli)      cmd_cli "$agent" "$@" ;;
                 clone)
@@ -651,6 +1499,22 @@ main() {
                     cmd_clone "$agent" "$@"
                     ;;
                 destroy)  cmd_destroy "$agent" ;;
+                send)     cmd_send "$agent" ;;
+                config)
+                    local config_cmd="${1:-}"
+                    shift || true
+                    case "$config_cmd" in
+                        get)  cmd_config_get "$agent" "${1:-}" ;;
+                        set)
+                            [[ $# -ge 2 ]] || die "Usage: xnullclaw ${agent} config set <key> <value>"
+                            cmd_config_set "$agent" "$1" "$2"
+                            ;;
+                        *)    die "Usage: xnullclaw ${agent} config <get|set> [args...]" ;;
+                    esac
+                    ;;
+                costs)    cmd_costs "$agent" "$@" ;;
+                drain)    cmd_drain "$agent" ;;
+                watch)    cmd_watch "$agent" ;;
                 *)        die "Unknown command: ${cmd}. Run 'xnullclaw help' for details." ;;
             esac
             ;;
