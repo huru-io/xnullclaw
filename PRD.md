@@ -326,12 +326,91 @@ In addition to natural language, the mux MUST support explicit commands:
 
 These commands exist as a reliable fallback. In normal use, the AI handles intent from natural language.
 
-### 4.8 OpenAI Function Calling (Tool Use)
+### 4.8 Agentic Loop Architecture
 
-The mux AI model uses OpenAI function calling to interact with the system. The mux does NOT use regex or command parsing — it uses structured tool calls.
+The mux is itself an agent — it runs a continuous tool-calling loop powered by
+OpenAI's Responses API. This is the core of the orchestration.
 
-**Mux tools (functions):**
+**Why an agentic loop (not single-step request-response):**
 
+Most real interactions require multiple steps:
+```
+"Set up a code review agent and have it review this file"
+  → setup_agent("dave")              // create agent
+  → update_agent_config(...)         // set system prompt
+  → start_agent("dave")             // start container
+  → agent_status("dave")            // wait for healthy
+  → send_file_to_agent("dave", ...) // deliver the file
+  → send_to_agent("dave", "Review") // get the review
+  → relay response to Telegram       // done
+```
+
+That's 6 tool calls with decisions between each. The model drives the loop —
+it decides what to do next based on each tool result.
+
+**Implementation — own loop with `openai-go` SDK:**
+
+```go
+// Core agentic loop (~30 lines, the rest is tool implementations)
+func (m *Mux) run(ctx context.Context, userMessage string) (string, error) {
+    m.appendUserMessage(userMessage)
+
+    for i := 0; i < m.maxIterations; i++ {
+        resp, err := m.client.Responses.New(ctx, m.buildRequest())
+        if err != nil {
+            return "", err
+        }
+
+        toolCalls := extractToolCalls(resp)
+        if len(toolCalls) == 0 {
+            // No tool calls = final text response
+            text := extractText(resp)
+            m.appendAssistantMessage(text)
+            return text, nil
+        }
+
+        // Execute tool calls (parallel when multiple in one response)
+        results := m.executeToolCalls(ctx, toolCalls)
+        m.appendToolResults(results)
+        // Loop continues — model sees results and decides next action
+    }
+
+    return "", fmt.Errorf("max iterations (%d) exceeded", m.maxIterations)
+}
+```
+
+**Design decision: own loop vs framework**
+
+Evaluated alternatives:
+- **OpenAI Agents SDK**: Python/TypeScript only. No official Go version.
+- **nlpodyssey/openai-agents-go**: Community port, active but not official.
+- **Google ADK Go**: Production-grade but Google-ecosystem-oriented, heavy.
+- **CloudWeGo Eino**: Full LangChain-equivalent for Go. Overkill.
+- **Nullclaw as mux via MCP**: Elegant (write tools as MCP server, let nullclaw
+  run the loop), but locks us to nullclaw's UX and memory model.
+
+**Chosen: own loop with `openai-go` (official SDK)**. Reasons:
+- The loop is ~30 lines of Go — a framework adds dependency without value
+- `openai-go` is official, stable, minimal (thin REST wrapper)
+- Full control over Telegram UX, memory, media routing, voice handling
+- The hard parts (memory, media, voice) are the same regardless of loop choice
+- Future option: expose tools as MCP server later if we want nullclaw-as-mux too
+
+**Loop behavior:**
+- Max iterations per turn: configurable (default 20)
+- Parallel tool calls: supported (OpenAI returns multiple calls in one response)
+- Timeout per iteration: configurable (default 120s)
+- Cost tracking: log tokens used per turn
+- Context assembly before each call: system prompt + long-term facts + agent
+  summaries + compaction summaries + recent messages (see 4.5 Memory)
+- On max iterations exceeded: inform user, save context, don't crash
+
+### 4.9 Tool Definitions
+
+The mux exposes tools to the OpenAI model via function calling. Each tool maps
+to a `xnullclaw` CLI call or an internal operation.
+
+**Agent communication tools:**
 ```
 send_to_agent(agent: str, message: str) -> str
     Send a message to one agent via xnullclaw, return the response.
@@ -342,6 +421,12 @@ send_to_all(message: str) -> [{agent: str, response: str}]
 send_to_some(agents: [str], message: str) -> [{agent: str, response: str}]
     Send to a named subset of agents in parallel.
 
+send_file_to_agent(agent: str, file_path: str, message: str) -> str
+    Deliver a file to an agent's inbox and send a message about it.
+```
+
+**Agent lifecycle tools:**
+```
 start_agent(agent: str) -> str
     Start an agent via xnullclaw. Returns status.
 
@@ -351,35 +436,53 @@ stop_agent(agent: str) -> str
 restart_agent(agent: str) -> str
     Restart an agent via xnullclaw. Returns status.
 
+setup_agent(agent: str) -> str
+    Create a new agent with default config.
+
+clone_agent(agent: str, source: str) -> str
+    Clone an agent from another.
+```
+
+**Agent discovery + config tools:**
+```
 list_agents() -> [{name: str, status: str, model: str, created: str}]
-    List all agents and their current status (via xnullclaw list).
+    List all agents and their current status.
 
 agent_status(agent: str) -> {status: str, uptime: str, details: str}
-    Detailed status of a specific agent (via xnullclaw <agent> status).
-
-update_agent_config(agent: str, key: str, value: any) -> str
-    Modify an agent's config.json. Requires restart to take effect.
+    Detailed status of a specific agent.
 
 get_agent_config(agent: str) -> object
     Read an agent's current configuration.
 
-setup_agent(agent: str) -> str
-    Create a new agent with default config (via xnullclaw <agent> setup).
+update_agent_config(agent: str, key: str, value: any) -> str
+    Modify an agent's config.json. Requires restart to take effect.
+```
 
-clone_agent(agent: str, source: str) -> str
-    Clone an agent from another (via xnullclaw <agent> clone <source>).
+**File tools:**
+```
+get_agent_file(agent: str, path: str) -> str
+    Retrieve a file from an agent's workspace.
 
+list_agent_files(agent: str, path: str) -> [str]
+    List files in an agent's workspace directory.
+```
+
+**Voice tools:**
+```
 transcribe_audio(file_id: str) -> str
-    Transcribe a Telegram voice message/audio file via Whisper.
+    Transcribe a Telegram voice/audio file via Whisper.
+```
 
-get_conversation_summary(agent: str) -> str
-    Get summary of recent conversation with an agent.
-
+**Mux memory tools:**
+```
 remember(fact: str, importance: str) -> str
-    Store a fact in the mux's long-term memory with importance level.
+    Store a fact in the mux's long-term memory.
 
 recall(query: str) -> str
     Search the mux's long-term memory.
+
+get_conversation_summary(agent: str) -> str
+    Get summary of recent conversation with an agent.
 ```
 
 All agent-facing tools use the `xnullclaw` CLI with stdin/stdout for message passing.
@@ -390,17 +493,24 @@ The AI model decides which tools to call — the model IS the router.
 
 ### 5.1 Tech Stack
 
-| Component | Technology |
-|-----------|-----------|
-| Mux bot service | **Go** |
-| AI inference | OpenAI API (GPT-5.4 or configurable, with function calling) |
-| Speech-to-text | OpenAI Whisper API |
-| Telegram integration | Go Telegram Bot API library |
-| Agent communication | Via `xnullclaw <agent> send` CLI (wrapper handles HTTP internally) |
-| Agent lifecycle | Via `xnullclaw` CLI (start/stop/restart/setup/clone/status) |
-| Mux persistent memory | SQLite (local file in `~/.xnullclaw/.mux/`) |
-| Container orchestration | Delegated entirely to `xnullclaw` wrapper |
-| Version management | **asdf** (`.tool-versions` for Go version pinning) |
+| Component | Technology | Notes |
+|-----------|-----------|-------|
+| Language | **Go** | Pinned via asdf `.tool-versions` |
+| Agentic loop | **Own implementation** (~30 LOC) | `for { call model → execute tools → repeat }` |
+| OpenAI SDK | **`openai-go`** (official) | Responses API with function calling. Thin REST wrapper, minimal deps. |
+| Speech-to-text | **OpenAI Whisper API** | Via `openai-go` SDK |
+| Telegram | **Go Telegram Bot API** | Long-polling, media download/upload |
+| Agent communication | **`xnullclaw` CLI** (stdin/stdout) | Wrapper handles HTTP/Docker internally |
+| Agent lifecycle | **`xnullclaw` CLI** | start/stop/restart/setup/clone/status |
+| Mux memory | **SQLite** (`~/.xnullclaw/.mux/`) | Tiered: messages, facts, agent_state, compactions |
+| MCP SDK | **`modelcontextprotocol/go-sdk`** (optional, future) | For exposing mux tools to nullclaw agents later |
+
+**Rejected alternatives:**
+- OpenAI Agents SDK → Python/TS only, no official Go version
+- nlpodyssey/openai-agents-go → community port, adds abstraction without clear value
+- Google ADK Go → production-grade but Google-ecosystem-heavy
+- CloudWeGo Eino → full LangChain-equivalent, overkill
+- Nullclaw-as-mux via MCP → elegant but locks UX/memory to nullclaw's model
 
 ### 5.2 Directory Layout
 
@@ -408,27 +518,37 @@ The AI model decides which tools to call — the model IS the router.
 xnullclaw/                          ← this repo
 ├── .tool-versions                  ← asdf: golang version
 ├── xnullclaw                       ← shell wrapper (bash)
-├── mux/                            ← mux bot source (Go)
+├── mux/                            ← mux bot source (Go, runs on host)
 │   ├── go.mod
 │   ├── go.sum
-│   ├── main.go
-│   ├── Dockerfile
-│   ├── bot/                        ← Telegram bot handler
+│   ├── main.go                    ← entry point, Telegram polling + agentic loop
+│   ├── loop/                      ← agentic loop (call model → tools → repeat)
+│   │   └── loop.go
+│   ├── bot/                       ← Telegram message handling + media
 │   │   └── bot.go
-│   ├── router/                     ← AI-driven intent routing
-│   │   └── router.go
-│   ├── agents/                     ← agent HTTP client + lifecycle
-│   │   └── agents.go
-│   ├── voice/                      ← Whisper transcription
+│   ├── tools/                     ← tool definitions + executors (shells to xnullclaw)
+│   │   ├── tools.go              ← OpenAI function schemas
+│   │   ├── agents.go             ← send_to_agent, send_to_all, lifecycle
+│   │   ├── files.go              ← send_file, get_file, list_files
+│   │   └── memory.go             ← remember, recall, summaries
+│   ├── voice/                     ← Whisper transcription + correction
 │   │   └── voice.go
-│   ├── memory/                     ← mux conversation memory (SQLite)
-│   │   └── memory.go
-│   ├── tools/                      ← OpenAI function definitions
-│   │   └── tools.go
-│   └── config/                     ← mux configuration
+│   ├── memory/                    ← tiered memory system (SQLite)
+│   │   ├── store.go              ← messages, facts, agent_state, compactions
+│   │   ├── compact.go            ← auto-compaction + fact extraction
+│   │   └── context.go            ← context assembly for each model call
+│   └── config/                    ← mux configuration loader
 │       └── config.go
 ├── PRD.md                          ← this document
 └── nullclaw/                       ← upstream clone (gitignored)
+```
+
+**Runtime data** (`~/.xnullclaw/.mux/`):
+```
+~/.xnullclaw/.mux/
+├── config.json          ← mux configuration
+├── memory.db            ← SQLite (messages, facts, agent_state, compactions)
+└── media/               ← temp storage for Telegram media downloads
 ```
 
 ### 5.3 Mux Configuration
