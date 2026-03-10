@@ -17,6 +17,7 @@ CONTAINER_PREFIX="xnc"
 REPO_URL="https://github.com/nullclaw/nullclaw.git"
 BUILD_DIR="$XNULLCLAW_HOME/.tmp/nullclaw"
 IS_MACOS=false; [[ "$(uname)" == "Darwin" ]] && IS_MACOS=true
+XNULLCLAW_LOG="${XNULLCLAW_HOME}/.xnullclaw.log"
 
 # ── Emoji identity pool ─────────────────────────────────────────
 EMOJI_POOL=(
@@ -27,10 +28,16 @@ EMOJI_POOL=(
 )
 
 # ── Helpers ──────────────────────────────────────────────────────
-die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
-info() { printf '\033[34m::\033[0m %s\n' "$*"; }
-warn() { printf '\033[33m!!\033[0m %s\n' "$*" >&2; }
-ok()   { printf '\033[32mok:\033[0m %s\n' "$*"; }
+_log() {
+    # Append timestamped entry to debug log. Silent if dir doesn't exist yet.
+    local level="$1"; shift
+    mkdir -p "$(dirname "$XNULLCLAW_LOG")" 2>/dev/null || true
+    printf '%s [%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$level" "$*" >> "$XNULLCLAW_LOG" 2>/dev/null || true
+}
+die()  { _log ERROR "$*"; printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+info() { _log INFO  "$*"; printf '\033[34m::\033[0m %s\n' "$*"; }
+warn() { _log WARN  "$*"; printf '\033[33m!!\033[0m %s\n' "$*" >&2; }
+ok()   { _log OK    "$*"; printf '\033[32mok:\033[0m %s\n' "$*"; }
 
 container_name() { echo "${CONTAINER_PREFIX}-${1}"; }
 agent_dir()      { echo "${XNULLCLAW_HOME}/${1}"; }
@@ -137,6 +144,7 @@ next_emoji() {
 
 ensure_image() {
     if ! image_exists; then
+        _log WARN "docker image missing: $DOCKER_IMAGE"
         warn "Docker image '${DOCKER_IMAGE}' not found."
         read -rp "Build it now from GitHub? [Y/n] " ans
         [[ "${ans:-y}" =~ ^[Yy] ]] || die "Cannot proceed without the Docker image."
@@ -146,29 +154,46 @@ ensure_image() {
 
 # ── Image commands ───────────────────────────────────────────────
 cmd_image_build() {
+    _log DEBUG "image build: image=$DOCKER_IMAGE build_dir=$BUILD_DIR"
     mkdir -p "$XNULLCLAW_HOME/.tmp"
     if [[ -d "$BUILD_DIR/.git" ]]; then
         info "Using existing repo at ${BUILD_DIR}"
     else
         info "Cloning nullclaw..."
-        git clone "$REPO_URL" "$BUILD_DIR"
+        if ! git clone "$REPO_URL" "$BUILD_DIR"; then
+            _log ERROR "git clone failed: repo=$REPO_URL"
+            die "Failed to clone nullclaw repository."
+        fi
     fi
     info "Building Docker image (compiling Zig — may take a few minutes)..."
-    docker build -t "$DOCKER_IMAGE" "$BUILD_DIR"
+    if ! docker build -t "$DOCKER_IMAGE" "$BUILD_DIR"; then
+        _log ERROR "docker build failed: image=$DOCKER_IMAGE"
+        die "Docker image build failed."
+    fi
     ok "Image '${DOCKER_IMAGE}' built."
 }
 
 cmd_image_update() {
+    _log DEBUG "image update: image=$DOCKER_IMAGE"
     mkdir -p "$XNULLCLAW_HOME/.tmp"
     if [[ -d "$BUILD_DIR/.git" ]]; then
         info "Pulling latest changes..."
-        git -C "$BUILD_DIR" pull --ff-only
+        if ! git -C "$BUILD_DIR" pull --ff-only; then
+            _log ERROR "git pull failed: dir=$BUILD_DIR"
+            die "Failed to pull latest nullclaw changes."
+        fi
     else
         info "Cloning nullclaw..."
-        git clone "$REPO_URL" "$BUILD_DIR"
+        if ! git clone "$REPO_URL" "$BUILD_DIR"; then
+            _log ERROR "git clone failed: repo=$REPO_URL"
+            die "Failed to clone nullclaw repository."
+        fi
     fi
     info "Rebuilding Docker image (no cache)..."
-    docker build --no-cache -t "$DOCKER_IMAGE" "$BUILD_DIR"
+    if ! docker build --no-cache -t "$DOCKER_IMAGE" "$BUILD_DIR"; then
+        _log ERROR "docker build (no-cache) failed: image=$DOCKER_IMAGE"
+        die "Docker image rebuild failed."
+    fi
     ok "Image '${DOCKER_IMAGE}' updated."
 }
 
@@ -312,6 +337,7 @@ docker_hardened_args() {
 # ── Agent: setup ─────────────────────────────────────────────────
 cmd_setup() {
     local agent="$1"
+    _log DEBUG "setup: agent=$agent"
     validate_name "$agent"
     local dir; dir="$(agent_dir "$agent")"
 
@@ -430,7 +456,11 @@ cmd_start() {
 
     run_args+=("$DOCKER_IMAGE" gateway)
 
-    "${run_args[@]}" >/dev/null
+    _log DEBUG "docker run: ${run_args[*]}"
+    if ! "${run_args[@]}" >/dev/null; then
+        _log ERROR "docker run failed for agent '$agent'"
+        die "Failed to start container for agent '${agent}'."
+    fi
 
     sleep 1
 
@@ -452,10 +482,13 @@ cmd_start() {
 # ── Agent: stop ──────────────────────────────────────────────────
 cmd_stop() {
     local agent="$1"
+    _log DEBUG "stop: agent=$agent"
     if is_running "$agent"; then
         local cname; cname=$(container_name "$agent")
         info "Stopping agent '${agent}'..."
-        docker stop "$cname" >/dev/null
+        if ! docker stop "$cname" >/dev/null; then
+            _log ERROR "docker stop failed: cname=$cname"
+        fi
         docker rm "$cname" >/dev/null 2>&1 || true
         ok "Agent '${agent}' stopped."
     else
@@ -466,6 +499,7 @@ cmd_stop() {
 # ── Agent: restart ───────────────────────────────────────────────
 cmd_restart() {
     local agent="$1"
+    _log DEBUG "restart: agent=$agent"
     shift
     cmd_stop "$agent" 2>/dev/null || true
     cmd_start "$agent" "$@"
@@ -516,12 +550,14 @@ cmd_logs() {
 # ── Agent: cli ───────────────────────────────────────────────────
 cmd_cli() {
     local agent="$1"; shift
+    _log DEBUG "cli: agent=$agent args=$*"
     agent_exists "$agent" || die "Agent '${agent}' not found. Run: xnullclaw ${agent} setup"
     ensure_image
 
     local dir; dir="$(agent_dir "$agent")"
 
     docker_hardened_args "$dir"
+    _log DEBUG "docker run (cli): ${_DOCKER_ARGS[*]}"
     docker run --rm -it \
         "${_DOCKER_ARGS[@]}" \
         "$DOCKER_IMAGE" \
@@ -532,6 +568,7 @@ cmd_cli() {
 cmd_clone() {
     local agent="$1" source="$2"
     local with_data="${3:-}"
+    _log DEBUG "clone: agent=$agent source=$source with_data=$with_data"
     validate_name "$agent"
     agent_exists "$source" || die "Source agent '${source}' not found."
     agent_exists "$agent"  && die "Agent '${agent}' already exists."
@@ -577,6 +614,7 @@ EOF
 # ── Agent: destroy ───────────────────────────────────────────────
 cmd_destroy() {
     local agent="$1"
+    _log DEBUG "destroy: agent=$agent"
     local dir; dir="$(agent_dir "$agent")"
 
     [[ -d "$dir" ]] || die "Agent '${agent}' not found."
@@ -651,14 +689,21 @@ cmd_send() {
     [[ -n "$token" ]] && curl_args+=(-H "Authorization: Bearer ${token}")
 
     local payload
-    payload=$(python3 -c "import json,sys; print(json.dumps({'message': sys.stdin.read()}))" <<< "$message")
+    if ! payload=$(python3 -c "import json,sys; print(json.dumps({'message': sys.stdin.read()}))" <<< "$message"); then
+        _log ERROR "python3 json encode failed (is python3 installed?)"
+        die "Failed to encode message payload. Ensure python3 is installed."
+    fi
     curl_args+=(-d "$payload")
 
-    "${curl_args[@]}"
+    _log DEBUG "send: agent=$agent port=$port url=http://127.0.0.1:${port}/webhook"
+    if ! "${curl_args[@]}"; then
+        _log ERROR "curl failed: agent=$agent port=$port"
+    fi
 }
 
 # ── Global: send-all ────────────────────────────────────────────
 cmd_send_all() {
+    _log DEBUG "send-all"
     local message
     message=$(cat)
     [[ -n "$message" ]] || die "No message on stdin. Usage: echo 'hello' | xnullclaw send-all"
@@ -705,6 +750,7 @@ print(json.dumps(results, indent=2))
 # ── Global: send-some ───────────────────────────────────────────
 cmd_send_some() {
     local agent_list="$1"
+    _log DEBUG "send-some: agents=$agent_list"
     [[ -n "$agent_list" ]] || die "Usage: echo 'msg' | xnullclaw send-some alice,bob"
 
     local message
@@ -1217,6 +1263,7 @@ else:
 # ── Agent: drain ────────────────────────────────────────────────
 cmd_drain() {
     local agent="$1"
+    _log DEBUG "drain: agent=$agent"
     agent_exists "$agent" || die "Agent '${agent}' not found."
     is_running "$agent"   || die "Agent '${agent}' is not running."
 
@@ -1261,6 +1308,7 @@ cmd_mux() {
 
     case "$subcmd" in
         start)
+            _log DEBUG "mux start"
             mkdir -p "$mux_dir" "$mux_log_dir"
 
             # Check if already running
@@ -1284,6 +1332,7 @@ cmd_mux() {
             ;;
 
         stop)
+            _log DEBUG "mux stop"
             if [[ ! -f "$mux_pid_file" ]]; then
                 die "Mux is not running (no PID file)."
             fi
@@ -1464,6 +1513,7 @@ EOF
 
 # ── Main router ──────────────────────────────────────────────────
 main() {
+    _log DEBUG "invoked: $0 $*"
     [[ $# -ge 1 ]] || { show_help; exit 0; }
 
     case "$1" in
