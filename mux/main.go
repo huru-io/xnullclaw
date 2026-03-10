@@ -268,7 +268,12 @@ func main() {
 // ---------------------------------------------------------------------------
 
 func findWrapper() string {
-	// 1. Same directory as the running binary (co-located install).
+	// 1. Check PATH.
+	if p, err := exec.LookPath("xnullclaw"); err == nil {
+		return p
+	}
+
+	// 2. Same directory as the running binary (co-located fallback).
 	if exe, err := os.Executable(); err == nil {
 		candidate := filepath.Join(filepath.Dir(exe), "xnullclaw")
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
@@ -276,17 +281,7 @@ func findWrapper() string {
 		}
 	}
 
-	// 2. Check PATH.
-	if p, err := exec.LookPath("xnullclaw"); err == nil {
-		return p
-	}
-
-	// 3. Hardcoded default.
-	if info, err := os.Stat("/usr/local/bin/xnullclaw"); err == nil && !info.IsDir() {
-		return "/usr/local/bin/xnullclaw"
-	}
-
-	log.Fatal("xnullclaw wrapper not found next to xnc-mux binary, in PATH, or at /usr/local/bin/xnullclaw")
+	log.Fatal("xnullclaw wrapper not found in PATH or next to xnc-mux binary")
 	return ""
 }
 
