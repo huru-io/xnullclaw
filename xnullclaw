@@ -327,7 +327,7 @@ docker_hardened_args() {
     local dir="$1"
     _DOCKER_ARGS=(
         --read-only
-        --tmpfs /tmp:size=64M,noexec,nosuid
+        --tmpfs "/tmp:size=64M,noexec,nosuid"
         --security-opt no-new-privileges:true
         --cap-drop ALL
         --memory 128m
@@ -734,6 +734,7 @@ cmd_send_all() {
     [[ ${#agents[@]} -gt 0 ]] || die "No running agents found."
 
     local tmpdir; tmpdir=$(mktemp -d)
+    # shellcheck disable=SC2064  # Intentional: expand $tmpdir now, not at signal time
     trap "rm -rf '$tmpdir'" RETURN
 
     for agent in "${agents[@]}"; do
@@ -782,6 +783,7 @@ cmd_send_some() {
     done
 
     local tmpdir; tmpdir=$(mktemp -d)
+    # shellcheck disable=SC2064  # Intentional: expand $tmpdir now, not at signal time
     trap "rm -rf '$tmpdir'" RETURN
 
     for agent in "${agents[@]}"; do
