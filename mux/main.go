@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -21,16 +22,18 @@ import (
 	"github.com/jotavich/xnullclaw/mux/config"
 	"github.com/jotavich/xnullclaw/mux/logging"
 	"github.com/jotavich/xnullclaw/mux/loop"
+	"github.com/jotavich/xnullclaw/mux/media"
 	"github.com/jotavich/xnullclaw/mux/memory"
 	"github.com/jotavich/xnullclaw/mux/prompt"
 	"github.com/jotavich/xnullclaw/mux/tools"
+	"github.com/jotavich/xnullclaw/mux/voice"
 )
 
 var version = "dev"
 
 func main() {
 	// 1. Determine mux home directory.
-	muxHome := filepath.Join(os.Getenv("HOME"), ".xnullclaw", ".mux")
+	muxHome := filepath.Join(os.Getenv("HOME"), ".xnc", ".mux")
 	if err := os.MkdirAll(muxHome, 0755); err != nil {
 		log.Fatalf("failed to create mux home %s: %v", muxHome, err)
 	}
@@ -72,7 +75,7 @@ func main() {
 	defer store.Close()
 	logger.Info("memory loaded", "db", dbPath)
 
-	// 5. Find xnullclaw wrapper binary.
+	// 5. Find xnc wrapper binary.
 	wrapperPath := findWrapper()
 	logger.Info("wrapper found", "path", wrapperPath)
 
@@ -132,7 +135,13 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 12. Wire the message handler.
+	// 12. Media temp directory.
+	mediaTmpDir := filepath.Join(muxHome, "media_tmp")
+	if err := os.MkdirAll(mediaTmpDir, 0755); err != nil {
+		log.Fatalf("failed to create media temp dir: %v", err)
+	}
+
+	// 13. Wire the message handler.
 	// We need to map userID (string) to a chatID (int64) for sending.
 	// For private Telegram chats, chat ID equals the user's numeric ID.
 	var (
@@ -140,17 +149,11 @@ func main() {
 		lastChatID int64      // store chat ID derived from user ID
 	)
 
-	telegramBot.SetOnMessage(func(userID string, text string) {
-		turnMu.Lock()
-		defer turnMu.Unlock()
-
-		chatID, _ := strconv.ParseInt(userID, 10, 64)
-		lastChatID = chatID
-
-		logger.LogIncoming(userID, text, "text")
-
+	// runTurn executes the agentic loop and sends the response to Telegram,
+	// handling media markers in the response.
+	runTurn := func(chatID int64, userText string) {
 		// Assemble context.
-		ctxData, err := assembler.Assemble(text)
+		ctxData, err := assembler.Assemble(userText)
 		if err != nil {
 			logger.Error("context assembly failed", "error", err)
 			telegramBot.Send(chatID, "Internal error assembling context.")
@@ -164,7 +167,7 @@ func main() {
 		// Store user message.
 		if err := store.AddMessage(memory.Message{
 			Role:    "user",
-			Content: text,
+			Content: userText,
 			Stream:  "conversation",
 		}); err != nil {
 			logger.Error("failed to store user message", "error", err)
@@ -174,7 +177,7 @@ func main() {
 		telegramBot.SendTyping(chatID)
 
 		// Run the agentic loop.
-		response, err := muxLoop.Run(ctx, text)
+		response, err := muxLoop.Run(ctx, userText)
 		if err != nil {
 			logger.Error("loop error", "error", err)
 			telegramBot.Send(chatID, fmt.Sprintf("Error: %v", err))
@@ -190,28 +193,236 @@ func main() {
 			logger.Error("failed to store assistant message", "error", err)
 		}
 
-		// Send response to Telegram.
-		if err := telegramBot.Send(chatID, response); err != nil {
-			logger.Error("telegram send failed", "error", err)
+		// Parse media markers from response.
+		cleanText, attachments := media.Parse(response)
+
+		// Send text part.
+		if cleanText != "" {
+			if err := telegramBot.Send(chatID, cleanText); err != nil {
+				logger.Error("telegram send failed", "error", err)
+			}
 		}
 
-		logger.Info("turn complete", "input_len", len(text), "output_len", len(response))
-	})
+		// Send media attachments.
+		for _, att := range attachments {
+			sendAttachment(ctx, telegramBot, logger, chatID, att, mediaTmpDir)
+		}
 
-	// 13. Handle voice messages (Phase 3 stub).
-	telegramBot.SetOnVoice(func(userID string, fileID string) {
+		logger.Info("turn complete", "input_len", len(userText), "output_len", len(response), "attachments", len(attachments))
+	}
+
+	telegramBot.SetOnMessage(func(userID string, text string) {
+		turnMu.Lock()
+		defer turnMu.Unlock()
+
 		chatID, _ := strconv.ParseInt(userID, 10, 64)
-		telegramBot.Send(chatID, "Voice messages not yet supported. Send text instead.")
+		lastChatID = chatID
+
+		logger.LogIncoming(userID, text, "text")
+		runTurn(chatID, text)
 	})
 
-	// 14. Handle commands.
+	// 14. Handle voice messages — download, transcribe via Whisper, run as text.
+	telegramBot.SetOnVoice(func(userID string, fileID string) {
+		turnMu.Lock()
+		defer turnMu.Unlock()
+
+		chatID, _ := strconv.ParseInt(userID, 10, 64)
+		lastChatID = chatID
+		logger.LogIncoming(userID, fileID, "voice")
+
+		if !cfg.Voice.Enabled {
+			telegramBot.Send(chatID, "Voice messages are disabled.")
+			return
+		}
+
+		// Download voice file from Telegram.
+		voicePath := filepath.Join(mediaTmpDir, fmt.Sprintf("voice_%s_%d.ogg", userID, time.Now().UnixNano()))
+		if err := telegramBot.DownloadFile(fileID, voicePath); err != nil {
+			logger.Error("voice download failed", "error", err)
+			telegramBot.Send(chatID, fmt.Sprintf("Failed to download voice: %v", err))
+			return
+		}
+		defer os.Remove(voicePath)
+
+		// Transcribe via Whisper.
+		telegramBot.SendTyping(chatID)
+		transcript, err := voice.Transcribe(ctx, voicePath, cfg.OpenAI.APIKey, cfg.OpenAI.WhisperModel)
+		if err != nil {
+			logger.Error("transcription failed", "error", err)
+			telegramBot.Send(chatID, fmt.Sprintf("Transcription failed: %v", err))
+			return
+		}
+
+		if strings.TrimSpace(transcript) == "" {
+			telegramBot.Send(chatID, "Could not transcribe voice message (empty result).")
+			return
+		}
+
+		// Show transcription if configured.
+		if cfg.Voice.ShowTranscription {
+			telegramBot.Send(chatID, fmt.Sprintf("_Heard:_ %s", transcript))
+		}
+
+		logger.Info("voice transcribed", "text", transcript)
+
+		// Run the transcribed text through the agentic loop.
+		runTurn(chatID, transcript)
+	})
+
+	// 15. Handle media messages (photos, documents).
+	telegramBot.SetOnMedia(func(userID string, fileID string, mediaType string, caption string) {
+		turnMu.Lock()
+		defer turnMu.Unlock()
+
+		chatID, _ := strconv.ParseInt(userID, 10, 64)
+		lastChatID = chatID
+		logger.LogIncoming(userID, fileID, mediaType)
+
+		// Download file from Telegram.
+		ext := ".bin"
+		switch mediaType {
+		case "photo":
+			ext = ".jpg"
+		case "document":
+			// Keep generic — we don't have the original filename easily.
+			ext = ".dat"
+		}
+		destPath := filepath.Join(mediaTmpDir, fmt.Sprintf("%s_%s_%d%s", mediaType, userID, time.Now().UnixNano(), ext))
+		if err := telegramBot.DownloadFile(fileID, destPath); err != nil {
+			logger.Error("media download failed", "error", err, "type", mediaType)
+			telegramBot.Send(chatID, fmt.Sprintf("Failed to download %s: %v", mediaType, err))
+			return
+		}
+
+		// Build a message describing the media for the mux loop.
+		var userText string
+		if caption != "" {
+			userText = fmt.Sprintf("[User sent a %s with caption: %s]\nThe file has been saved to: %s", mediaType, caption, destPath)
+		} else {
+			userText = fmt.Sprintf("[User sent a %s]\nThe file has been saved to: %s", mediaType, destPath)
+		}
+
+		logger.Info("media received", "type", mediaType, "path", destPath, "caption", caption)
+
+		runTurn(chatID, userText)
+	})
+
+	// 16. Handle commands.
 	telegramBot.SetOnCommand(func(userID string, cmd bot.Command) {
 		chatID, _ := strconv.ParseInt(userID, 10, 64)
 		logger.Info("command received", "user", userID, "command", cmd.Name, "agent", cmd.Agent)
-		telegramBot.Send(chatID, fmt.Sprintf("Command /%s received. Processing via mux loop.", cmd.Name))
+
+		switch cmd.Name {
+		case "help":
+			helpText := `*Available commands:*
+/help — Show this help message
+/agents — List all agents with emoji + name + status
+/stats — Show memory database statistics
+/costs — Show today's cost summary
+/clear — Clear all mux memory (requires confirmation)
+/clear confirm — Confirm memory clear
+
+All other messages are handled by the mux AI.`
+			telegramBot.Send(chatID, helpText)
+
+		case "agents", "list":
+			out, err := tools.RunWrapper(ctx, wrapperPath, "list", "--json")
+			if err != nil {
+				telegramBot.Send(chatID, fmt.Sprintf("Error listing agents: %v", err))
+				return
+			}
+			// Also show agent states from memory.
+			states, _ := store.AllAgentStates()
+			if len(states) == 0 && out == "" {
+				telegramBot.Send(chatID, "No agents found.")
+				return
+			}
+			var lines []string
+			lines = append(lines, "*Agents:*")
+			for _, s := range states {
+				emoji := "❓"
+				if s.Emoji != nil && *s.Emoji != "" {
+					emoji = *s.Emoji
+				}
+				status := "unknown"
+				if s.Status != nil {
+					status = *s.Status
+				}
+				role := ""
+				if s.Role != nil && *s.Role != "" {
+					role = " — " + *s.Role
+				}
+				lines = append(lines, fmt.Sprintf("%s *%s* (%s)%s", emoji, s.Agent, status, role))
+			}
+			if out != "" {
+				lines = append(lines, "", "_Raw:_", out)
+			}
+			telegramBot.Send(chatID, strings.Join(lines, "\n"))
+
+		case "stats":
+			stats, err := store.Stats()
+			if err != nil {
+				telegramBot.Send(chatID, fmt.Sprintf("Error: %v", err))
+				return
+			}
+			text := fmt.Sprintf(`*Memory stats:*
+Messages: %d
+Facts: %d
+Compactions: %d
+Costs: %d
+Agent states: %d`,
+				stats["messages"], stats["facts"], stats["compactions"],
+				stats["costs"], stats["agent_state"])
+			telegramBot.Send(chatID, text)
+
+		case "costs":
+			now := time.Now()
+			startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+			summary, err := store.CostSummary(startOfDay, now)
+			if err != nil {
+				telegramBot.Send(chatID, fmt.Sprintf("Error: %v", err))
+				return
+			}
+			if len(summary) == 0 {
+				telegramBot.Send(chatID, "No costs recorded today.")
+				return
+			}
+			var lines []string
+			lines = append(lines, "*Today's costs:*")
+			var total float64
+			for cat, amount := range summary {
+				lines = append(lines, fmt.Sprintf("  %s: $%.4f", cat, amount))
+				total += amount
+			}
+			lines = append(lines, fmt.Sprintf("  *Total: $%.4f*", total))
+			if cfg.Costs.DailyBudgetUSD > 0 {
+				pct := (total / cfg.Costs.DailyBudgetUSD) * 100
+				lines = append(lines, fmt.Sprintf("  Budget: $%.2f (%.1f%% used)", cfg.Costs.DailyBudgetUSD, pct))
+			}
+			telegramBot.Send(chatID, strings.Join(lines, "\n"))
+
+		case "clear":
+			if cmd.Args == "confirm" {
+				// Actually clear.
+				if err := store.ClearAll(); err != nil {
+					telegramBot.Send(chatID, fmt.Sprintf("Error clearing memory: %v", err))
+					return
+				}
+				muxLoop.ClearHistory()
+				telegramBot.Send(chatID, "Memory cleared. Conversation history, facts, compactions, and costs have been wiped. Agent state preserved.")
+				logger.Info("memory cleared by user", "user", userID)
+			} else {
+				telegramBot.Send(chatID, "⚠️ This will delete all conversation history, facts, compactions, and cost records. Agent state is preserved.\n\nSend /clear confirm to proceed.")
+			}
+
+		default:
+			// Forward unhandled commands to the mux loop as text.
+			telegramBot.Send(chatID, fmt.Sprintf("Unknown command /%s. Use /help for available commands.", cmd.Name))
+		}
 	})
 
-	// 15. Start Telegram bot in background.
+	// 17. Start Telegram bot in background.
 	go func() {
 		logger.Info("telegram polling started")
 		if err := telegramBot.Start(ctx); err != nil && ctx.Err() == nil {
@@ -219,7 +430,7 @@ func main() {
 		}
 	}()
 
-	// 16. Auto-start agents.
+	// 18. Auto-start agents.
 	go func() {
 		for _, agent := range cfg.Agents.AutoStart {
 			logger.LogLifecycle("auto-starting", agent, "")
@@ -234,13 +445,13 @@ func main() {
 
 	logger.Info("mux online")
 
-	// 17. Wait for shutdown signal.
+	// 19. Wait for shutdown signal.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigCh
 	logger.Info("shutdown signal received", "signal", sig.String())
 
-	// 18. Graceful shutdown.
+	// 20. Graceful shutdown.
 	// Stop Telegram polling first to stop accepting new messages.
 	telegramBot.Stop()
 
@@ -264,24 +475,24 @@ func main() {
 }
 
 // ---------------------------------------------------------------------------
-// findWrapper locates the xnullclaw binary.
+// findWrapper locates the xnc wrapper binary.
 // ---------------------------------------------------------------------------
 
 func findWrapper() string {
 	// 1. Check PATH.
-	if p, err := exec.LookPath("xnullclaw"); err == nil {
+	if p, err := exec.LookPath("xnc"); err == nil {
 		return p
 	}
 
 	// 2. Same directory as the running binary (co-located fallback).
 	if exe, err := os.Executable(); err == nil {
-		candidate := filepath.Join(filepath.Dir(exe), "xnullclaw")
+		candidate := filepath.Join(filepath.Dir(exe), "xnc")
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			return candidate
 		}
 	}
 
-	log.Fatal("xnullclaw wrapper not found in PATH or next to xnc-mux binary")
+	log.Fatal("xnc wrapper not found in PATH or next to xnc-mux binary")
 	return ""
 }
 
@@ -485,4 +696,65 @@ type oaiChoice struct {
 type oaiUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
+}
+
+// ---------------------------------------------------------------------------
+// Media attachment sender
+// ---------------------------------------------------------------------------
+
+// sendAttachment extracts a file from an agent container (if needed) and sends it
+// via Telegram. For container paths (/nullclaw-data/...) it uses docker cp.
+// For host paths it sends directly.
+func sendAttachment(ctx context.Context, tgBot *bot.Bot, logger *logging.Logger, chatID int64, att media.Attachment, tmpDir string) {
+	hostPath := att.Path
+
+	// If the path looks like it's inside a container (starts with /nullclaw-data),
+	// we can't send it directly — the mux LLM will have already used get_agent_file
+	// to extract it. The path in the marker should be a host path at that point.
+	if strings.HasPrefix(att.Path, "/nullclaw-data/") {
+		logger.Error("attachment path appears to be a container path, not a host path", "path", att.Path)
+		tgBot.Send(chatID, fmt.Sprintf("Could not send attachment: %s (container path — use get_agent_file first)", att.Path))
+		return
+	}
+
+	// Verify file exists on host.
+	if _, err := os.Stat(hostPath); err != nil {
+		logger.Error("attachment file not found", "path", hostPath, "error", err)
+		tgBot.Send(chatID, fmt.Sprintf("Attachment not found: %s", filepath.Base(hostPath)))
+		return
+	}
+
+	ext := strings.ToLower(filepath.Ext(hostPath))
+
+	var err error
+	switch att.Type {
+	case media.TypeImage:
+		// Images: send as inline photo.
+		err = tgBot.SendPhoto(chatID, hostPath, "")
+
+	case media.TypeVideo:
+		// Videos: send as playable video.
+		err = tgBot.SendVideo(chatID, hostPath, "")
+
+	case media.TypeVoice:
+		// Voice: ogg/opus as voice note, others as audio.
+		if ext == ".ogg" || ext == ".oga" || ext == ".opus" {
+			err = tgBot.SendVoice(chatID, hostPath)
+		} else {
+			err = tgBot.SendAudio(chatID, hostPath, "")
+		}
+
+	case media.TypeAudio:
+		// Audio: send as playable audio (mp3, m4a, etc).
+		err = tgBot.SendAudio(chatID, hostPath, "")
+
+	default:
+		// FILE, DOCUMENT — send as downloadable document.
+		err = tgBot.SendDocument(chatID, hostPath, "")
+	}
+
+	if err != nil {
+		logger.Error("send attachment failed", "type", att.Type, "path", hostPath, "error", err)
+		tgBot.Send(chatID, fmt.Sprintf("Failed to send %s: %v", att.Type, err))
+	}
 }

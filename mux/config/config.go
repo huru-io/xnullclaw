@@ -21,6 +21,7 @@ type Config struct {
 // PersonaConfig defines the bot's personality.
 type PersonaConfig struct {
 	Name              string            `json:"name"`
+	OwnerName         string            `json:"owner_name"`
 	Language          string            `json:"language"`
 	Bio               string            `json:"bio"`
 	ExtraInstructions string            `json:"extra_instructions"`
@@ -189,6 +190,7 @@ func DefaultConfig() *Config {
 		},
 		Persona: PersonaConfig{
 			Name:              "mux",
+			OwnerName:         "Controller",
 			Language:          "en",
 			Bio:               "",
 			ExtraInstructions: "",

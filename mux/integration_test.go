@@ -108,7 +108,7 @@ func TestIntegration_LoopWithToolCalls(t *testing.T) {
 	cfgPath := filepath.Join(tmpDir, "config.json")
 	cfg.Save(cfgPath)
 
-	wrapperPath := filepath.Join(tmpDir, "xnullclaw")
+	wrapperPath := filepath.Join(tmpDir, "xnc")
 	os.WriteFile(wrapperPath, []byte("#!/bin/sh\necho ok"), 0755)
 
 	// Register tools.
@@ -211,7 +211,7 @@ func TestIntegration_PersonaChangesPrompt(t *testing.T) {
 
 	// Simulate a persona tool call that changes the name.
 	registry := tools.NewRegistry()
-	wrapperPath := filepath.Join(tmpDir, "xnullclaw")
+	wrapperPath := filepath.Join(tmpDir, "xnc")
 	os.WriteFile(wrapperPath, []byte("#!/bin/sh\necho ok"), 0755)
 	tools.RegisterAll(registry, cfg, cfgPath, store, wrapperPath)
 
@@ -245,7 +245,7 @@ func TestIntegration_PassthroughRulesInPrompt(t *testing.T) {
 	cfgPath := filepath.Join(tmpDir, "config.json")
 	cfg.Save(cfgPath)
 
-	wrapperPath := filepath.Join(tmpDir, "xnullclaw")
+	wrapperPath := filepath.Join(tmpDir, "xnc")
 	os.WriteFile(wrapperPath, []byte("#!/bin/sh\necho ok"), 0755)
 
 	registry := tools.NewRegistry()
@@ -394,7 +394,7 @@ func TestIntegration_ToolCallObservability(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfgPath := filepath.Join(tmpDir, "config.json")
 	cfg.Save(cfgPath)
-	wrapperPath := filepath.Join(tmpDir, "xnullclaw")
+	wrapperPath := filepath.Join(tmpDir, "xnc")
 	os.WriteFile(wrapperPath, []byte("#!/bin/sh\necho ok"), 0755)
 
 	registry := tools.NewRegistry()
@@ -451,7 +451,7 @@ func TestIntegration_ParallelToolCalls(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfgPath := filepath.Join(tmpDir, "config.json")
 	cfg.Save(cfgPath)
-	wrapperPath := filepath.Join(tmpDir, "xnullclaw")
+	wrapperPath := filepath.Join(tmpDir, "xnc")
 	os.WriteFile(wrapperPath, []byte("#!/bin/sh\necho ok"), 0755)
 
 	registry := tools.NewRegistry()

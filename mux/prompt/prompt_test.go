@@ -246,7 +246,7 @@ func TestBuild_ContainsCoreRole(t *testing.T) {
 	cfg := defaultTestConfig()
 	b := New(cfg)
 	got := b.Build(nil, nil, nil, nil)
-	if !strings.Contains(got, "You are a personal AI orchestrator") {
+	if !strings.Contains(got, "a personal AI orchestrator") {
 		t.Errorf("Build output missing core role")
 	}
 }
@@ -312,7 +312,7 @@ func TestBuild_EmptyInputs(t *testing.T) {
 	got := b.Build(nil, nil, nil, nil)
 
 	// Should still have core role and persona
-	if !strings.Contains(got, "You are a personal AI orchestrator") {
+	if !strings.Contains(got, "a personal AI orchestrator") {
 		t.Errorf("missing core role with empty inputs")
 	}
 	if !strings.Contains(got, "Your name is mux.") {
@@ -371,7 +371,7 @@ func TestBuild_AllSections(t *testing.T) {
 
 	// All 6 sections should be present
 	checks := []string{
-		"You are a personal AI orchestrator",                // core role
+		"a personal AI orchestrator",                // core role
 		"Your communication style:",                         // persona
 		"Active passthrough rules:",                         // rules
 		"Current time:",                                     // roster

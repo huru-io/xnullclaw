@@ -93,7 +93,7 @@ func registerCostTools(r *Registry, cfg *config.Config, configPath string, store
 				return "", err
 			}
 
-			// Map period to the xnullclaw flag.
+			// Map period to the xnc flag.
 			var flag string
 			switch period {
 			case "today":

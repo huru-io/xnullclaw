@@ -191,7 +191,7 @@ func TestPersonaTools(t *testing.T) {
 	}
 
 	r := NewRegistry()
-	registerPersonaTools(r, cfg, cfgPath)
+	registerPersonaTools(r, cfg, cfgPath, "/nonexistent/wrapper")
 
 	ctx := context.Background()
 
@@ -344,7 +344,7 @@ func TestRegisterAll(t *testing.T) {
 	r := NewRegistry()
 
 	// Create a dummy wrapper script.
-	wrapperPath := filepath.Join(tmpDir, "xnullclaw")
+	wrapperPath := filepath.Join(tmpDir, "xnc")
 	os.WriteFile(wrapperPath, []byte("#!/bin/sh\necho ok"), 0755)
 
 	RegisterAll(r, cfg, cfgPath, store, wrapperPath)
@@ -362,10 +362,11 @@ func TestRegisterAll(t *testing.T) {
 
 	expectedTools := []string{
 		"remember", "recall", "get_conversation_summary",
-		"set_persona", "set_persona_dimension", "get_persona", "reset_persona", "apply_persona_preset",
+		"set_persona", "set_persona_dimension", "get_persona", "reset_persona", "apply_persona_preset", "list_voices",
 		"get_costs", "set_budget",
 		"set_passthrough_rule", "remove_passthrough_rule", "list_passthrough_rules",
-		"send_to_agent", "list_agents", "agent_status",
+		"send_to_agent", "list_agents", "agent_status", "provision_agent", "destroy_agent",
+		"get_agent_persona", "update_agent_persona",
 	}
 	for _, name := range expectedTools {
 		if !names[name] {

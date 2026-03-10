@@ -4,7 +4,9 @@ package bot
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -267,8 +269,13 @@ func ParseCommand(text string) *Command {
 		if len(parts) >= 2 {
 			cmd.Args = strings.Join(parts[1:], " ")
 		}
-	case "list", "mux":
+	case "list", "agents", "mux", "help", "stats":
 		// no arguments needed
+	case "clear":
+		// /clear or /clear confirm
+		if len(parts) >= 2 {
+			cmd.Args = strings.Join(parts[1:], " ")
+		}
 	default:
 		return nil // unrecognized command
 	}
@@ -346,7 +353,37 @@ func (b *Bot) SendDocument(chatID int64, filePath string, caption string) error 
 	return b.enqueueSend(doc, PriorityNormal)
 }
 
-// SendVoice sends a voice message.
+// DownloadFile downloads a Telegram file by its fileID to the given destination path.
+func (b *Bot) DownloadFile(fileID, destPath string) error {
+	url, err := b.api.GetFileDirectURL(fileID)
+	if err != nil {
+		return fmt.Errorf("bot: get file URL: %w", err)
+	}
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return fmt.Errorf("bot: download file: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("bot: download file HTTP %d", resp.StatusCode)
+	}
+
+	out, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("bot: create dest file: %w", err)
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		return fmt.Errorf("bot: write file: %w", err)
+	}
+
+	return nil
+}
+
+// SendVoice sends a voice message (ogg/opus only; for other audio use SendAudio).
 func (b *Bot) SendVoice(chatID int64, filePath string) error {
 	f, err := os.Open(filePath)
 	if err != nil {
@@ -356,6 +393,32 @@ func (b *Bot) SendVoice(chatID int64, filePath string) error {
 
 	voice := tgbotapi.NewVoice(chatID, tgbotapi.FilePath(filePath))
 	return b.enqueueSend(voice, PriorityNormal)
+}
+
+// SendAudio sends an audio file as a playable audio message (mp3, m4a, etc).
+func (b *Bot) SendAudio(chatID int64, filePath string, caption string) error {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("bot: open audio %s: %w", filePath, err)
+	}
+	f.Close()
+
+	audio := tgbotapi.NewAudio(chatID, tgbotapi.FilePath(filePath))
+	audio.Caption = caption
+	return b.enqueueSend(audio, PriorityNormal)
+}
+
+// SendVideo sends a video file.
+func (b *Bot) SendVideo(chatID int64, filePath string, caption string) error {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("bot: open video %s: %w", filePath, err)
+	}
+	f.Close()
+
+	video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
+	video.Caption = caption
+	return b.enqueueSend(video, PriorityNormal)
 }
 
 // enqueueSend puts a message on the send queue and waits for the result.

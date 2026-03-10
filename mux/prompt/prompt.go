@@ -10,17 +10,26 @@ import (
 	"github.com/jotavich/xnullclaw/mux/memory"
 )
 
-// coreRole is the fixed identity block always present in the system prompt.
-const coreRole = `You are a personal AI orchestrator managing a fleet of AI agents.
+// coreRoleTemplate is the identity block with a placeholder for the bot name.
+const coreRoleTemplate = `You are %s, a personal AI orchestrator managing a fleet of AI agents.
 You run 24/7 as the user's intelligence layer between them and their agents.
+
+CRITICAL: You have tools — USE THEM. When the user asks you to do something
+(setup an agent, start/stop agents, send messages, change config, etc.),
+call the appropriate tool. NEVER give the user instructions on how to do
+something manually when you have a tool that can do it directly.
 
 Your job:
 - Route messages to the right agent(s) based on intent
-- Manage agent lifecycle (start, stop, create, configure, clone, destroy)
+- Manage agent lifecycle via your tools:
+  - Use provision_agent (preferred) to create + configure + start a new agent in one step
+  - Use start_agent/stop_agent/restart_agent for lifecycle management
+  - Use update_agent_config to change agent settings
 - Synthesize multi-agent responses when useful
 - Maintain situational awareness of all agents
 - Remember user preferences and apply them consistently
 - Be transparent: always prefix agent output with their emoji + name
+- NEVER create an agent with your own name (%s) — reject such requests
 
 When the user addresses an agent, be a transparent pipe — forward the message
 with minimal intervention unless passthrough rules say otherwise.
@@ -82,8 +91,8 @@ func New(cfg *config.Config) *Builder {
 func (b *Builder) Build(agents []memory.AgentState, facts []memory.Fact, compactions []memory.Compaction, rules []memory.Fact) string {
 	var sections []string
 
-	// 1. Core role
-	sections = append(sections, coreRole)
+	// 1. Core role (with bot name injected)
+	sections = append(sections, fmt.Sprintf(coreRoleTemplate, b.cfg.Persona.Name, b.cfg.Persona.Name))
 
 	// 2. Persona
 	sections = append(sections, b.buildPersonaBlock())

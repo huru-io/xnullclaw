@@ -53,6 +53,22 @@ type AgentState struct {
 	Updated         time.Time
 }
 
+// AgentPersona stores the 10 personality dimensions for an agent.
+type AgentPersona struct {
+	Agent          string
+	Trait          string  // short descriptor, e.g. "warm and creative"
+	Warmth         float64
+	Humor          float64
+	Verbosity      float64
+	Proactiveness  float64
+	Formality      float64
+	Empathy        float64
+	Sarcasm        float64
+	Autonomy       float64
+	Interpretation float64
+	Creativity     float64
+}
+
 // Compaction represents a summarised block of conversation history.
 type Compaction struct {
 	ID          int
@@ -136,6 +152,21 @@ CREATE TABLE IF NOT EXISTS costs (
     input_tokens  INTEGER,
     output_tokens INTEGER,
     cost_usd      REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_persona (
+    agent          TEXT PRIMARY KEY,
+    trait          TEXT NOT NULL DEFAULT '',
+    warmth         REAL NOT NULL DEFAULT 0.5,
+    humor          REAL NOT NULL DEFAULT 0.5,
+    verbosity      REAL NOT NULL DEFAULT 0.5,
+    proactiveness  REAL NOT NULL DEFAULT 0.5,
+    formality      REAL NOT NULL DEFAULT 0.5,
+    empathy        REAL NOT NULL DEFAULT 0.5,
+    sarcasm        REAL NOT NULL DEFAULT 0.5,
+    autonomy       REAL NOT NULL DEFAULT 0.5,
+    interpretation REAL NOT NULL DEFAULT 0.5,
+    creativity     REAL NOT NULL DEFAULT 0.5
 );
 `
 
@@ -578,6 +609,100 @@ func (s *Store) AgentCostSummary(agent string, start, end time.Time) (float64, e
 		agent, start, end,
 	).Scan(&total)
 	return total, err
+}
+
+// ==================== Agent Persona ====================
+
+// UpsertAgentPersona inserts or replaces an agent's persona dimensions.
+func (s *Store) UpsertAgentPersona(p AgentPersona) error {
+	_, err := s.db.Exec(
+		`INSERT INTO agent_persona (agent, trait, warmth, humor, verbosity, proactiveness,
+		     formality, empathy, sarcasm, autonomy, interpretation, creativity)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(agent) DO UPDATE SET
+		     trait          = excluded.trait,
+		     warmth         = excluded.warmth,
+		     humor          = excluded.humor,
+		     verbosity      = excluded.verbosity,
+		     proactiveness  = excluded.proactiveness,
+		     formality      = excluded.formality,
+		     empathy        = excluded.empathy,
+		     sarcasm        = excluded.sarcasm,
+		     autonomy       = excluded.autonomy,
+		     interpretation = excluded.interpretation,
+		     creativity     = excluded.creativity`,
+		p.Agent, p.Trait, p.Warmth, p.Humor, p.Verbosity, p.Proactiveness,
+		p.Formality, p.Empathy, p.Sarcasm, p.Autonomy, p.Interpretation, p.Creativity,
+	)
+	return err
+}
+
+// GetAgentPersona returns the persona for a single agent, or nil if not found.
+func (s *Store) GetAgentPersona(agent string) (*AgentPersona, error) {
+	var p AgentPersona
+	err := s.db.QueryRow(
+		`SELECT agent, trait, warmth, humor, verbosity, proactiveness,
+		        formality, empathy, sarcasm, autonomy, interpretation, creativity
+		 FROM agent_persona WHERE agent = ?`, agent,
+	).Scan(&p.Agent, &p.Trait, &p.Warmth, &p.Humor, &p.Verbosity, &p.Proactiveness,
+		&p.Formality, &p.Empathy, &p.Sarcasm, &p.Autonomy, &p.Interpretation, &p.Creativity)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// DeleteAgentPersona removes an agent's persona record.
+func (s *Store) DeleteAgentPersona(agent string) error {
+	_, err := s.db.Exec(`DELETE FROM agent_persona WHERE agent = ?`, agent)
+	return err
+}
+
+// DeleteAgentState removes an agent's state record.
+func (s *Store) DeleteAgentState(agent string) (bool, error) {
+	result, err := s.db.Exec(`DELETE FROM agent_state WHERE agent = ?`, agent)
+	if err != nil {
+		return false, err
+	}
+	n, _ := result.RowsAffected()
+	return n > 0, nil
+}
+
+// ==================== Reset ====================
+
+// ClearAll deletes all data from messages, facts, compactions, and costs.
+// Agent state is preserved (agents are still running).
+func (s *Store) ClearAll() error {
+	tables := []string{"messages", "facts", "compactions", "costs"}
+	for _, t := range tables {
+		if _, err := s.db.Exec("DELETE FROM " + t); err != nil {
+			return fmt.Errorf("clear %s: %w", t, err)
+		}
+	}
+	return nil
+}
+
+// ClearMessages deletes only conversation messages.
+func (s *Store) ClearMessages() error {
+	_, err := s.db.Exec("DELETE FROM messages")
+	return err
+}
+
+// Stats returns row counts for all tables.
+func (s *Store) Stats() (map[string]int, error) {
+	tables := []string{"messages", "facts", "compactions", "costs", "agent_state"}
+	stats := make(map[string]int, len(tables))
+	for _, t := range tables {
+		var count int
+		if err := s.db.QueryRow("SELECT COUNT(*) FROM " + t).Scan(&count); err != nil {
+			return nil, fmt.Errorf("count %s: %w", t, err)
+		}
+		stats[t] = count
+	}
+	return stats, nil
 }
 
 // ==================== helpers ====================

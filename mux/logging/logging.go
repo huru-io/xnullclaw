@@ -85,7 +85,7 @@ type Logger struct {
 }
 
 // New creates a new Logger, creating the log directory and opening log files.
-// baseDir is the mux data directory (e.g. ~/.xnullclaw/.mux/).
+// baseDir is the mux data directory (e.g. ~/.xnc/.mux/).
 // The LoggingConfig.Dir field is joined with baseDir to form the log directory,
 // unless it is an absolute path.
 func New(cfg *config.LoggingConfig, baseDir string) (*Logger, error) {

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# xnullclaw - Multi-agent nullclaw wrapper with hardened Docker isolation
+# xnc - Multi-agent nullclaw wrapper with hardened Docker isolation
 #
-# Each agent lives in ~/.xnullclaw/<name>/ with its own config and data.
+# Each agent lives in ~/.xnc/<name>/ with its own config and data.
 # Agents run in Docker with: read-only rootfs, all caps dropped,
 # no-new-privileges, no exposed ports (Telegram uses outbound polling).
 #
-# Usage:  xnullclaw <agent> <command> [args...]
-#         xnullclaw <global-command>
+# Usage:  xnc <agent> <command> [args...]
+#         xnc <global-command>
 
 set -euo pipefail
 
@@ -16,13 +16,13 @@ for _dep in docker jq curl git; do
 done
 
 # ── Configuration ────────────────────────────────────────────────
-XNULLCLAW_HOME="${XNULLCLAW_HOME:-$HOME/.xnullclaw}"
-DOCKER_IMAGE="${XNULLCLAW_IMAGE:-nullclaw:latest}"
+XNC_HOME="${XNC_HOME:-${XNULLCLAW_HOME:-$HOME/.xnc}}"
+DOCKER_IMAGE="${XNC_IMAGE:-${XNULLCLAW_IMAGE:-nullclaw:latest}}"
 CONTAINER_PREFIX="xnc"
 REPO_URL="https://github.com/nullclaw/nullclaw.git"
-BUILD_DIR="$XNULLCLAW_HOME/.tmp/nullclaw"
+BUILD_DIR="$XNC_HOME/.tmp/nullclaw"
 IS_MACOS=false; [[ "$(uname)" == "Darwin" ]] && IS_MACOS=true
-XNULLCLAW_LOG="${XNULLCLAW_HOME}/.xnullclaw.log"
+XNC_LOG="${XNC_HOME}/.xnc.log"
 
 # ── Emoji identity pool ─────────────────────────────────────────
 EMOJI_POOL=(
@@ -36,9 +36,9 @@ EMOJI_POOL=(
 _log() {
     # Append timestamped entry to debug log. Silent if dir doesn't exist yet.
     local level="$1"; shift
-    mkdir -p "$(dirname "$XNULLCLAW_LOG")" 2>/dev/null || true
-    printf '%s [%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$level" "$*" >> "$XNULLCLAW_LOG" 2>/dev/null || true
-    chmod 600 "$XNULLCLAW_LOG" 2>/dev/null || true
+    mkdir -p "$(dirname "$XNC_LOG")" 2>/dev/null || true
+    printf '%s [%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$level" "$*" >> "$XNC_LOG" 2>/dev/null || true
+    chmod 600 "$XNC_LOG" 2>/dev/null || true
 }
 die()  { _log ERROR "$*"; printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 info() { _log INFO  "$*"; printf '\033[34m::\033[0m %s\n' "$*"; }
@@ -46,7 +46,7 @@ warn() { _log WARN  "$*"; printf '\033[33m!!\033[0m %s\n' "$*" >&2; }
 ok()   { _log OK    "$*"; printf '\033[32mok:\033[0m %s\n' "$*"; }
 
 container_name() { echo "${CONTAINER_PREFIX}-${1}"; }
-agent_dir()      { echo "${XNULLCLAW_HOME}/${1}"; }
+agent_dir()      { echo "${XNC_HOME}/${1}"; }
 
 # Portable helpers (BSD/GNU compat)
 iso_now() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
@@ -116,7 +116,7 @@ next_port() {
     while true; do
         local used=false
         local metas
-        metas=$(compgen -G "$XNULLCLAW_HOME"/*/.meta 2>/dev/null || true)
+        metas=$(compgen -G "$XNC_HOME"/*/.meta 2>/dev/null || true)
         for meta in $metas; do
             [[ -f "$meta" ]] && grep -q "^HOST_PORT=${port}$" "$meta" && { used=true; break; }
         done
@@ -129,7 +129,7 @@ next_emoji() {
     # Collect all emojis currently assigned to existing agents
     local used_emojis=""
     local metas
-    metas=$(compgen -G "$XNULLCLAW_HOME"/*/.meta 2>/dev/null || true)
+    metas=$(compgen -G "$XNC_HOME"/*/.meta 2>/dev/null || true)
     for meta in $metas; do
         local e
         e=$(grep "^EMOJI=" "$meta" 2>/dev/null | head -1 | cut -d= -f2- || true)
@@ -161,7 +161,7 @@ ensure_image() {
 # ── Image commands ───────────────────────────────────────────────
 cmd_image_build() {
     _log DEBUG "image build: image=$DOCKER_IMAGE build_dir=$BUILD_DIR"
-    mkdir -p "$XNULLCLAW_HOME/.tmp"
+    mkdir -p "$XNC_HOME/.tmp"
     if [[ -d "$BUILD_DIR/.git" ]]; then
         info "Using existing repo at ${BUILD_DIR}"
     else
@@ -181,7 +181,7 @@ cmd_image_build() {
 
 cmd_image_update() {
     _log DEBUG "image update: image=$DOCKER_IMAGE"
-    mkdir -p "$XNULLCLAW_HOME/.tmp"
+    mkdir -p "$XNC_HOME/.tmp"
     if [[ -d "$BUILD_DIR/.git" ]]; then
         info "Pulling latest changes..."
         if ! git -C "$BUILD_DIR" pull --ff-only; then
@@ -212,7 +212,7 @@ Size:    {{.Size}}
 ID:      {{.ID}}"
     else
         echo "Image '${DOCKER_IMAGE}' not found."
-        echo "Build it:  xnullclaw image build"
+        echo "Build it:  xnc image build"
     fi
 }
 
@@ -390,8 +390,8 @@ cmd_setup() {
   └─────────────────────────────────────────────────────────────┘
 
   Then:
-    xnullclaw ${agent} start      # always-on daemon (Telegram)
-    xnullclaw ${agent} cli        # interactive local chat
+    xnc ${agent} start      # always-on daemon (Telegram)
+    xnc ${agent} cli        # interactive local chat
 
 EOF
 }
@@ -400,7 +400,7 @@ EOF
 cmd_start() {
     local agent="$1"
     shift
-    agent_exists "$agent" || die "Agent '${agent}' not found. Run: xnullclaw ${agent} setup"
+    agent_exists "$agent" || die "Agent '${agent}' not found. Run: xnc ${agent} setup"
     is_running "$agent"   && die "Agent '${agent}' is already running. Use 'restart' to restart."
     ensure_image
 
@@ -485,8 +485,8 @@ cmd_start() {
     else
         echo "  No port exposed (Telegram uses outbound polling)."
     fi
-    echo "  Logs:    xnullclaw ${agent} logs -f"
-    echo "  Stop:    xnullclaw ${agent} stop"
+    echo "  Logs:    xnc ${agent} logs -f"
+    echo "  Stop:    xnc ${agent} stop"
     echo ""
 }
 
@@ -568,7 +568,7 @@ cmd_logs() {
 cmd_cli() {
     local agent="$1"; shift
     _log DEBUG "cli: agent=$agent args=$*"
-    agent_exists "$agent" || die "Agent '${agent}' not found. Run: xnullclaw ${agent} setup"
+    agent_exists "$agent" || die "Agent '${agent}' not found. Run: xnc ${agent} setup"
     ensure_image
 
     local dir; dir="$(agent_dir "$agent")"
@@ -624,7 +624,7 @@ cmd_clone() {
     - API keys are shared from the source config.
       Change them if you want separate billing/accounts.
 
-  Start: xnullclaw ${agent} start
+  Start: xnc ${agent} start
 
 EOF
 }
@@ -669,15 +669,15 @@ cmd_destroy() {
 
 # ── Global: list ─────────────────────────────────────────────────
 cmd_list() {
-    if [[ ! -d "$XNULLCLAW_HOME" ]]; then
-        echo "No agents yet. Create one: xnullclaw <name> setup"
+    if [[ ! -d "$XNC_HOME" ]]; then
+        echo "No agents yet. Create one: xnc <name> setup"
         return
     fi
 
     local found=false
     printf "\033[1m%-4s %-18s %-10s %-12s %s\033[0m\n" "" "AGENT" "STATUS" "CREATED" "CLONED_FROM"
 
-    for dir in "$XNULLCLAW_HOME"/*/; do
+    for dir in "$XNC_HOME"/*/; do
         [[ -d "$dir" ]] || continue
         local name; name=$(basename "$dir")
         [[ "$name" == ".tmp" ]] && continue
@@ -700,7 +700,7 @@ cmd_list() {
             "$emoji" "$name" "$status" "${created%%T*}" "$cloned"
     done
 
-    $found || echo "No agents yet. Create one: xnullclaw <name> setup"
+    $found || echo "No agents yet. Create one: xnc <name> setup"
 }
 
 # ── Agent: send ──────────────────────────────────────────────────
@@ -711,7 +711,7 @@ cmd_send() {
 
     local message
     message=$(cat)
-    [[ -n "$message" ]] || die "No message on stdin. Usage: echo 'hello' | xnullclaw ${agent} send"
+    [[ -n "$message" ]] || die "No message on stdin. Usage: echo 'hello' | xnc ${agent} send"
 
     local cname; cname=$(container_name "$agent")
     local mux_mode; mux_mode=$(read_meta "$agent" "MUX_MODE" "false")
@@ -761,10 +761,10 @@ cmd_send_all() {
     _log DEBUG "send-all"
     local message
     message=$(cat)
-    [[ -n "$message" ]] || die "No message on stdin. Usage: echo 'hello' | xnullclaw send-all"
+    [[ -n "$message" ]] || die "No message on stdin. Usage: echo 'hello' | xnc send-all"
 
     local agents=()
-    for dir in "$XNULLCLAW_HOME"/*/; do
+    for dir in "$XNC_HOME"/*/; do
         [[ -d "$dir" ]] || continue
         local name; name=$(basename "$dir")
         [[ "$name" == ".tmp" || "$name" == ".mux" ]] && continue
@@ -807,7 +807,7 @@ cmd_send_all() {
 cmd_send_some() {
     local agent_list="$1"
     _log DEBUG "send-some: agents=$agent_list"
-    [[ -n "$agent_list" ]] || die "Usage: echo 'msg' | xnullclaw send-some alice,bob"
+    [[ -n "$agent_list" ]] || die "Usage: echo 'msg' | xnc send-some alice,bob"
 
     local message
     message=$(cat)
@@ -863,7 +863,7 @@ cmd_running() {
     done
 
     local running_agents=()
-    for dir in "$XNULLCLAW_HOME"/*/; do
+    for dir in "$XNC_HOME"/*/; do
         [[ -d "$dir" ]] || continue
         local name; name=$(basename "$dir")
         [[ "$name" == ".tmp" || "$name" == ".mux" ]] && continue
@@ -963,13 +963,13 @@ cmd_running() {
 
 # ── Global: list --json ─────────────────────────────────────────
 cmd_list_json() {
-    if [[ ! -d "$XNULLCLAW_HOME" ]]; then
+    if [[ ! -d "$XNC_HOME" ]]; then
         echo "[]"
         return
     fi
 
     local _json_arr="[]"
-    for _dir in "$XNULLCLAW_HOME"/*/; do
+    for _dir in "$XNC_HOME"/*/; do
         [[ -d "$_dir" ]] || continue
         local _name; _name=$(basename "$_dir")
         [[ "$_name" == .* ]] && continue
@@ -1333,10 +1333,10 @@ cmd_watch() {
 # ── Mux management ──────────────────────────────────────────────
 cmd_mux() {
     local subcmd="${1:-}"
-    [[ -n "$subcmd" ]] || die "Usage: xnullclaw mux <start|stop|status|logs>"
+    [[ -n "$subcmd" ]] || die "Usage: xnc mux <start|stop|status|logs>"
     shift
 
-    local mux_dir="$XNULLCLAW_HOME/.mux"
+    local mux_dir="$XNC_HOME/.mux"
     local mux_pid_file="$mux_dir/mux.pid"
     local mux_log_dir="$mux_dir/logs"
     local mux_log_file="$mux_log_dir/mux.log"
@@ -1356,7 +1356,7 @@ cmd_mux() {
                 rm -f "$mux_pid_file"
             fi
 
-            local mux_bin="${XNULLCLAW_MUX_BIN:-xnc-mux}"
+            local mux_bin="${XNC_MUX_BIN:-xnc-mux}"
             command -v "$mux_bin" &>/dev/null || die "Mux binary '${mux_bin}' not found in PATH."
 
             info "Starting mux..."
@@ -1440,11 +1440,11 @@ cmd_mux() {
 # ── Help ─────────────────────────────────────────────────────────
 show_help() {
     cat <<'EOF'
-xnullclaw - Multi-agent nullclaw wrapper with hardened Docker isolation
+xnc - Multi-agent nullclaw wrapper with hardened Docker isolation
 
 USAGE
-  xnullclaw <agent> <command> [args...]
-  xnullclaw <global-command>
+  xnc <agent> <command> [args...]
+  xnc <global-command>
 
 AGENT COMMANDS
   setup                    Create agent with default config
@@ -1492,36 +1492,36 @@ CONFIG KEYS (for 'config set' / 'config get')
   cost_monthly_limit       cost.monthly_limit_usd (float)
 
 EXAMPLES
-  xnullclaw alice setup                  Create agent 'alice'
-  xnullclaw alice start                  Always-on Telegram agent
-  xnullclaw alice start --port 3001      Also expose HTTP gateway
-  xnullclaw alice start --mux            Start for mux orchestration
-  xnullclaw alice cli                    Interactive chat session
-  xnullclaw alice cli -m "Hello"         One-shot message
-  xnullclaw alice logs -f                Follow live logs
-  xnullclaw bob clone alice              New agent from alice's config
-  xnullclaw bob clone alice --with-data  Clone with memory/history
-  xnullclaw list                         Show all agents
-  xnullclaw list --json                  Show all agents as JSON
-  xnullclaw running --json               Running agents with ports
-  echo "hello" | xnullclaw alice send    Send message to agent
-  echo "stop" | xnullclaw send-all       Broadcast to all agents
-  echo "hi" | xnullclaw send-some a,b    Send to specific agents
-  xnullclaw alice config get model       Read agent's model
-  xnullclaw alice config set model "openai/gpt-4o"
-  xnullclaw alice costs --today          Today's costs
-  xnullclaw alice drain                  Get buffered output
-  xnullclaw alice watch                  Stream live output
-  xnullclaw mux start                    Start mux orchestrator
+  xnc alice setup                  Create agent 'alice'
+  xnc alice start                  Always-on Telegram agent
+  xnc alice start --port 3001      Also expose HTTP gateway
+  xnc alice start --mux            Start for mux orchestration
+  xnc alice cli                    Interactive chat session
+  xnc alice cli -m "Hello"         One-shot message
+  xnc alice logs -f                Follow live logs
+  xnc bob clone alice              New agent from alice's config
+  xnc bob clone alice --with-data  Clone with memory/history
+  xnc list                         Show all agents
+  xnc list --json                  Show all agents as JSON
+  xnc running --json               Running agents with ports
+  echo "hello" | xnc alice send    Send message to agent
+  echo "stop" | xnc send-all       Broadcast to all agents
+  echo "hi" | xnc send-some a,b    Send to specific agents
+  xnc alice config get model       Read agent's model
+  xnc alice config set model "openai/gpt-4o"
+  xnc alice costs --today          Today's costs
+  xnc alice drain                  Get buffered output
+  xnc alice watch                  Stream live output
+  xnc mux start                    Start mux orchestrator
 
 FILE LAYOUT
-  ~/.xnullclaw/
+  ~/.xnc/
   ├── .tmp/nullclaw/                Git clone for building image
   ├── .mux/                         Mux process data
   │   ├── mux.pid                   Mux PID file
   │   └── logs/mux.log              Mux process log
   └── <agent>/
-      ├── .meta                     Metadata (managed by xnullclaw)
+      ├── .meta                     Metadata (managed by xnc)
       ├── config.json               Nullclaw config (edit this)
       └── data/                     All agent data (persistent)
           ├── .nullclaw/            Secrets, auth, cron (auto-managed)
@@ -1542,9 +1542,9 @@ TELEGRAM
   Create a separate bot via @BotFather for each agent.
 
 ENVIRONMENT
-  XNULLCLAW_HOME    Base directory    (default: ~/.xnullclaw)
-  XNULLCLAW_IMAGE   Docker image      (default: nullclaw:latest)
-  XNULLCLAW_MUX_BIN Mux binary name   (default: xnc-mux)
+  XNC_HOME    Base directory    (default: ~/.xnc)
+  XNC_IMAGE   Docker image      (default: nullclaw:latest)
+  XNC_MUX_BIN Mux binary name   (default: xnc-mux)
 EOF
 }
 
@@ -1576,7 +1576,7 @@ main() {
             ;;
         send-some)
             shift
-            [[ $# -ge 1 ]] || die "Usage: echo 'msg' | xnullclaw send-some alice,bob"
+            [[ $# -ge 1 ]] || die "Usage: echo 'msg' | xnc send-some alice,bob"
             cmd_send_some "$1"
             ;;
         mux)
@@ -1584,7 +1584,7 @@ main() {
             cmd_mux "$@"
             ;;
         image)
-            [[ $# -ge 2 ]] || die "Usage: xnullclaw image <build|update|status>"
+            [[ $# -ge 2 ]] || die "Usage: xnc image <build|update|status>"
             case "$2" in
                 build)  cmd_image_build ;;
                 update) cmd_image_update ;;
@@ -1594,7 +1594,7 @@ main() {
             ;;
         *)
             local agent="$1"
-            [[ $# -ge 2 ]] || die "Usage: xnullclaw <agent> <command>. Run 'xnullclaw help' for details."
+            [[ $# -ge 2 ]] || die "Usage: xnc <agent> <command>. Run 'xnc help' for details."
             validate_name "$agent"
             local cmd="$2"
             shift 2
@@ -1614,7 +1614,7 @@ main() {
                 logs)     cmd_logs "$agent" "$@" ;;
                 cli)      cmd_cli "$agent" "$@" ;;
                 clone)
-                    [[ $# -ge 1 ]] || die "Usage: xnullclaw <agent> clone <source> [--with-data]"
+                    [[ $# -ge 1 ]] || die "Usage: xnc <agent> clone <source> [--with-data]"
                     cmd_clone "$agent" "$@"
                     ;;
                 destroy)  cmd_destroy "$agent" "$@" ;;
@@ -1625,16 +1625,16 @@ main() {
                     case "$config_cmd" in
                         get)  cmd_config_get "$agent" "${1:-}" ;;
                         set)
-                            [[ $# -ge 2 ]] || die "Usage: xnullclaw ${agent} config set <key> <value>"
+                            [[ $# -ge 2 ]] || die "Usage: xnc ${agent} config set <key> <value>"
                             cmd_config_set "$agent" "$1" "$2"
                             ;;
-                        *)    die "Usage: xnullclaw ${agent} config <get|set> [args...]" ;;
+                        *)    die "Usage: xnc ${agent} config <get|set> [args...]" ;;
                     esac
                     ;;
                 costs)    cmd_costs "$agent" "$@" ;;
                 drain)    cmd_drain "$agent" ;;
                 watch)    cmd_watch "$agent" ;;
-                *)        die "Unknown command: ${cmd}. Run 'xnullclaw help' for details." ;;
+                *)        die "Unknown command: ${cmd}. Run 'xnc help' for details." ;;
             esac
             ;;
     esac

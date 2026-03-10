@@ -166,6 +166,11 @@ func (m *Mux) LoadMessages(msgs []Message) {
 	copy(m.messages, msgs)
 }
 
+// ClearHistory wipes the in-memory conversation history.
+func (m *Mux) ClearHistory() {
+	m.messages = nil
+}
+
 // ---------------------------------------------------------------------------
 // Run — the core agentic loop
 // ---------------------------------------------------------------------------

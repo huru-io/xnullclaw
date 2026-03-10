@@ -38,6 +38,13 @@ var personaPresets = map[string]config.PersonaDimensions{
 	},
 }
 
+// validTTSVoices are the available OpenAI TTS voices.
+var validTTSVoices = map[string]bool{
+	"alloy": true, "ash": true, "ballad": true, "coral": true,
+	"echo": true, "fable": true, "onyx": true, "nova": true,
+	"sage": true, "shimmer": true,
+}
+
 // dimensionDescriptions maps dimension names to descriptions of their effect.
 var dimensionDescriptions = map[string]string{
 	"warmth":         "How warm and friendly the tone is (0=cold, 1=very warm)",
@@ -52,7 +59,7 @@ var dimensionDescriptions = map[string]string{
 	"creativity":     "Creative vs conventional responses (0=conventional, 1=highly creative)",
 }
 
-func registerPersonaTools(r *Registry, cfg *config.Config, configPath string) {
+func registerPersonaTools(r *Registry, cfg *config.Config, configPath string, wrapperPath string) {
 	// -----------------------------------------------------------------------
 	// set_persona
 	// -----------------------------------------------------------------------
@@ -63,7 +70,7 @@ func registerPersonaTools(r *Registry, cfg *config.Config, configPath string) {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"field": map[string]any{"type": "string", "description": "Field to update", "enum": []string{"name", "language", "bio", "extra_instructions"}},
+					"field": map[string]any{"type": "string", "description": "Field to update", "enum": []string{"name", "owner_name", "language", "bio", "extra_instructions", "tts_voice"}},
 					"value": map[string]any{"type": "string", "description": "New value for the field"},
 				},
 				"required": []string{"field", "value"},
@@ -78,21 +85,46 @@ func registerPersonaTools(r *Registry, cfg *config.Config, configPath string) {
 			if err != nil {
 				return "", err
 			}
+
+			var oldValue string
 			switch field {
 			case "name":
+				oldValue = cfg.Persona.Name
 				cfg.Persona.Name = value
+			case "owner_name":
+				oldValue = cfg.Persona.OwnerName
+				cfg.Persona.OwnerName = value
 			case "language":
 				cfg.Persona.Language = value
 			case "bio":
 				cfg.Persona.Bio = value
 			case "extra_instructions":
 				cfg.Persona.ExtraInstructions = value
+			case "tts_voice":
+				if !validTTSVoices[value] {
+					return "", fmt.Errorf("invalid TTS voice: %s (valid: alloy, ash, ballad, coral, echo, fable, onyx, nova, sage, shimmer)", value)
+				}
+				cfg.Voice.TTSVoice = value
+				cfg.OpenAI.TTSVoice = value
 			default:
-				return "", fmt.Errorf("invalid persona field: %s (must be one of: name, language, bio, extra_instructions)", field)
+				return "", fmt.Errorf("invalid persona field: %s (must be one of: name, owner_name, language, bio, extra_instructions, tts_voice)", field)
 			}
 			if err := cfg.Save(configPath); err != nil {
 				return "", fmt.Errorf("failed to save config: %w", err)
 			}
+
+			// Broadcast identity changes to all running agents.
+			if (field == "name" || field == "owner_name") && oldValue != "" && oldValue != value {
+				var notice string
+				if field == "name" {
+					notice = fmt.Sprintf("Notice: the orchestrator's name has changed from %s to %s. Address the orchestrator as %s from now on.", oldValue, value, value)
+				} else {
+					notice = fmt.Sprintf("Notice: the human controller's name has changed from %s to %s. Address the human as %s from now on.", oldValue, value, value)
+				}
+				// Best-effort broadcast — don't fail the config update if this errors.
+				runWrapperWithStdin(ctx, wrapperPath, notice, "send-all")
+			}
+
 			return fmt.Sprintf("Persona %s updated to: %s", field, value), nil
 		},
 	)
@@ -175,7 +207,17 @@ func registerPersonaTools(r *Registry, cfg *config.Config, configPath string) {
 			},
 		},
 		func(ctx context.Context, args map[string]any) (string, error) {
-			data, err := json.MarshalIndent(cfg.Persona, "", "  ")
+			// Include voice settings alongside persona.
+			output := struct {
+				config.PersonaConfig
+				TTSVoice string `json:"tts_voice"`
+				TTSEnabled bool `json:"tts_enabled"`
+			}{
+				PersonaConfig: cfg.Persona,
+				TTSVoice:      cfg.Voice.TTSVoice,
+				TTSEnabled:    cfg.Voice.TTSEnabled,
+			}
+			data, err := json.MarshalIndent(output, "", "  ")
 			if err != nil {
 				return "", fmt.Errorf("failed to marshal persona: %w", err)
 			}
@@ -234,6 +276,50 @@ func registerPersonaTools(r *Registry, cfg *config.Config, configPath string) {
 				return "", fmt.Errorf("failed to save config: %w", err)
 			}
 			return fmt.Sprintf("Applied persona preset: %s", preset), nil
+		},
+	)
+
+	// -----------------------------------------------------------------------
+	// list_voices
+	// -----------------------------------------------------------------------
+	r.Register(
+		Definition{
+			Name:        "list_voices",
+			Description: "List available TTS voices and show which one is currently active",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
+		func(ctx context.Context, args map[string]any) (string, error) {
+			type voiceInfo struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+				Active      bool   `json:"active,omitempty"`
+			}
+			voices := []voiceInfo{
+				{"alloy", "Neutral, balanced", false},
+				{"ash", "Warm, conversational", false},
+				{"ballad", "Soft, gentle", false},
+				{"coral", "Clear, expressive", false},
+				{"echo", "Smooth, authoritative", false},
+				{"fable", "Storytelling, animated", false},
+				{"nova", "Friendly, upbeat (default)", false},
+				{"onyx", "Deep, resonant", false},
+				{"sage", "Calm, thoughtful", false},
+				{"shimmer", "Bright, energetic", false},
+			}
+			current := cfg.Voice.TTSVoice
+			for i := range voices {
+				if voices[i].Name == current {
+					voices[i].Active = true
+				}
+			}
+			data, err := json.MarshalIndent(voices, "", "  ")
+			if err != nil {
+				return "", err
+			}
+			return string(data), nil
 		},
 	)
 }

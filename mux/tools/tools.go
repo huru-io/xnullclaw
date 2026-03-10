@@ -60,25 +60,25 @@ func (r *Registry) Execute(ctx context.Context, name string, args map[string]any
 
 // RegisterAll registers all tool sets into the registry.
 func RegisterAll(r *Registry, cfg *config.Config, configPath string, store *memory.Store, wrapperPath string) {
-	registerAgentTools(r, wrapperPath)
+	registerAgentTools(r, cfg, wrapperPath, store)
 	registerFileTools(r, wrapperPath)
 	registerMemoryTools(r, store)
-	registerPersonaTools(r, cfg, configPath)
+	registerPersonaTools(r, cfg, configPath, wrapperPath)
 	registerCostTools(r, cfg, configPath, store, wrapperPath)
 	registerPassthroughTools(r, store)
 }
 
 // ---------------------------------------------------------------------------
-// Helpers for shelling out to xnullclaw
+// Helpers for shelling out to xnc
 // ---------------------------------------------------------------------------
 
-// RunWrapper executes an xnullclaw command and returns stdout.
+// RunWrapper executes an xnc command and returns stdout.
 // Exported for use by main.go during startup/shutdown.
 func RunWrapper(ctx context.Context, wrapperPath string, args ...string) (string, error) {
 	return runWrapper(ctx, wrapperPath, args...)
 }
 
-// runWrapper executes an xnullclaw command and returns stdout.
+// runWrapper executes an xnc command and returns stdout.
 func runWrapper(ctx context.Context, wrapperPath string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, wrapperPath, args...)
 	var stdout, stderr bytes.Buffer
