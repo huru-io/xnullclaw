@@ -33,6 +33,7 @@ _log() {
     local level="$1"; shift
     mkdir -p "$(dirname "$XNULLCLAW_LOG")" 2>/dev/null || true
     printf '%s [%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$level" "$*" >> "$XNULLCLAW_LOG" 2>/dev/null || true
+    chmod 600 "$XNULLCLAW_LOG" 2>/dev/null || true
 }
 die()  { _log ERROR "$*"; printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 info() { _log INFO  "$*"; printf '\033[34m::\033[0m %s\n' "$*"; }
@@ -55,7 +56,7 @@ epoch_from_iso() {
         || date -j -f '%Y-%m-%dT%H:%M:%S%z' "${ts%Z}+0000" +%s 2>/dev/null \
         || echo 0
     else
-        date -d "$1" +%s 2>/dev/null || echo 0
+        date -d "$ts" +%s 2>/dev/null || echo 0
     fi
 }
 portable_sed_i() {
@@ -488,8 +489,12 @@ cmd_stop() {
         info "Stopping agent '${agent}'..."
         if ! docker stop "$cname" >/dev/null; then
             _log ERROR "docker stop failed: cname=$cname"
+            die "Failed to stop container '${cname}'."
         fi
         docker rm "$cname" >/dev/null 2>&1 || true
+        # Clear stale runtime meta
+        write_meta "$agent" "HOST_PORT" ""
+        write_meta "$agent" "MUX_MODE" ""
         ok "Agent '${agent}' stopped."
     else
         warn "Agent '${agent}' is not running."
@@ -501,7 +506,9 @@ cmd_restart() {
     local agent="$1"
     _log DEBUG "restart: agent=$agent"
     shift
-    cmd_stop "$agent" 2>/dev/null || true
+    if is_running "$agent"; then
+        cmd_stop "$agent"
+    fi
     cmd_start "$agent" "$@"
 }
 
@@ -570,6 +577,7 @@ cmd_clone() {
     local with_data="${3:-}"
     _log DEBUG "clone: agent=$agent source=$source with_data=$with_data"
     validate_name "$agent"
+    validate_name "$source"
     agent_exists "$source" || die "Source agent '${source}' not found."
     agent_exists "$agent"  && die "Agent '${agent}' already exists."
 
@@ -698,6 +706,7 @@ cmd_send() {
     _log DEBUG "send: agent=$agent port=$port url=http://127.0.0.1:${port}/webhook"
     if ! "${curl_args[@]}"; then
         _log ERROR "curl failed: agent=$agent port=$port"
+        return 1
     fi
 }
 
@@ -762,6 +771,7 @@ cmd_send_some() {
 
     # Validate all agents first
     for agent in "${agents[@]}"; do
+        validate_name "$agent"
         agent_exists "$agent" || die "Agent '${agent}' not found."
         is_running "$agent"   || die "Agent '${agent}' is not running."
     done
@@ -1271,7 +1281,7 @@ cmd_drain() {
     local last_drain; last_drain=$(read_meta "$agent" "LAST_DRAIN" "")
 
     local log_args=(docker logs)
-    if [[ -n "$last_drain" ]]; then
+    if [[ -n "$last_drain" && "$last_drain" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
         log_args+=(--since "$last_drain")
     fi
     log_args+=("$cname")
@@ -1337,6 +1347,7 @@ cmd_mux() {
                 die "Mux is not running (no PID file)."
             fi
             local pid; pid=$(cat "$mux_pid_file")
+            [[ "$pid" =~ ^[0-9]+$ ]] || { rm -f "$mux_pid_file"; die "Corrupt PID file."; }
             if kill -0 "$pid" 2>/dev/null; then
                 info "Stopping mux (PID ${pid})..."
                 kill -TERM "$pid"
@@ -1361,6 +1372,7 @@ cmd_mux() {
         status)
             if [[ -f "$mux_pid_file" ]]; then
                 local pid; pid=$(cat "$mux_pid_file")
+                [[ "$pid" =~ ^[0-9]+$ ]] || { rm -f "$mux_pid_file"; die "Corrupt PID file."; }
                 if kill -0 "$pid" 2>/dev/null; then
                     echo "Mux:    running (PID ${pid})"
                     echo "Log:    ${mux_log_file}"
@@ -1513,7 +1525,8 @@ EOF
 
 # ── Main router ──────────────────────────────────────────────────
 main() {
-    _log DEBUG "invoked: $0 $*"
+    # Log command and subcommand only — avoid logging argument values (may contain secrets)
+    _log DEBUG "invoked: ${1:-} ${2:-}"
     [[ $# -ge 1 ]] || { show_help; exit 0; }
 
     case "$1" in
@@ -1557,6 +1570,7 @@ main() {
         *)
             local agent="$1"
             [[ $# -ge 2 ]] || die "Usage: xnullclaw <agent> <command>. Run 'xnullclaw help' for details."
+            validate_name "$agent"
             local cmd="$2"
             shift 2
 
