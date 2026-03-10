@@ -205,7 +205,7 @@ func TestPersonaTools(t *testing.T) {
 	}
 
 	// Set persona field.
-	result, err = r.Execute(ctx, "set_persona", map[string]any{
+	_, err = r.Execute(ctx, "set_persona", map[string]any{
 		"field": "name",
 		"value": "jarvis",
 	})

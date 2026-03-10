@@ -167,7 +167,7 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 	}
 
 	// Photo message.
-	if msg.Photo != nil && len(msg.Photo) > 0 {
+	if len(msg.Photo) > 0 {
 		// Use the largest photo (last in the slice).
 		largest := msg.Photo[len(msg.Photo)-1]
 		if b.onMedia != nil {
