@@ -16,6 +16,7 @@ DOCKER_IMAGE="${XNULLCLAW_IMAGE:-nullclaw:latest}"
 CONTAINER_PREFIX="xnc"
 REPO_URL="https://github.com/nullclaw/nullclaw.git"
 BUILD_DIR="$XNULLCLAW_HOME/.tmp/nullclaw"
+IS_MACOS=false; [[ "$(uname)" == "Darwin" ]] && IS_MACOS=true
 
 # ── Emoji identity pool ─────────────────────────────────────────
 EMOJI_POOL=(
@@ -33,6 +34,39 @@ ok()   { printf '\033[32mok:\033[0m %s\n' "$*"; }
 
 container_name() { echo "${CONTAINER_PREFIX}-${1}"; }
 agent_dir()      { echo "${XNULLCLAW_HOME}/${1}"; }
+
+# Portable helpers (BSD/GNU compat)
+iso_now() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+epoch_from_iso() {
+    # Convert ISO8601 timestamp to epoch seconds.
+    # Handles Docker format (2024-01-15T10:30:00.123456789Z) by stripping fractional seconds.
+    local ts="${1%%.*}"          # strip .nanoseconds
+    ts="${ts%Z}"                 # strip trailing Z if no fractional part
+    ts="${ts}Z"                  # re-add Z for consistent format
+    if $IS_MACOS; then
+        date -j -f '%Y-%m-%dT%H:%M:%SZ' "$ts" +%s 2>/dev/null \
+        || date -j -f '%Y-%m-%dT%H:%M:%S%z' "${ts%Z}+0000" +%s 2>/dev/null \
+        || echo 0
+    else
+        date -d "$1" +%s 2>/dev/null || echo 0
+    fi
+}
+portable_sed_i() {
+    # sed -i that works on both macOS (BSD) and Linux (GNU)
+    if $IS_MACOS; then
+        sed -i '' "$@"
+    else
+        sed -i "$@"
+    fi
+}
+portable_stat_mtime() {
+    # Return file modification time as epoch seconds
+    if $IS_MACOS; then
+        stat -f '%m' "$1" 2>/dev/null || echo ""
+    else
+        stat -c '%Y' "$1" 2>/dev/null || echo ""
+    fi
+}
 
 validate_name() {
     [[ "$1" =~ ^[a-zA-Z][a-zA-Z0-9_-]*$ ]] || \
@@ -58,7 +92,7 @@ read_meta() {
 write_meta() {
     local meta; meta="$(agent_dir "$1")/.meta"
     if [[ -f "$meta" ]] && grep -q "^${2}=" "$meta" 2>/dev/null; then
-        sed -i "s|^${2}=.*|${2}=${3}|" "$meta"
+        portable_sed_i "s|^${2}=.*|${2}=${3}|" "$meta"
     else
         echo "${2}=${3}" >> "$meta"
     fi
@@ -80,21 +114,21 @@ next_port() {
 
 next_emoji() {
     # Collect all emojis currently assigned to existing agents
-    local -A used_emojis
+    local used_emojis=""
     local metas
     metas=$(compgen -G "$XNULLCLAW_HOME"/*/.meta 2>/dev/null || true)
     for meta in $metas; do
         local e
         e=$(grep "^EMOJI=" "$meta" 2>/dev/null | head -1 | cut -d= -f2- || true)
-        [[ -n "$e" ]] && used_emojis["$e"]=1
+        [[ -n "$e" ]] && used_emojis="${used_emojis}${e}|"
     done
 
     # Find first unused emoji from the pool
     for emoji in "${EMOJI_POOL[@]}"; do
-        if [[ -z "${used_emojis[$emoji]+x}" ]]; then
-            echo "$emoji"
-            return
-        fi
+        case "$used_emojis" in
+            *"${emoji}|"*) ;; # already used
+            *) echo "$emoji"; return ;;
+        esac
     done
 
     # All 40 emojis taken — fallback
@@ -256,17 +290,23 @@ CONF
 }
 
 # ── Docker run helpers ───────────────────────────────────────────
-# Common hardening args for all docker run invocations
+# Common hardening + resource limit args for all docker run invocations.
+# Sets _DOCKER_ARGS array. Caller must pass agent dir as $1.
 docker_hardened_args() {
     local dir="$1"
-    echo \
-        --read-only \
-        --tmpfs /tmp:size=64M,noexec,nosuid \
-        --security-opt no-new-privileges:true \
-        --cap-drop ALL \
-        --user "$(id -u):$(id -g)" \
-        -v "${dir}/data:/nullclaw-data" \
+    _DOCKER_ARGS=(
+        --read-only
+        --tmpfs /tmp:size=64M,noexec,nosuid
+        --security-opt no-new-privileges:true
+        --cap-drop ALL
+        --memory 128m
+        --memory-swap 128m
+        --cpus 0.25
+        --pids-limit 64
+        --user "$(id -u):$(id -g)"
+        -v "${dir}/data:/nullclaw-data"
         -v "${dir}/config.json:/nullclaw-data/.nullclaw/config.json:ro"
+    )
 }
 
 # ── Agent: setup ─────────────────────────────────────────────────
@@ -281,7 +321,7 @@ cmd_setup() {
 
     mkdir -p "${dir}/data/.nullclaw" "${dir}/data/workspace"
     generate_config > "${dir}/config.json"
-    write_meta "$agent" "CREATED" "$(date -Iseconds)"
+    write_meta "$agent" "CREATED" "$(iso_now)"
 
     local emoji; emoji=$(next_emoji)
     write_meta "$agent" "EMOJI" "$emoji"
@@ -360,17 +400,12 @@ cmd_start() {
     docker rm "$cname" 2>/dev/null || true
 
     # Build docker run command
-    local -a run_args=(
+    docker_hardened_args "$dir"
+    local run_args=(
         docker run -d
         --name "$cname"
         --restart unless-stopped
-        --read-only
-        --tmpfs /tmp:size=64M,noexec,nosuid
-        --security-opt no-new-privileges:true
-        --cap-drop ALL
-        --user "$(id -u):$(id -g)"
-        -v "${dir}/data:/nullclaw-data"
-        -v "${dir}/config.json:/nullclaw-data/.nullclaw/config.json:ro"
+        "${_DOCKER_ARGS[@]}"
     )
 
     if [[ -n "$expose_port" ]]; then
@@ -404,7 +439,7 @@ cmd_start() {
     if [[ -n "$expose_port" ]]; then
         echo "  Gateway: http://127.0.0.1:${expose_port}"
         local code
-        code=$(docker logs "$cname" 2>&1 | grep -oP 'pairing code: \K\d+' || true)
+        code=$(docker logs "$cname" 2>&1 | grep -oE 'pairing code: [0-9]+' | sed 's/pairing code: //' || true)
         [[ -n "$code" ]] && echo "  Pairing: curl -s -X POST http://127.0.0.1:${expose_port}/pair -H 'X-Pairing-Code: ${code}'"
     else
         echo "  No port exposed (Telegram uses outbound polling)."
@@ -486,14 +521,9 @@ cmd_cli() {
 
     local dir; dir="$(agent_dir "$agent")"
 
+    docker_hardened_args "$dir"
     docker run --rm -it \
-        --read-only \
-        --tmpfs /tmp:size=64M,noexec,nosuid \
-        --security-opt no-new-privileges:true \
-        --cap-drop ALL \
-        --user "$(id -u):$(id -g)" \
-        -v "${dir}/data:/nullclaw-data" \
-        -v "${dir}/config.json:/nullclaw-data/.nullclaw/config.json:ro" \
+        "${_DOCKER_ARGS[@]}" \
         "$DOCKER_IMAGE" \
         agent "$@"
 }
@@ -514,7 +544,7 @@ cmd_clone() {
     mkdir -p "${dst_dir}/data/.nullclaw" "${dst_dir}/data/workspace"
     cp "${src_dir}/config.json" "${dst_dir}/config.json"
 
-    write_meta "$agent" "CREATED" "$(date -Iseconds)"
+    write_meta "$agent" "CREATED" "$(iso_now)"
     write_meta "$agent" "CLONED_FROM" "$source"
 
     local emoji; emoji=$(next_emoji)
@@ -613,7 +643,7 @@ cmd_send() {
     [[ -n "$message" ]] || die "No message on stdin. Usage: echo 'hello' | xnullclaw ${agent} send"
 
     local token; token=$(read_meta "$agent" "AUTH_TOKEN" "")
-    local -a curl_args=(
+    local curl_args=(
         curl -s -S --max-time 600 --connect-timeout 5
         -X POST "http://127.0.0.1:${port}/webhook"
         -H "Content-Type: application/json"
@@ -633,7 +663,7 @@ cmd_send_all() {
     message=$(cat)
     [[ -n "$message" ]] || die "No message on stdin. Usage: echo 'hello' | xnullclaw send-all"
 
-    local -a agents=()
+    local agents=()
     for dir in "$XNULLCLAW_HOME"/*/; do
         [[ -d "$dir" ]] || continue
         local name; name=$(basename "$dir")
@@ -727,7 +757,7 @@ cmd_running() {
         esac
     done
 
-    local -a running_agents=()
+    local running_agents=()
     for dir in "$XNULLCLAW_HOME"/*/; do
         [[ -d "$dir" ]] || continue
         local name; name=$(basename "$dir")
@@ -822,7 +852,7 @@ print(json.dumps(results, indent=2))
             started_at=$(docker inspect "$cname" --format '{{.State.StartedAt}}' 2>/dev/null || echo "")
             if [[ -n "$started_at" ]]; then
                 local start_epoch now_epoch diff_s hours mins
-                start_epoch=$(date -d "$started_at" +%s 2>/dev/null || echo 0)
+                start_epoch=$(epoch_from_iso "$started_at")
                 now_epoch=$(date +%s)
                 diff_s=$((now_epoch - start_epoch))
                 hours=$((diff_s / 3600))
@@ -1193,14 +1223,14 @@ cmd_drain() {
     local cname; cname=$(container_name "$agent")
     local last_drain; last_drain=$(read_meta "$agent" "LAST_DRAIN" "")
 
-    local -a log_args=(docker logs)
+    local log_args=(docker logs)
     if [[ -n "$last_drain" ]]; then
         log_args+=(--since "$last_drain")
     fi
     log_args+=("$cname")
 
     # Update drain timestamp before reading (use current time)
-    write_meta "$agent" "LAST_DRAIN" "$(date -Iseconds)"
+    write_meta "$agent" "LAST_DRAIN" "$(iso_now)"
 
     # Get logs and filter for structured output events
     "${log_args[@]}" 2>&1 | grep -E '^\[EVENT\]|^\{' || true
@@ -1213,7 +1243,7 @@ cmd_watch() {
     is_running "$agent"   || die "Agent '${agent}' is not running."
 
     local cname; cname=$(container_name "$agent")
-    local since; since=$(date -Iseconds)
+    local since; since=$(iso_now)
 
     exec docker logs --follow --since "$since" "$cname" 2>&1
 }
@@ -1287,7 +1317,7 @@ cmd_mux() {
                     echo "Log:    ${mux_log_file}"
                     # Show uptime from PID file modification time
                     local started
-                    started=$(stat -c '%Y' "$mux_pid_file" 2>/dev/null || echo "")
+                    started=$(portable_stat_mtime "$mux_pid_file")
                     if [[ -n "$started" ]]; then
                         local now diff_s hours mins
                         now=$(date +%s)
