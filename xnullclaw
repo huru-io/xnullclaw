@@ -10,6 +10,11 @@
 
 set -euo pipefail
 
+# ── Dependency check ────────────────────────────────────────────
+for _dep in docker jq curl git; do
+    command -v "$_dep" &>/dev/null || { printf '\033[31merror:\033[0m %s is required but not found in PATH.\n' "$_dep" >&2; exit 1; }
+done
+
 # ── Configuration ────────────────────────────────────────────────
 XNULLCLAW_HOME="${XNULLCLAW_HOME:-$HOME/.xnullclaw}"
 DOCKER_IMAGE="${XNULLCLAW_IMAGE:-nullclaw:latest}"
@@ -697,9 +702,9 @@ cmd_send() {
     [[ -n "$token" ]] && curl_args+=(-H "Authorization: Bearer ${token}")
 
     local payload
-    if ! payload=$(python3 -c "import json,sys; print(json.dumps({'message': sys.stdin.read()}))" <<< "$message"); then
-        _log ERROR "python3 json encode failed (is python3 installed?)"
-        die "Failed to encode message payload. Ensure python3 is installed."
+    if ! payload=$(jq -n --arg msg "$message" '{"message": $msg}'); then
+        _log ERROR "jq json encode failed (is jq installed?)"
+        die "Failed to encode message payload. Ensure jq is installed."
     fi
     curl_args+=(-d "$payload")
 
@@ -741,19 +746,19 @@ cmd_send_all() {
     wait
 
     # Build JSON object from results
-    python3 -c "
-import json, sys, os
-results = {}
-tmpdir = sys.argv[1]
-for name in sorted(os.listdir(tmpdir)):
-    with open(os.path.join(tmpdir, name)) as f:
-        content = f.read().strip()
-    try:
-        results[name] = json.loads(content)
-    except (json.JSONDecodeError, ValueError):
-        results[name] = content
-print(json.dumps(results, indent=2))
-" "$tmpdir"
+    local _result_json="{}"
+    for _f in "$tmpdir"/*; do
+        [[ -f "$_f" ]] || continue
+        local _agent_name; _agent_name=$(basename "$_f")
+        local _content; _content=$(cat "$_f")
+        # Try to parse as JSON; if it fails, treat as string
+        if echo "$_content" | jq empty 2>/dev/null; then
+            _result_json=$(echo "$_result_json" | jq --arg k "$_agent_name" --argjson v "$_content" '.[$k] = $v')
+        else
+            _result_json=$(echo "$_result_json" | jq --arg k "$_agent_name" --arg v "$_content" '.[$k] = $v')
+        fi
+    done
+    echo "$_result_json" | jq -S .
 }
 
 # ── Global: send-some ───────────────────────────────────────────
@@ -788,19 +793,20 @@ cmd_send_some() {
     done
     wait
 
-    python3 -c "
-import json, sys, os
-results = {}
-tmpdir = sys.argv[1]
-for name in sorted(os.listdir(tmpdir)):
-    with open(os.path.join(tmpdir, name)) as f:
-        content = f.read().strip()
-    try:
-        results[name] = json.loads(content)
-    except (json.JSONDecodeError, ValueError):
-        results[name] = content
-print(json.dumps(results, indent=2))
-" "$tmpdir"
+    # Build JSON object from results
+    local _result_json="{}"
+    for _f in "$tmpdir"/*; do
+        [[ -f "$_f" ]] || continue
+        local _agent_name; _agent_name=$(basename "$_f")
+        local _content; _content=$(cat "$_f")
+        # Try to parse as JSON; if it fails, treat as string
+        if echo "$_content" | jq empty 2>/dev/null; then
+            _result_json=$(echo "$_result_json" | jq --arg k "$_agent_name" --argjson v "$_content" '.[$k] = $v')
+        else
+            _result_json=$(echo "$_result_json" | jq --arg k "$_agent_name" --arg v "$_content" '.[$k] = $v')
+        fi
+    done
+    echo "$_result_json" | jq -S .
 }
 
 # ── Global: running ─────────────────────────────────────────────
@@ -832,69 +838,51 @@ cmd_running() {
     fi
 
     if $json_mode; then
-        python3 -c "
-import json, subprocess, sys, os
-from datetime import datetime, timezone
+        local _json_arr="[]"
+        for name in "${running_agents[@]}"; do
+            local cname; cname=$(container_name "$name")
+            local _entry; _entry=$(jq -n --arg n "$name" '{"name": $n, "status": "running"}')
 
-home = os.environ.get('XNULLCLAW_HOME', os.path.expanduser('~/.xnullclaw'))
-agents = sys.argv[1:]
-results = []
-for name in agents:
-    cname = 'xnc-' + name
-    entry = {'name': name, 'status': 'running'}
+            # Port
+            local _port_out; _port_out=$(docker port "$cname" 2>/dev/null | head -1 || true)
+            if [[ -n "$_port_out" ]]; then
+                local _port; _port="${_port_out##*:}"
+                _entry=$(echo "$_entry" | jq --argjson p "$_port" '.port = $p')
+            fi
 
-    # Port
-    try:
-        port_lines = subprocess.check_output(
-            ['docker', 'port', cname], stderr=subprocess.DEVNULL, text=True
-        ).strip()
-        if port_lines:
-            port = int(port_lines.split(':')[-1])
-            entry['port'] = port
-    except Exception:
-        pass
+            # Uptime
+            local _started; _started=$(docker inspect --format '{{.State.StartedAt}}' "$cname" 2>/dev/null || echo "")
+            if [[ -n "$_started" ]]; then
+                _entry=$(echo "$_entry" | jq --arg s "$_started" '.started = $s')
+                local _start_epoch _now_epoch _diff_s _hours _mins _uptime
+                _start_epoch=$(epoch_from_iso "$_started")
+                _now_epoch=$(date +%s)
+                _diff_s=$((_now_epoch - _start_epoch))
+                _hours=$((_diff_s / 3600))
+                _mins=$(((_diff_s % 3600) / 60))
+                if [[ $_hours -gt 0 ]]; then
+                    _uptime="${_hours}h$(printf '%02d' "$_mins")m"
+                else
+                    _uptime="${_mins}m"
+                fi
+                _entry=$(echo "$_entry" | jq --arg u "$_uptime" '.uptime = $u')
+            else
+                _entry=$(echo "$_entry" | jq '.uptime = "?"')
+            fi
 
-    # Uptime
-    try:
-        started = subprocess.check_output(
-            ['docker', 'inspect', '--format', '{{.State.StartedAt}}', cname],
-            stderr=subprocess.DEVNULL, text=True
-        ).strip()
-        entry['started'] = started
-        start_dt = datetime.fromisoformat(started.replace('Z', '+00:00'))
-        now = datetime.now(timezone.utc)
-        delta = now - start_dt
-        hours, rem = divmod(int(delta.total_seconds()), 3600)
-        mins = rem // 60
-        entry['uptime'] = f'{hours}h{mins:02d}m' if hours > 0 else f'{mins}m'
-    except Exception:
-        entry['uptime'] = '?'
+            # Restart count
+            local _restarts; _restarts=$(docker inspect --format '{{.RestartCount}}' "$cname" 2>/dev/null || echo "0")
+            _entry=$(echo "$_entry" | jq --argjson r "${_restarts:-0}" '.restarts = $r')
 
-    # Restart count
-    try:
-        restarts = subprocess.check_output(
-            ['docker', 'inspect', '--format', '{{.RestartCount}}', cname],
-            stderr=subprocess.DEVNULL, text=True
-        ).strip()
-        entry['restarts'] = int(restarts)
-    except Exception:
-        entry['restarts'] = 0
+            # Emoji from .meta
+            local _emoji; _emoji=$(read_meta "$name" "EMOJI" "")
+            if [[ -n "$_emoji" ]]; then
+                _entry=$(echo "$_entry" | jq --arg e "$_emoji" '.emoji = $e')
+            fi
 
-    # Emoji from .meta
-    try:
-        meta_path = os.path.join(home, name, '.meta')
-        with open(meta_path) as f:
-            for line in f:
-                if line.startswith('EMOJI='):
-                    entry['emoji'] = line.strip().split('=', 1)[1]
-                    break
-    except Exception:
-        pass
-
-    results.append(entry)
-
-print(json.dumps(results, indent=2))
-" "${running_agents[@]}"
+            _json_arr=$(echo "$_json_arr" | jq --argjson e "$_entry" '. + [$e]')
+        done
+        echo "$_json_arr" | jq .
     else
         printf "\033[1m%-20s %-8s %-8s %-10s %s\033[0m\n" "AGENT" "PORT" "UPTIME" "RESTARTS" "EMOJI"
         for name in "${running_agents[@]}"; do
@@ -937,60 +925,41 @@ cmd_list_json() {
         return
     fi
 
-    python3 -c "
-import json, subprocess, sys, os
+    local _json_arr="[]"
+    for _dir in "$XNULLCLAW_HOME"/*/; do
+        [[ -d "$_dir" ]] || continue
+        local _name; _name=$(basename "$_dir")
+        [[ "$_name" == .* ]] && continue
+        [[ -f "${_dir}/config.json" ]] || continue
 
-home = os.environ.get('XNULLCLAW_HOME', os.path.expanduser('~/.xnullclaw'))
-results = []
+        local _entry; _entry=$(jq -n --arg n "$_name" '{"name": $n}')
 
-for name in sorted(os.listdir(home)):
-    agent_dir = os.path.join(home, name)
-    if name.startswith('.') or not os.path.isdir(agent_dir):
-        continue
-    config_path = os.path.join(agent_dir, 'config.json')
-    if not os.path.isfile(config_path):
-        continue
+        # Status
+        if is_running "$_name"; then
+            _entry=$(echo "$_entry" | jq '.status = "running"')
+        else
+            _entry=$(echo "$_entry" | jq '.status = "stopped"')
+        fi
 
-    entry = {'name': name}
+        # Read .meta
+        local _created="" _emoji=""
+        local _meta_path="${_dir}/.meta"
+        if [[ -f "$_meta_path" ]]; then
+            _created=$(grep "^CREATED=" "$_meta_path" 2>/dev/null | head -1 | cut -d= -f2- || true)
+            _emoji=$(grep "^EMOJI=" "$_meta_path" 2>/dev/null | head -1 | cut -d= -f2- || true)
+        fi
+        _entry=$(echo "$_entry" | jq --arg c "$_created" '.created = $c')
+        if [[ -n "$_emoji" ]]; then
+            _entry=$(echo "$_entry" | jq --arg e "$_emoji" '.emoji = $e')
+        fi
 
-    # Status
-    try:
-        out = subprocess.check_output(
-            ['docker', 'ps', '-q', '-f', 'name=^xnc-' + name + '\$'],
-            stderr=subprocess.DEVNULL, text=True
-        ).strip()
-        entry['status'] = 'running' if out else 'stopped'
-    except Exception:
-        entry['status'] = 'stopped'
+        # Read model from config
+        local _model; _model=$(jq -r '.agents.defaults.model.primary // ""' "${_dir}/config.json" 2>/dev/null || echo "")
+        _entry=$(echo "$_entry" | jq --arg m "$_model" '.model = $m')
 
-    # Read .meta
-    meta_path = os.path.join(agent_dir, '.meta')
-    meta = {}
-    if os.path.isfile(meta_path):
-        with open(meta_path) as f:
-            for line in f:
-                line = line.strip()
-                if '=' in line:
-                    k, v = line.split('=', 1)
-                    meta[k] = v
-
-    entry['created'] = meta.get('CREATED', '')
-    if 'EMOJI' in meta:
-        entry['emoji'] = meta['EMOJI']
-
-    # Read model from config
-    try:
-        with open(config_path) as f:
-            cfg = json.load(f)
-        model = cfg.get('agents', {}).get('defaults', {}).get('model', {}).get('primary', '')
-        entry['model'] = model
-    except Exception:
-        entry['model'] = ''
-
-    results.append(entry)
-
-print(json.dumps(results, indent=2))
-"
+        _json_arr=$(echo "$_json_arr" | jq --argjson e "$_entry" '. + [$e]')
+    done
+    echo "$_json_arr" | jq 'sort_by(.name)'
 }
 
 # ── Agent: status --json ────────────────────────────────────────
@@ -1002,66 +971,49 @@ cmd_status_json() {
     local cname; cname=$(container_name "$agent")
 
     if is_running "$agent"; then
-        python3 -c "
-import json, subprocess, sys, os
-from datetime import datetime, timezone
+        local _result; _result='{"status":"running"}'
 
-agent = sys.argv[1]
-cname = sys.argv[2]
-agent_dir = sys.argv[3]
-result = {'status': 'running'}
+        # Started at + uptime
+        local _started; _started=$(docker inspect --format '{{.State.StartedAt}}' "$cname" 2>/dev/null || echo "")
+        if [[ -n "$_started" ]]; then
+            _result=$(echo "$_result" | jq --arg s "$_started" '.started = $s')
+            local _start_epoch _now_epoch _diff_s _hours _mins _uptime
+            _start_epoch=$(epoch_from_iso "$_started")
+            _now_epoch=$(date +%s)
+            _diff_s=$((_now_epoch - _start_epoch))
+            _hours=$((_diff_s / 3600))
+            _mins=$(((_diff_s % 3600) / 60))
+            if [[ $_hours -gt 0 ]]; then
+                _uptime="${_hours}h$(printf '%02d' "$_mins")m"
+            else
+                _uptime="${_mins}m"
+            fi
+            _result=$(echo "$_result" | jq --arg u "$_uptime" '.uptime = $u')
+        else
+            _result=$(echo "$_result" | jq '.uptime = "?"')
+        fi
 
-# Started at + uptime
-try:
-    started = subprocess.check_output(
-        ['docker', 'inspect', '--format', '{{.State.StartedAt}}', cname],
-        stderr=subprocess.DEVNULL, text=True
-    ).strip()
-    result['started'] = started
-    start_dt = datetime.fromisoformat(started.replace('Z', '+00:00'))
-    now = datetime.now(timezone.utc)
-    delta = now - start_dt
-    hours, rem = divmod(int(delta.total_seconds()), 3600)
-    mins = rem // 60
-    result['uptime'] = f'{hours}h{mins:02d}m' if hours > 0 else f'{mins}m'
-except Exception:
-    result['uptime'] = '?'
+        # Restart count
+        local _restarts; _restarts=$(docker inspect --format '{{.RestartCount}}' "$cname" 2>/dev/null || echo "0")
+        _result=$(echo "$_result" | jq --argjson r "${_restarts:-0}" '.restarts = $r')
 
-# Restart count
-try:
-    restarts = subprocess.check_output(
-        ['docker', 'inspect', '--format', '{{.RestartCount}}', cname],
-        stderr=subprocess.DEVNULL, text=True
-    ).strip()
-    result['restarts'] = int(restarts)
-except Exception:
-    result['restarts'] = 0
+        # Port
+        local _port_out; _port_out=$(docker port "$cname" 2>/dev/null | head -1 || true)
+        if [[ -n "$_port_out" ]]; then
+            local _port; _port="${_port_out##*:}"
+            _result=$(echo "$_result" | jq --argjson p "$_port" '.port = $p')
+        fi
 
-# Port
-try:
-    port_out = subprocess.check_output(
-        ['docker', 'port', cname], stderr=subprocess.DEVNULL, text=True
-    ).strip()
-    if port_out:
-        result['port'] = int(port_out.split(':')[-1])
-except Exception:
-    pass
+        # Mux mode from .meta
+        local _mux_mode; _mux_mode=$(read_meta "$agent" "MUX_MODE" "false")
+        _mux_mode=$(echo "$_mux_mode" | tr '[:upper:]' '[:lower:]')
+        if [[ "$_mux_mode" == "true" ]]; then
+            _result=$(echo "$_result" | jq '.mux_mode = true')
+        else
+            _result=$(echo "$_result" | jq '.mux_mode = false')
+        fi
 
-# Mux mode from .meta
-meta_path = os.path.join(agent_dir, '.meta')
-meta = {}
-if os.path.isfile(meta_path):
-    with open(meta_path) as f:
-        for line in f:
-            line = line.strip()
-            if '=' in line:
-                k, v = line.split('=', 1)
-                meta[k] = v
-
-result['mux_mode'] = meta.get('MUX_MODE', 'false').lower() == 'true'
-
-print(json.dumps(result, indent=2))
-" "$agent" "$cname" "$dir"
+        echo "$_result" | jq .
     else
         echo '{"status":"stopped"}'
     fi
@@ -1080,45 +1032,45 @@ cmd_config_get() {
         return
     fi
 
-    python3 -c "
-import json, sys
+    # Map friendly key names to JSON dot-paths
+    local json_path
+    case "$key" in
+        model)                json_path="agents.defaults.model.primary" ;;
+        temperature)          json_path="default_temperature" ;;
+        autonomy)             json_path="autonomy.level" ;;
+        system_prompt)        json_path="agents.defaults.system_prompt" ;;
+        max_actions_per_hour) json_path="autonomy.max_actions_per_hour" ;;
+        memory_backend)       json_path="memory.backend" ;;
+        cost_enabled)         json_path="cost.enabled" ;;
+        cost_daily_limit)     json_path="cost.daily_limit_usd" ;;
+        cost_monthly_limit)   json_path="cost.monthly_limit_usd" ;;
+        *)
+            echo "error: unknown key \"${key}\". Supported: autonomy, cost_daily_limit, cost_enabled, cost_monthly_limit, max_actions_per_hour, memory_backend, model, system_prompt, temperature" >&2
+            return 1
+            ;;
+    esac
 
-key = sys.argv[2]
-with open(sys.argv[1]) as f:
-    cfg = json.load(f)
+    # Build jq path from dot-notation
+    local jq_path=""
+    local IFS_OLD="$IFS"
+    IFS='.'
+    for part in $json_path; do
+        jq_path="${jq_path}.${part}"
+    done
+    IFS="$IFS_OLD"
 
-key_map = {
-    'model':                'agents.defaults.model.primary',
-    'temperature':          'default_temperature',
-    'autonomy':             'autonomy.level',
-    'system_prompt':        'agents.defaults.system_prompt',
-    'max_actions_per_hour': 'autonomy.max_actions_per_hour',
-    'memory_backend':       'memory.backend',
-    'cost_enabled':         'cost.enabled',
-    'cost_daily_limit':     'cost.daily_limit_usd',
-    'cost_monthly_limit':   'cost.monthly_limit_usd',
-}
+    local _val
+    if ! _val=$(jq -e "$jq_path" "$config_file" 2>/dev/null); then
+        echo "(not set)" >&2
+        return 0
+    fi
 
-if key not in key_map:
-    supported = ', '.join(sorted(key_map.keys()))
-    print(f'error: unknown key \"{key}\". Supported: {supported}', file=sys.stderr)
-    sys.exit(1)
-
-path = key_map[key]
-parts = path.split('.')
-obj = cfg
-for p in parts:
-    if isinstance(obj, dict) and p in obj:
-        obj = obj[p]
-    else:
-        print('(not set)', file=sys.stderr)
-        sys.exit(0)
-
-if isinstance(obj, str):
-    print(obj)
-else:
-    print(json.dumps(obj))
-" "$config_file" "$key"
+    # If it's a JSON string, print without quotes; otherwise print raw JSON
+    if [[ "$_val" == \"*\" ]]; then
+        echo "$_val" | jq -r .
+    else
+        echo "$_val"
+    fi
 }
 
 # ── Agent: config set ───────────────────────────────────────────
@@ -1128,58 +1080,60 @@ cmd_config_set() {
 
     local config_file; config_file="$(agent_dir "$agent")/config.json"
 
-    python3 -c "
-import json, sys
+    # Map friendly key names to JSON dot-paths and types
+    local json_path val_type
+    case "$key" in
+        model)                json_path="agents.defaults.model.primary";  val_type="string" ;;
+        temperature)          json_path="default_temperature";            val_type="float" ;;
+        autonomy)             json_path="autonomy.level";                 val_type="string" ;;
+        system_prompt)        json_path="agents.defaults.system_prompt";  val_type="string" ;;
+        max_actions_per_hour) json_path="autonomy.max_actions_per_hour";  val_type="int" ;;
+        memory_backend)       json_path="memory.backend";                 val_type="string" ;;
+        cost_enabled)         json_path="cost.enabled";                   val_type="bool" ;;
+        cost_daily_limit)     json_path="cost.daily_limit_usd";           val_type="float" ;;
+        cost_monthly_limit)   json_path="cost.monthly_limit_usd";         val_type="float" ;;
+        *)
+            echo "error: unknown key \"${key}\". Supported: autonomy, cost_daily_limit, cost_enabled, cost_monthly_limit, max_actions_per_hour, memory_backend, model, system_prompt, temperature" >&2
+            return 1
+            ;;
+    esac
 
-config_path = sys.argv[1]
-key = sys.argv[2]
-value = sys.argv[3]
+    # Build jq setpath array from dot-notation: "a.b.c" -> ["a","b","c"]
+    local jq_path_arr
+    jq_path_arr=$(echo "$json_path" | jq -R 'split(".")')
 
-key_map = {
-    'model':                ('agents.defaults.model.primary',   'string'),
-    'temperature':          ('default_temperature',             'float'),
-    'autonomy':             ('autonomy.level',                  'string'),
-    'system_prompt':        ('agents.defaults.system_prompt',   'string'),
-    'max_actions_per_hour': ('autonomy.max_actions_per_hour',   'int'),
-    'memory_backend':       ('memory.backend',                  'string'),
-    'cost_enabled':         ('cost.enabled',                    'bool'),
-    'cost_daily_limit':     ('cost.daily_limit_usd',            'float'),
-    'cost_monthly_limit':   ('cost.monthly_limit_usd',          'float'),
-}
-
-if key not in key_map:
-    supported = ', '.join(sorted(key_map.keys()))
-    print(f'error: unknown key \"{key}\". Supported: {supported}', file=sys.stderr)
-    sys.exit(1)
-
-json_path, val_type = key_map[key]
-
-# Cast value
-if val_type == 'float':
-    value = float(value)
-elif val_type == 'int':
-    value = int(value)
-elif val_type == 'bool':
-    value = value.lower() in ('true', '1', 'yes')
-
-with open(config_path) as f:
-    cfg = json.load(f)
-
-# Navigate and set nested key
-parts = json_path.split('.')
-obj = cfg
-for p in parts[:-1]:
-    if p not in obj:
-        obj[p] = {}
-    obj = obj[p]
-obj[parts[-1]] = value
-
-with open(config_path, 'w') as f:
-    json.dump(cfg, f, indent=2)
-    f.write('\n')
-
-print(f'{key} = {json.dumps(value)}')
-" "$config_file" "$key" "$value"
+    # Cast value and set via jq
+    local jq_expr
+    case "$val_type" in
+        string)
+            jq_expr="setpath(${jq_path_arr}; \$val)"
+            local _new_cfg; _new_cfg=$(jq --arg val "$value" "$jq_expr" "$config_file")
+            echo "$_new_cfg" > "$config_file"
+            echo "${key} = $(jq -n --arg v "$value" '$v')"
+            ;;
+        float)
+            jq_expr="setpath(${jq_path_arr}; (\$val | tonumber))"
+            local _new_cfg; _new_cfg=$(jq --arg val "$value" "$jq_expr" "$config_file")
+            echo "$_new_cfg" > "$config_file"
+            echo "${key} = ${value}"
+            ;;
+        int)
+            jq_expr="setpath(${jq_path_arr}; (\$val | tonumber | floor))"
+            local _new_cfg; _new_cfg=$(jq --arg val "$value" "$jq_expr" "$config_file")
+            echo "$_new_cfg" > "$config_file"
+            echo "${key} = ${value}"
+            ;;
+        bool)
+            local bool_val="false"
+            local _lower; _lower=$(echo "$value" | tr '[:upper:]' '[:lower:]')
+            case "$_lower" in
+                true|1|yes) bool_val="true" ;;
+            esac
+            local _new_cfg; _new_cfg=$(jq "setpath(${jq_path_arr}; ${bool_val})" "$config_file")
+            echo "$_new_cfg" > "$config_file"
+            echo "${key} = ${bool_val}"
+            ;;
+    esac
 }
 
 # ── Agent: costs ────────────────────────────────────────────────
@@ -1209,65 +1163,65 @@ cmd_costs() {
         return
     fi
 
-    python3 -c "
-import json, sys
-from datetime import datetime, date
+    local _today; _today=$(date +%Y-%m-%d)
+    local _this_year; _this_year=$(date +%Y)
+    local _this_month; _this_month=$(date +%m)
 
-costs_file = sys.argv[1]
-period = sys.argv[2]
-json_mode = sys.argv[3] == 'true'
+    # Build a jq filter based on period
+    local _jq_filter
+    case "$period" in
+        today)
+            _jq_filter='select((.timestamp // .ts // "")[0:10] == $today)'
+            ;;
+        month)
+            _jq_filter='select(((.timestamp // .ts // "")[0:4] == $year) and ((.timestamp // .ts // "")[5:7] == $month))'
+            ;;
+        *)
+            _jq_filter='.'
+            ;;
+    esac
 
-today = date.today()
-entries = []
-with open(costs_file) as f:
-    for line in f:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entry = json.loads(line)
-            entries.append(entry)
-        except json.JSONDecodeError:
-            continue
+    # Process JSONL: filter by period, then aggregate
+    local _agg
+    _agg=$(jq -s --arg today "$_today" --arg year "$_this_year" --arg month "$_this_month" \
+        "[.[] | ${_jq_filter}] |
+        {
+            total_usd: ([.[] | (.cost_usd // .cost // 0)] | add // 0 | . * 10000 | round / 10000),
+            requests: length,
+            input_tokens: ([.[] | (.input_tokens // 0)] | add // 0),
+            output_tokens: ([.[] | (.output_tokens // 0)] | add // 0),
+            period: \"${period}\"
+        }" "$costs_file" 2>/dev/null)
 
-# Filter by period
-filtered = []
-for e in entries:
-    ts = e.get('timestamp', e.get('ts', ''))
-    try:
-        dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
-        entry_date = dt.date()
-    except Exception:
-        entry_date = None
+    if [[ -z "$_agg" ]]; then
+        if $json_mode; then
+            echo '{"total_usd":0,"requests":0,"input_tokens":0,"output_tokens":0,"period":"'"$period"'"}'
+        else
+            echo "No cost data for agent."
+        fi
+        return
+    fi
 
-    if period == 'today' and entry_date != today:
-        continue
-    if period == 'month' and (entry_date is None or entry_date.year != today.year or entry_date.month != today.month):
-        continue
-    filtered.append(e)
-
-total_usd = sum(e.get('cost_usd', e.get('cost', 0)) for e in filtered)
-total_input = sum(e.get('input_tokens', 0) for e in filtered)
-total_output = sum(e.get('output_tokens', 0) for e in filtered)
-count = len(filtered)
-
-if json_mode:
-    result = {
-        'total_usd': round(total_usd, 4),
-        'requests': count,
-        'input_tokens': total_input,
-        'output_tokens': total_output,
-        'period': period,
-    }
-    print(json.dumps(result, indent=2))
-else:
-    period_label = {'all': 'All time', 'today': 'Today', 'month': 'This month'}[period]
-    print(f'Cost summary ({period_label}):')
-    print(f'  Requests:      {count}')
-    print(f'  Input tokens:  {total_input:,}')
-    print(f'  Output tokens: {total_output:,}')
-    print(f'  Total cost:    \${total_usd:.4f}')
-" "$costs_file" "$period" "$json_mode"
+    if $json_mode; then
+        echo "$_agg" | jq .
+    else
+        local _period_label
+        case "$period" in
+            all)   _period_label="All time" ;;
+            today) _period_label="Today" ;;
+            month) _period_label="This month" ;;
+        esac
+        local _count _input _output _total
+        _count=$(echo "$_agg" | jq -r '.requests')
+        _input=$(echo "$_agg" | jq -r '.input_tokens')
+        _output=$(echo "$_agg" | jq -r '.output_tokens')
+        _total=$(echo "$_agg" | jq -r '.total_usd')
+        printf 'Cost summary (%s):\n' "$_period_label"
+        printf '  Requests:      %s\n' "$_count"
+        printf '  Input tokens:  %s\n' "$(printf "%'d" "$_input" 2>/dev/null || echo "$_input")"
+        printf '  Output tokens: %s\n' "$(printf "%'d" "$_output" 2>/dev/null || echo "$_output")"
+        printf '  Total cost:    $%s\n' "$_total"
+    fi
 }
 
 # ── Agent: drain ────────────────────────────────────────────────

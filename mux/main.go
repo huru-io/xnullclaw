@@ -26,6 +26,8 @@ import (
 	"github.com/jotavich/xnullclaw/mux/tools"
 )
 
+var version = "dev"
+
 func main() {
 	// 1. Determine mux home directory.
 	muxHome := filepath.Join(os.Getenv("HOME"), ".xnullclaw", ".mux")
@@ -55,7 +57,7 @@ func main() {
 		log.Fatalf("logging: %v", err)
 	}
 	defer logger.Close()
-	logger.Info("mux starting", "version", "0.1.0")
+	logger.Info("mux starting", "version", version)
 
 	// 4. Open SQLite memory store.
 	dbPath := cfg.Memory.DBPath

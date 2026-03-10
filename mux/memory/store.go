@@ -148,7 +148,12 @@ type Store struct {
 
 // New opens (or creates) the SQLite database at dbPath and ensures the schema exists.
 func New(dbPath string) (*Store, error) {
-	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	dsn := dbPath + "?_journal_mode=WAL&_busy_timeout=5000"
+	// For in-memory databases, use shared cache so all pool connections see the same data.
+	if dbPath == ":memory:" {
+		dsn = "file::memory:?mode=memory&cache=shared&_journal_mode=WAL&_busy_timeout=5000"
+	}
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("memory: open db: %w", err)
 	}
