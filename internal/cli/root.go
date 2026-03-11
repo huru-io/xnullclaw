@@ -77,6 +77,8 @@ func Run(cmd string, args []string) {
 		cmdCpTo(g, args)
 	case "cp-from":
 		cmdCpFrom(g, args)
+	case "skill":
+		cmdSkill(g, args)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\nRun 'xnc help' for usage.\n", cmd)
 		os.Exit(1)

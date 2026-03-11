@@ -49,7 +49,7 @@ type Bot struct {
 	sendQueue chan sendRequest // rate-limited send queue
 	onMessage func(userID string, text string)
 	onVoice   func(userID string, fileID string)
-	onMedia   func(userID string, fileID string, mediaType string, caption string)
+	onMedia   func(userID string, fileID string, mediaType string, caption string, fileName string)
 	onCommand func(userID string, cmd Command)
 	stopCh    chan struct{}
 	stopOnce  sync.Once
@@ -102,7 +102,7 @@ func (b *Bot) SetOnVoice(fn func(userID string, fileID string)) {
 }
 
 // SetOnMedia sets the callback for incoming media (photos, documents).
-func (b *Bot) SetOnMedia(fn func(userID string, fileID string, mediaType string, caption string)) {
+func (b *Bot) SetOnMedia(fn func(userID string, fileID string, mediaType string, caption string, fileName string)) {
 	b.onMedia = fn
 }
 
@@ -173,7 +173,7 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 		// Use the largest photo (last in the slice).
 		largest := msg.Photo[len(msg.Photo)-1]
 		if b.onMedia != nil {
-			b.onMedia(userID, largest.FileID, "photo", msg.Caption)
+			b.onMedia(userID, largest.FileID, "photo", msg.Caption, "")
 		}
 		return
 	}
@@ -181,7 +181,7 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 	// Document message.
 	if msg.Document != nil {
 		if b.onMedia != nil {
-			b.onMedia(userID, msg.Document.FileID, "document", msg.Caption)
+			b.onMedia(userID, msg.Document.FileID, "document", msg.Caption, msg.Document.FileName)
 		}
 		return
 	}

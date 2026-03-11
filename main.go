@@ -334,6 +334,12 @@ AGENT CONFIG:
   config   set <agent> <key> <value>       Write agent config
   costs    <agent> [--today|--month|--json] Agent cost summary
 
+SKILLS:
+  skill    list [--agent NAME] [--all]     List installed skills
+  skill    install <src> [--agent N] [--all] Install skill (dir/.zip/.md)
+  skill    remove <name> [--agent N] [--all] Remove a skill
+  skill    info <name> [--agent NAME]      Show skill details
+
 FLEET:
   list     [--json]                        List all agents
   running  [--json]                        List running agents

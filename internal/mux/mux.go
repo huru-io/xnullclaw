@@ -255,21 +255,32 @@ func Run(mc Config) error {
 	})
 
 	// Media messages (photos, documents).
-	tgBot.SetOnMedia(func(userID string, fileID string, mediaType string, caption string) {
+	tgBot.SetOnMedia(func(userID string, fileID string, mediaType string, caption string, fileName string) {
 		turnMu.Lock()
 		defer turnMu.Unlock()
 		chatID, _ := strconv.ParseInt(userID, 10, 64)
 		lastChatID = chatID
 		logger.LogIncoming(userID, fileID, mediaType)
 
-		ext := ".bin"
-		switch mediaType {
-		case "photo":
-			ext = ".jpg"
-		case "document":
-			ext = ".dat"
+		// Determine filename and extension.
+		var destPath string
+		if fileName != "" {
+			// Sanitize: strip path components, keep only base name.
+			safeName := filepath.Base(fileName)
+			if safeName == "." || safeName == "/" || safeName == "" {
+				safeName = "upload"
+			}
+			destPath = filepath.Join(mediaTmpDir, fmt.Sprintf("%d_%s", time.Now().UnixNano(), safeName))
+		} else {
+			ext := ".bin"
+			switch mediaType {
+			case "photo":
+				ext = ".jpg"
+			case "document":
+				ext = ".dat"
+			}
+			destPath = filepath.Join(mediaTmpDir, fmt.Sprintf("%s_%s_%d%s", mediaType, userID, time.Now().UnixNano(), ext))
 		}
-		destPath := filepath.Join(mediaTmpDir, fmt.Sprintf("%s_%s_%d%s", mediaType, userID, time.Now().UnixNano(), ext))
 		if err := tgBot.DownloadFile(fileID, destPath); err != nil {
 			logger.Error("media download failed", "error", err, "type", mediaType)
 			tgBot.Send(chatID, fmt.Sprintf("Failed to download %s: %v", mediaType, err))
@@ -277,12 +288,16 @@ func Run(mc Config) error {
 		}
 
 		var userText string
-		if caption != "" {
-			userText = fmt.Sprintf("[User sent a %s with caption: %s]\nThe file has been saved to: %s", mediaType, caption, destPath)
-		} else {
-			userText = fmt.Sprintf("[User sent a %s]\nThe file has been saved to: %s", mediaType, destPath)
+		nameInfo := ""
+		if fileName != "" {
+			nameInfo = fmt.Sprintf(" (filename: %s)", fileName)
 		}
-		logger.Info("media received", "type", mediaType, "path", destPath, "caption", caption)
+		if caption != "" {
+			userText = fmt.Sprintf("[User sent a %s%s with caption: %s]\nThe file has been saved to: %s", mediaType, nameInfo, caption, destPath)
+		} else {
+			userText = fmt.Sprintf("[User sent a %s%s]\nThe file has been saved to: %s", mediaType, nameInfo, destPath)
+		}
+		logger.Info("media received", "type", mediaType, "path", destPath, "caption", caption, "filename", fileName)
 		runTurn(chatID, userText)
 	})
 

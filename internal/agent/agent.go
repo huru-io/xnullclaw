@@ -48,7 +48,7 @@ func ValidateName(name string) error {
 	reserved := map[string]bool{
 		"mux": true, "help": true, "version": true, "list": true,
 		"running": true, "image": true, "config": true, "send": true,
-		"init": true,
+		"init": true, "skill": true,
 	}
 	if reserved[strings.ToLower(name)] {
 		return fmt.Errorf("agent name %q is reserved", name)

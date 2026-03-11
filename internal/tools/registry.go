@@ -76,6 +76,7 @@ func RegisterAll(r *Registry, d Deps) {
 	registerPersonaTools(r, d)
 	registerCostTools(r, d)
 	registerPassthroughTools(r, d.Store)
+	registerSkillTools(r, d)
 }
 
 // ---------------------------------------------------------------------------

@@ -120,6 +120,9 @@ func Setup(home, name string, opts SetupOpts) error {
 		return fmt.Errorf("setup: write meta: %w", err)
 	}
 
+	// Copy shared skills to new agent's workspace.
+	InstallSharedToAgent(home, name)
+
 	return nil
 }
 

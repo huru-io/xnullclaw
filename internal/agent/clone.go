@@ -73,6 +73,9 @@ func Clone(home, src, dst string, opts CloneOpts) error {
 		return fmt.Errorf("clone: write meta: %w", err)
 	}
 
+	// Copy shared skills to cloned agent (same as Setup).
+	InstallSharedToAgent(home, dst)
+
 	return nil
 }
 
@@ -99,6 +102,11 @@ func copyDir(src, dst string) error {
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+
+		// Skip symlinks — they may point outside the source tree.
+		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
 		}
 
 		rel, err := filepath.Rel(src, path)
