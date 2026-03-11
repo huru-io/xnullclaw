@@ -14,18 +14,84 @@ import (
 )
 
 func cmdSetup(g Globals, args []string) {
-	if len(args) == 0 {
-		die("usage: xnc setup <name>")
-	}
-	name := args[0]
+	openaiKey, _ := flagValue(&args, "--openai-key")
+	anthropicKey, _ := flagValue(&args, "--anthropic-key")
+	openrouterKey, _ := flagValue(&args, "--openrouter-key")
+	model, _ := flagValue(&args, "--model")
+	systemPrompt, _ := flagValue(&args, "--system-prompt")
 
-	if err := agent.Setup(g.Home, name); err != nil {
-		die("%v", err)
+	names := agentNames(args)
+	if len(names) == 0 {
+		die("usage: xnc setup <name> [--openai-key KEY] [--anthropic-key KEY] [--openrouter-key KEY] [--model MODEL] [--system-prompt TEXT]")
 	}
 
-	dir := agent.Dir(g.Home, name)
-	meta, _ := agent.ReadMeta(dir)
-	ok("agent %s %s created at %s", meta["EMOJI"], name, dir)
+	// Fall back to environment variables.
+	if openaiKey == "" {
+		openaiKey = os.Getenv("OPENAI_API_KEY")
+	}
+	if anthropicKey == "" {
+		anthropicKey = os.Getenv("ANTHROPIC_API_KEY")
+	}
+	if openrouterKey == "" {
+		openrouterKey = os.Getenv("OPENROUTER_API_KEY")
+	}
+
+	opts := agent.SetupOpts{
+		OpenAIKey:     openaiKey,
+		AnthropicKey:  anthropicKey,
+		OpenRouterKey: openrouterKey,
+		Model:         model,
+		SystemPrompt:  systemPrompt,
+	}
+
+	// Test keys once before creating agents.
+	testKeys(openaiKey, anthropicKey, openrouterKey)
+
+	for _, name := range names {
+		if err := agent.Setup(g.Home, name, opts); err != nil {
+			die("%v", err)
+		}
+
+		dir := agent.Dir(g.Home, name)
+		meta, _ := agent.ReadMeta(dir)
+		ok("agent %s %s created at %s", meta["EMOJI"], name, dir)
+	}
+}
+
+// testKeys validates provider keys and prints results.
+// Dies if all provided keys are invalid.
+func testKeys(openaiKey, anthropicKey, openrouterKey string) {
+	type keyTest struct {
+		provider string
+		key      string
+	}
+	var tests []keyTest
+	if openaiKey != "" {
+		tests = append(tests, keyTest{"openai", openaiKey})
+	}
+	if anthropicKey != "" {
+		tests = append(tests, keyTest{"anthropic", anthropicKey})
+	}
+	if openrouterKey != "" {
+		tests = append(tests, keyTest{"openrouter", openrouterKey})
+	}
+
+	if len(tests) == 0 {
+		return
+	}
+
+	var anyValid bool
+	for _, t := range tests {
+		if err := agent.TestProviderKey(t.provider, t.key); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %s key: %v\n", t.provider, err)
+		} else {
+			ok("%s key verified", t.provider)
+			anyValid = true
+		}
+	}
+	if !anyValid {
+		die("all provided API keys failed validation")
+	}
 }
 
 func cmdStart(g Globals, args []string) {
@@ -60,6 +126,9 @@ func cmdStart(g Globals, args []string) {
 		if !agent.Exists(g.Home, name) {
 			die("agent %q does not exist", name)
 		}
+		if !agent.HasProviderKey(g.Home, name) {
+			die("agent %q has no API key configured — set one with: xnc config set %s openai_key <key>", name, name)
+		}
 
 		containerName := agent.ContainerName(g.Home, name)
 
@@ -80,7 +149,7 @@ func cmdStart(g Globals, args []string) {
 		agentDir := agent.Dir(g.Home, name)
 		opts := docker.ContainerOpts{
 			Image:    g.Image,
-			Cmd:      []string{"agent"},
+			Cmd:      []string{"gateway"},
 			AgentDir: agentDir,
 			Port:     agentPort,
 		}

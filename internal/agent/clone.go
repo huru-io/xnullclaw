@@ -65,6 +65,7 @@ func Clone(home, src, dst string, opts CloneOpts) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	if err := WriteMetaBatch(dstDir, map[string]string{
+		"NAME":        dst,
 		"CREATED":     now,
 		"EMOJI":       emoji,
 		"CLONED_FROM": src,

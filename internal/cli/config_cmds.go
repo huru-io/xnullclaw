@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/jotavich/xnullclaw/internal/agent"
@@ -71,6 +72,13 @@ func cmdConfigGet(g Globals, args []string) {
 	}
 }
 
+// keyProviders maps config key names to provider names for key testing.
+var keyProviders = map[string]string{
+	"openai_key":     "openai",
+	"anthropic_key":  "anthropic",
+	"openrouter_key": "openrouter",
+}
+
 func cmdConfigSet(g Globals, args []string) {
 	if len(args) < 3 {
 		die("usage: xnc config set <agent> <key> <value>")
@@ -84,10 +92,19 @@ func cmdConfigSet(g Globals, args []string) {
 		die("agent %q does not exist", name)
 	}
 
+	// Test API key before saving.
+	if provider, isKey := keyProviders[key]; isKey && value != "" {
+		if err := agent.TestProviderKey(provider, value); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+		} else {
+			ok("%s key verified", provider)
+		}
+	}
+
 	dir := agent.Dir(g.Home, name)
 	if err := agent.ConfigSet(dir, key, value); err != nil {
 		die("%v", err)
 	}
 
-	ok("set %s = %s for %s", key, value, name)
+	ok("set %s for %s", key, name)
 }

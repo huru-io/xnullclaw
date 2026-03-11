@@ -10,7 +10,7 @@ import (
 
 // SnapshotDir returns the base directory for snapshots under home.
 func SnapshotDir(home string) string {
-	return filepath.Join(home, ".backups")
+	return filepath.Join(home, "backups")
 }
 
 // SnapshotInfo describes a stored snapshot.
@@ -24,7 +24,7 @@ type SnapshotInfo struct {
 }
 
 // Snapshot copies an agent's full state (config, data, meta) into
-// ~/.xnc/.backups/<agentname>-<timestamp>/
+// ~/.xnc/backups/<agentname>-<timestamp>/
 // The agent must be stopped before snapshotting.
 func Snapshot(home, name string) (SnapshotInfo, error) {
 	if !Exists(home, name) {

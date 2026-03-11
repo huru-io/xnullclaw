@@ -9,7 +9,7 @@ import (
 func TestSetup(t *testing.T) {
 	home := t.TempDir()
 
-	if err := Setup(home, "alice"); err != nil {
+	if err := Setup(home, "alice", SetupOpts{}); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
 
@@ -58,8 +58,8 @@ func TestSetup(t *testing.T) {
 func TestSetupDuplicate(t *testing.T) {
 	home := t.TempDir()
 
-	Setup(home, "alice")
-	err := Setup(home, "alice")
+	Setup(home, "alice", SetupOpts{})
+	err := Setup(home, "alice", SetupOpts{})
 	if err == nil {
 		t.Fatal("expected error for duplicate setup")
 	}
@@ -68,7 +68,7 @@ func TestSetupDuplicate(t *testing.T) {
 func TestSetupInvalidName(t *testing.T) {
 	home := t.TempDir()
 
-	err := Setup(home, "1bad")
+	err := Setup(home, "1bad", SetupOpts{})
 	if err == nil {
 		t.Fatal("expected error for invalid name")
 	}
@@ -77,7 +77,7 @@ func TestSetupInvalidName(t *testing.T) {
 func TestSetupReservedName(t *testing.T) {
 	home := t.TempDir()
 
-	err := Setup(home, "mux")
+	err := Setup(home, "mux", SetupOpts{})
 	if err == nil {
 		t.Fatal("expected error for reserved name")
 	}

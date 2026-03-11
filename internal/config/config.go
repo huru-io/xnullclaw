@@ -45,16 +45,16 @@ type PersonaDimensions struct {
 // Defaults returns the default persona dimensions as specified in the PRD.
 func (PersonaDimensions) Defaults() PersonaDimensions {
 	return PersonaDimensions{
-		Warmth:         0.6,
-		Humor:          0.4,
+		Warmth:         0.7,
+		Humor:          0.5,
 		Verbosity:      0.3,
-		Proactiveness:  0.7,
-		Formality:      0.4,
+		Proactiveness:  0.9,
+		Formality:      0.1,
 		Empathy:        0.5,
 		Sarcasm:        0.2,
-		Autonomy:       0.6,
+		Autonomy:       0.9,
 		Interpretation: 0.2,
-		Creativity:     0.5,
+		Creativity:     0.8,
 	}
 }
 

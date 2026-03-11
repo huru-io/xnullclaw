@@ -10,7 +10,7 @@ func TestSnapshotAndRestore(t *testing.T) {
 	home := t.TempDir()
 
 	// Setup agent with some data.
-	Setup(home, "alice")
+	Setup(home, "alice", SetupOpts{})
 	dir := Dir(home, "alice")
 	os.WriteFile(filepath.Join(dir, "data", "workspace", "notes.txt"), []byte("important"), 0644)
 
@@ -80,7 +80,7 @@ func TestSnapshotAndRestore(t *testing.T) {
 func TestRestoreToNewName(t *testing.T) {
 	home := t.TempDir()
 
-	Setup(home, "alice")
+	Setup(home, "alice", SetupOpts{})
 	snap, _ := Snapshot(home, "alice")
 
 	// Restore as different name while alice still exists.
@@ -101,7 +101,7 @@ func TestRestoreToNewName(t *testing.T) {
 func TestRestoreFailsIfExists(t *testing.T) {
 	home := t.TempDir()
 
-	Setup(home, "alice")
+	Setup(home, "alice", SetupOpts{})
 	snap, _ := Snapshot(home, "alice")
 
 	err := Restore(home, snap.Name, "alice")
@@ -113,8 +113,8 @@ func TestRestoreFailsIfExists(t *testing.T) {
 func TestListSnapshots(t *testing.T) {
 	home := t.TempDir()
 
-	Setup(home, "alice")
-	Setup(home, "bob")
+	Setup(home, "alice", SetupOpts{})
+	Setup(home, "bob", SetupOpts{})
 	Snapshot(home, "alice")
 	Snapshot(home, "bob")
 
@@ -145,7 +145,7 @@ func TestListSnapshotsEmpty(t *testing.T) {
 func TestDeleteSnapshot(t *testing.T) {
 	home := t.TempDir()
 
-	Setup(home, "alice")
+	Setup(home, "alice", SetupOpts{})
 	snap, _ := Snapshot(home, "alice")
 
 	if err := DeleteSnapshot(home, snap.Name); err != nil {

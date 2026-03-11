@@ -10,7 +10,7 @@ func TestClone(t *testing.T) {
 	home := t.TempDir()
 
 	// Setup source.
-	Setup(home, "alice")
+	Setup(home, "alice", SetupOpts{})
 
 	// Write some data to source.
 	srcData := filepath.Join(Dir(home, "alice"), "data", "workspace", "hello.txt")
@@ -52,7 +52,7 @@ func TestClone(t *testing.T) {
 
 func TestCloneWithData(t *testing.T) {
 	home := t.TempDir()
-	Setup(home, "alice")
+	Setup(home, "alice", SetupOpts{})
 
 	// Write data.
 	srcData := filepath.Join(Dir(home, "alice"), "data", "workspace", "hello.txt")

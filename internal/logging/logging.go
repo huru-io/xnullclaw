@@ -82,6 +82,10 @@ type Logger struct {
 
 	// nowFunc is used for timestamps; overridden in tests.
 	nowFunc func() time.Time
+
+	// mirror receives a copy of all log entries when non-nil (e.g. stderr
+	// for foreground mode).
+	mirror *os.File
 }
 
 // New creates a new Logger, creating the log directory and opening log files.
@@ -128,6 +132,14 @@ func New(cfg *config.LoggingConfig, baseDir string) (*Logger, error) {
 	}, nil
 }
 
+// SetMirror sets an additional output for all log entries (e.g. os.Stderr
+// for foreground mode). Pass nil to disable.
+func (l *Logger) SetMirror(w *os.File) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.mirror = w
+}
+
 // Close flushes and closes all log files.
 func (l *Logger) Close() error {
 	l.mu.Lock()
@@ -161,17 +173,20 @@ func (l *Logger) now() time.Time {
 }
 
 // write serializes an Entry as JSON and appends it (with newline) to the given file.
+// If a mirror is set, the entry is also written there.
 // The caller must NOT hold l.mu.
 func (l *Logger) write(f *os.File, e Entry) {
 	data, err := json.Marshal(e)
 	if err != nil {
-		// Best effort: if we can't marshal the entry, drop it silently.
 		return
 	}
 	data = append(data, '\n')
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	_, _ = f.Write(data)
+	if l.mirror != nil {
+		_, _ = l.mirror.Write(data)
+	}
 }
 
 // fieldsToMap converts variadic key/value pairs into a map.

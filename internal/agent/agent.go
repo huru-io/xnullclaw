@@ -25,17 +25,24 @@ func DefaultHome() string {
 	return filepath.Join(home, ".xnc")
 }
 
-// nameRe validates agent names: starts with a letter, followed by
-// letters, digits, hyphens, or underscores.
-var nameRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`)
+// nameRe validates agent names: starts with a letter, ends with letter/digit,
+// at most one hyphen or one underscore in the middle.
+var nameRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9]*([_-][a-zA-Z0-9]+)?$`)
 
-// ValidateName checks that name is a valid agent name.
+// ValidateName checks that name is a valid, pronounceable agent name.
 func ValidateName(name string) error {
 	if name == "" {
 		return fmt.Errorf("agent name cannot be empty")
 	}
+	if len(name) > 20 {
+		return fmt.Errorf("agent name %q too long (max 20 characters)", name)
+	}
 	if !nameRe.MatchString(name) {
-		return fmt.Errorf("invalid agent name %q: use letters, digits, hyphens, underscores; must start with a letter", name)
+		return fmt.Errorf("invalid agent name %q: must start with a letter, end with a letter or digit, at most one hyphen or underscore", name)
+	}
+	// Canonical form must be at least 3 characters (pronounceable).
+	if len(CanonicalName(name)) < 3 {
+		return fmt.Errorf("agent name %q is too short (need at least 3 letters/digits)", name)
 	}
 	// Reserved names that conflict with CLI commands.
 	reserved := map[string]bool{
@@ -65,7 +72,8 @@ func CanonicalName(name string) string {
 // Returns ("", false) if no conflict.
 func ConflictsWith(home, name string) (string, bool) {
 	canon := CanonicalName(name)
-	entries, err := os.ReadDir(home)
+	agentsDir := AgentsDir(home)
+	entries, err := os.ReadDir(agentsDir)
 	if err != nil {
 		return "", false
 	}
@@ -75,11 +83,11 @@ func ConflictsWith(home, name string) (string, bool) {
 		}
 		existing := e.Name()
 		// Skip exact match (handled by Exists check separately).
-		if existing == name {
+		if existing == canon {
 			continue
 		}
 		// Check if this is an agent directory.
-		if _, err := os.Stat(filepath.Join(home, existing, "config.json")); err != nil {
+		if _, err := os.Stat(filepath.Join(agentsDir, existing, "config.json")); err != nil {
 			continue
 		}
 		if CanonicalName(existing) == canon {
@@ -90,12 +98,12 @@ func ConflictsWith(home, name string) (string, bool) {
 }
 
 // IsXNCHome checks if a directory looks like an xnc home directory.
-// Returns true if the directory contains a .instance_id file or a .mux/ directory.
+// Returns true if the directory contains a .instance_id file or a mux/ directory.
 func IsXNCHome(home string) bool {
 	if _, err := os.Stat(filepath.Join(home, ".instance_id")); err == nil {
 		return true
 	}
-	if fi, err := os.Stat(filepath.Join(home, ".mux")); err == nil && fi.IsDir() {
+	if fi, err := os.Stat(filepath.Join(home, "mux")); err == nil && fi.IsDir() {
 		return true
 	}
 	return false
@@ -162,9 +170,14 @@ func ValidateHome(home string, allowInit bool) error {
 	return fmt.Errorf("%s does not look like an xnc home (no .instance_id found). Use --home to specify the correct path or 'xnc init --home %s' to initialize it", home, home)
 }
 
-// Dir returns the agent's directory path.
+// AgentsDir returns the directory containing all agent subdirectories.
+func AgentsDir(home string) string {
+	return filepath.Join(home, "agents")
+}
+
+// Dir returns the agent's directory path using canonical name.
 func Dir(home, name string) string {
-	return filepath.Join(home, name)
+	return filepath.Join(AgentsDir(home), CanonicalName(name))
 }
 
 // Exists checks whether an agent directory with a config.json exists.
@@ -205,7 +218,7 @@ func ContainerPrefix(home string) string {
 // ContainerName returns the Docker container name for an agent.
 // Format: xnc-<instance_id>-<agentname>
 func ContainerName(home, name string) string {
-	return ContainerPrefix(home) + name
+	return ContainerPrefix(home) + CanonicalName(name)
 }
 
 // Info holds summary information about an agent on disk.
@@ -216,9 +229,10 @@ type Info struct {
 	Created string `json:"created"`
 }
 
-// ListAll returns Info for every agent found under home.
+// ListAll returns Info for every agent found under home/agents/.
 func ListAll(home string) ([]Info, error) {
-	entries, err := os.ReadDir(home)
+	agentsDir := AgentsDir(home)
+	entries, err := os.ReadDir(agentsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -232,13 +246,17 @@ func ListAll(home string) ([]Info, error) {
 			continue
 		}
 		name := e.Name()
-		dir := Dir(home, name)
+		dir := filepath.Join(agentsDir, name)
 		if _, err := os.Stat(filepath.Join(dir, "config.json")); err != nil {
 			continue // not an agent directory
 		}
 		meta, _ := ReadMeta(dir)
+		displayName := meta["NAME"]
+		if displayName == "" {
+			displayName = name // fallback to directory name
+		}
 		agents = append(agents, Info{
-			Name:    name,
+			Name:    displayName,
 			Dir:     dir,
 			Emoji:   meta["EMOJI"],
 			Created: meta["CREATED"],

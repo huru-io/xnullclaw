@@ -671,6 +671,69 @@ func (s *Store) DeleteAgentState(agent string) (bool, error) {
 	return n > 0, nil
 }
 
+// ==================== Rename ====================
+
+// RenameAgent updates all references to an agent across all tables.
+// Uses a transaction so all updates succeed or none do.
+func (s *Store) RenameAgent(oldName, newName string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Tables with a simple `agent` column.
+	for _, table := range []string{"messages", "facts", "agent_state", "agent_persona", "costs"} {
+		if _, err := tx.Exec(
+			"UPDATE "+table+" SET agent = ? WHERE agent = ?",
+			newName, oldName,
+		); err != nil {
+			return fmt.Errorf("rename in %s: %w", table, err)
+		}
+	}
+
+	// Compactions store agents as comma-separated in a text field.
+	// Replace occurrences of the old name.
+	rows, err := tx.Query("SELECT id, agents FROM compactions WHERE agents LIKE ?",
+		"%"+oldName+"%")
+	if err != nil {
+		return fmt.Errorf("query compactions: %w", err)
+	}
+	var updates []struct {
+		id     int64
+		agents string
+	}
+	for rows.Next() {
+		var id int64
+		var agents string
+		if err := rows.Scan(&id, &agents); err != nil {
+			rows.Close()
+			return err
+		}
+		// Replace the agent name in the comma-separated list.
+		parts := strings.Split(agents, ",")
+		for i, p := range parts {
+			if strings.TrimSpace(p) == oldName {
+				parts[i] = newName
+			}
+		}
+		updates = append(updates, struct {
+			id     int64
+			agents string
+		}{id, strings.Join(parts, ",")})
+	}
+	rows.Close()
+
+	for _, u := range updates {
+		if _, err := tx.Exec("UPDATE compactions SET agents = ? WHERE id = ?",
+			u.agents, u.id); err != nil {
+			return fmt.Errorf("update compaction %d: %w", u.id, err)
+		}
+	}
+
+	return tx.Commit()
+}
+
 // ==================== Reset ====================
 
 // ClearAll deletes all data from messages, facts, compactions, and costs.

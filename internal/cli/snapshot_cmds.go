@@ -115,7 +115,7 @@ func cmdSnapshotDelete(g Globals, args []string) {
 func defaultStartOpts(g Globals, name string) docker.ContainerOpts {
 	return docker.ContainerOpts{
 		Image:    g.Image,
-		Cmd:      []string{"agent"},
+		Cmd:      []string{"gateway"},
 		AgentDir: agent.Dir(g.Home, name),
 	}
 }

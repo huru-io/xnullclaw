@@ -16,18 +16,32 @@ func TestValidateName(t *testing.T) {
 		{"bob-1", false},
 		{"Agent_2", false},
 		{"myAgent", false},
-		{"a", false},
+		{"Gonzales", false},
+		{"R2D2", false},
+		{"alice-bob", false},              // one hyphen ok
+		{"my_agent", false},               // one underscore ok
 
-		{"", true},           // empty
-		{"1agent", true},     // starts with digit
-		{"-agent", true},     // starts with hyphen
-		{"_agent", true},     // starts with underscore
-		{"agent!", true},     // special char
-		{"agent name", true}, // space
-		{"mux", true},        // reserved
-		{"help", true},       // reserved
-		{"list", true},       // reserved
-		{"init", true},       // reserved
+		{"", true},                        // empty
+		{"ab", true},                      // too short (canonical "ab" < 3)
+		{"a", true},                       // too short
+		{"a----", true},                   // multiple hyphens
+		{"a-b-c", true},                   // two hyphens
+		{"a_b_c", true},                   // two underscores
+		{"a__b", true},                    // consecutive underscores
+		{"a-b_c", true},                   // mixed separator
+		{"agent-", true},                  // ends with hyphen
+		{"agent_", true},                  // ends with underscore
+		{"1agent", true},                  // starts with digit
+		{"-agent", true},                  // starts with hyphen
+		{"_agent", true},                  // starts with underscore
+		{"agent!", true},                  // special char
+		{"agent name", true},              // space
+		{"mux", true},                     // reserved
+		{"help", true},                    // reserved
+		{"list", true},                    // reserved
+		{"init", true},                    // reserved
+		{"abcdefghijklmnopqrstu", true},   // too long (21 chars)
+		{"abcdefghijklmnopqrst", false},   // exactly 20 chars
 	}
 
 	for _, tt := range tests {
@@ -170,64 +184,56 @@ func TestCanonicalName(t *testing.T) {
 func TestConflictsWith(t *testing.T) {
 	home := t.TempDir()
 
-	// Create "Perez1" agent.
+	// Create "perez1" agent (Dir canonicalizes to perez1).
 	dir := Dir(home, "Perez1")
 	os.MkdirAll(dir, 0755)
 	os.WriteFile(filepath.Join(dir, "config.json"), []byte("{}"), 0644)
 
-	// Perez-1 should conflict with Perez1.
-	if conflict, found := ConflictsWith(home, "Perez-1"); !found {
-		t.Error("expected Perez-1 to conflict with Perez1")
-	} else if conflict != "Perez1" {
-		t.Errorf("expected conflict with Perez1, got %q", conflict)
+	// Since Dir() now canonicalizes, Perez-1/Perez_1/perez1 all map to
+	// the same directory "perez1", so Exists() catches them directly.
+	// ConflictsWith is for truly different canonical names that are still
+	// confusable (currently none, but the mechanism remains).
+	if !Exists(home, "Perez-1") {
+		t.Error("expected Perez-1 to exist (same canonical dir as Perez1)")
+	}
+	if !Exists(home, "Perez_1") {
+		t.Error("expected Perez_1 to exist (same canonical dir as Perez1)")
+	}
+	if !Exists(home, "perez1") {
+		t.Error("expected perez1 to exist (same canonical dir as Perez1)")
 	}
 
-	// Perez_1 should conflict.
-	if _, found := ConflictsWith(home, "Perez_1"); !found {
-		t.Error("expected Perez_1 to conflict with Perez1")
-	}
-
-	// perez1 (lowercase) should conflict.
-	if _, found := ConflictsWith(home, "perez1"); !found {
-		t.Error("expected perez1 to conflict with Perez1")
-	}
-
-	// Alice should not conflict (no agent named similarly).
-	if _, found := ConflictsWith(home, "alice"); found {
-		t.Error("expected alice not to conflict")
-	}
-
-	// Exact match is not a conflict (Exists handles that).
-	if _, found := ConflictsWith(home, "Perez1"); found {
-		t.Error("exact match should not be reported as conflict")
+	// Alice should not exist.
+	if Exists(home, "alice") {
+		t.Error("expected alice not to exist")
 	}
 }
 
 func TestSetupNameConflict(t *testing.T) {
 	home := t.TempDir()
 
-	// Create Perez1.
-	if err := Setup(home, "Perez1"); err != nil {
+	// Create Perez1 (stored as canonical "perez1").
+	if err := Setup(home, "Perez1", SetupOpts{}); err != nil {
 		t.Fatalf("Setup Perez1: %v", err)
 	}
 
-	// Perez-1 should be rejected.
-	err := Setup(home, "Perez-1")
+	// Perez-1 should be rejected (same canonical dir).
+	err := Setup(home, "Perez-1", SetupOpts{})
 	if err == nil {
 		t.Fatal("expected error creating Perez-1 when Perez1 exists")
 	}
-	if !strings.Contains(err.Error(), "conflicts") {
-		t.Errorf("expected 'conflicts' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("expected 'already exists' in error, got: %v", err)
 	}
 
-	// perez1 should be rejected (case conflict).
-	err = Setup(home, "perez1")
+	// perez1 should be rejected.
+	err = Setup(home, "perez1", SetupOpts{})
 	if err == nil {
 		t.Fatal("expected error creating perez1 when Perez1 exists")
 	}
 
 	// Totally different name should work.
-	if err := Setup(home, "alice"); err != nil {
+	if err := Setup(home, "alice", SetupOpts{}); err != nil {
 		t.Fatalf("Setup alice: %v", err)
 	}
 }
@@ -247,7 +253,7 @@ func TestSetupComplete(t *testing.T) {
 	}
 
 	// Create an agent (no key).
-	if err := Setup(home, "nokey"); err != nil {
+	if err := Setup(home, "nokey", SetupOpts{}); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
 	if SetupComplete(home) {
@@ -267,7 +273,7 @@ func TestHasProviderKey(t *testing.T) {
 	home := t.TempDir()
 	InstanceID(home)
 
-	if err := Setup(home, "agent1"); err != nil {
+	if err := Setup(home, "agent1", SetupOpts{}); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
 

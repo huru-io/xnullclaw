@@ -30,15 +30,16 @@ import (
 
 // Config holds the parameters needed to run the mux.
 type Config struct {
-	Home    string // XNC home (e.g. ~/.xnc)
-	CfgPath string // path to config.json
-	Image   string // Docker image name
-	Version string
+	Home       string // XNC home (e.g. ~/.xnc)
+	CfgPath    string // path to config.json
+	Image      string // Docker image name
+	Version    string
+	Foreground bool // mirror logs to stderr
 }
 
 // Run starts the mux and blocks until shutdown.
 func Run(mc Config) error {
-	muxHome := filepath.Join(mc.Home, ".mux")
+	muxHome := filepath.Join(mc.Home, "mux")
 	if err := os.MkdirAll(muxHome, 0755); err != nil {
 		return fmt.Errorf("create mux home: %w", err)
 	}
@@ -56,6 +57,9 @@ func Run(mc Config) error {
 		return fmt.Errorf("logging: %w", err)
 	}
 	defer logger.Close()
+	if mc.Foreground {
+		logger.SetMirror(os.Stderr)
+	}
 	logger.Info("mux starting", "version", mc.Version)
 
 	// SQLite memory store.
@@ -400,9 +404,14 @@ All other messages are handled by the mux AI.`)
 				continue
 			}
 
+			if !agent.HasProviderKey(mc.Home, agentName) {
+				logger.Error("auto-start skipped: no API key", "agent", agentName)
+				continue
+			}
+
 			opts := docker.ContainerOpts{
 				Image:    mc.Image,
-				Cmd:      []string{"agent"},
+				Cmd:      []string{"gateway"},
 				AgentDir: agent.Dir(mc.Home, agentName),
 			}
 			if err := dk.StartContainer(ctx, cn, opts); err != nil {

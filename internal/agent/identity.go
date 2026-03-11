@@ -106,7 +106,8 @@ func compoundEmoji(name string, used map[string]bool) string {
 // usedEmojis scans all agent .meta files and collects assigned emojis.
 func usedEmojis(home string) map[string]bool {
 	used := make(map[string]bool)
-	entries, err := os.ReadDir(home)
+	agentsDir := AgentsDir(home)
+	entries, err := os.ReadDir(agentsDir)
 	if err != nil {
 		return used
 	}
@@ -114,7 +115,7 @@ func usedEmojis(home string) map[string]bool {
 		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
-		dir := filepath.Join(home, e.Name())
+		dir := filepath.Join(agentsDir, e.Name())
 		emoji := ReadMetaKey(dir, "EMOJI", "")
 		if emoji != "" {
 			used[emoji] = true
@@ -139,7 +140,8 @@ func NextPort(home string) int {
 // usedPorts scans all agent .meta files and collects assigned ports.
 func usedPorts(home string) map[int]bool {
 	used := make(map[int]bool)
-	entries, err := os.ReadDir(home)
+	agentsDir := AgentsDir(home)
+	entries, err := os.ReadDir(agentsDir)
 	if err != nil {
 		return used
 	}
@@ -147,7 +149,7 @@ func usedPorts(home string) map[int]bool {
 		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
-		dir := filepath.Join(home, e.Name())
+		dir := filepath.Join(agentsDir, e.Name())
 		portStr := ReadMetaKey(dir, "HOST_PORT", "")
 		if portStr != "" {
 			if p, err := strconv.Atoi(portStr); err == nil {

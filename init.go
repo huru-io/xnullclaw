@@ -30,7 +30,7 @@ func runInit(args []string) {
 	opts := parseInitFlags(args)
 
 	home := opts.home
-	muxHome := filepath.Join(home, ".mux")
+	muxHome := filepath.Join(home, "mux")
 
 	if err := agent.ValidateHome(home, true); err != nil {
 		log.Fatalf("%v", err)
@@ -87,6 +87,27 @@ func runInit(args []string) {
 	openrouterKey := resolveValue(opts.openrouterKey, os.Getenv("OPENROUTER_API_KEY"), "")
 	if openrouterKey == "" && interactive {
 		openrouterKey = promptInput("OpenRouter API key (optional, Enter to skip): ")
+	}
+
+	// Validate keys early.
+	anyKeyValid := false
+	for _, kv := range []struct{ provider, key string }{
+		{"openai", openaiKey},
+		{"anthropic", anthropicKey},
+		{"openrouter", openrouterKey},
+	} {
+		if kv.key == "" {
+			continue
+		}
+		if err := agent.TestProviderKey(kv.provider, kv.key); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %s key: %v\n", kv.provider, err)
+		} else {
+			fmt.Printf("ok: %s key verified\n", kv.provider)
+			anyKeyValid = true
+		}
+	}
+	if !anyKeyValid && (openaiKey != "" || anthropicKey != "" || openrouterKey != "") {
+		log.Fatal("all provided API keys failed validation")
 	}
 
 	// ── Section 2: Models ──
@@ -331,29 +352,21 @@ func runInit(args []string) {
 			continue
 		}
 
-		if err := agent.Setup(home, name); err != nil {
+		setupOpts := agent.SetupOpts{
+			OpenAIKey:     openaiKey,
+			AnthropicKey:  anthropicKey,
+			OpenRouterKey: openrouterKey,
+			SystemPrompt:  systemPrompt,
+		}
+		if agentModel != "openai/gpt-5-mini" {
+			setupOpts.Model = agentModel
+		}
+
+		if err := agent.Setup(home, name, setupOpts); err != nil {
 			log.Fatalf("setup agent %s: %v", name, err)
 		}
 
 		dir := agent.Dir(home, name)
-
-		// Inject credentials into agent config.
-		if openaiKey != "" {
-			agent.ConfigSet(dir, "openai_key", openaiKey)
-		}
-		if anthropicKey != "" {
-			agent.ConfigSet(dir, "anthropic_key", anthropicKey)
-		}
-		if openrouterKey != "" {
-			agent.ConfigSet(dir, "openrouter_key", openrouterKey)
-		}
-		if agentModel != "openai/gpt-5-mini" {
-			agent.ConfigSet(dir, "model", agentModel)
-		}
-		if systemPrompt != "" {
-			agent.ConfigSet(dir, "system_prompt", systemPrompt)
-		}
-
 		meta, _ := agent.ReadMeta(dir)
 		fmt.Printf("ok: agent %s %s created\n", meta["EMOJI"], name)
 		createdAgents = append(createdAgents, name)

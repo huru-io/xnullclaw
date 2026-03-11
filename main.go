@@ -88,7 +88,7 @@ func runMux(args []string) {
 		log.Fatalf("%v", err)
 	}
 
-	muxHome := filepath.Join(home, ".mux")
+	muxHome := filepath.Join(home, "mux")
 	pidFile := filepath.Join(muxHome, "mux.pid")
 	logFile := filepath.Join(muxHome, "mux.log")
 
@@ -131,10 +131,11 @@ func runMux(args []string) {
 
 			cfgPath := filepath.Join(muxHome, "config.json")
 			if err := mux.Run(mux.Config{
-				Home:    home,
-				CfgPath: cfgPath,
-				Image:   image,
-				Version: version,
+				Home:       home,
+				CfgPath:    cfgPath,
+				Image:      image,
+				Version:    version,
+				Foreground: true,
 			}); err != nil {
 				log.Fatalf("mux: %v", err)
 			}
@@ -309,12 +310,13 @@ BOOTSTRAP:
   init     [flags]                          Set up everything from scratch
 
 AGENT LIFECYCLE:
-  setup    <name>                          Create a new agent
+  setup    <names...> [flags]              Create new agent(s)
   start    <agents...> [--port N]          Start agent containers
   stop     <agents...> [--all]             Stop agent containers
   restart  <agents...> [--port N]          Restart agent containers
   destroy  <agents...> [--yes]             Delete agents permanently
   clone    <source> <new> [--with-data]    Clone an agent
+  rename   <old> <new>                   Rename an agent
 
 AGENT INTERACTION:
   send     <agents...> [--all]             Send stdin message to agent(s)

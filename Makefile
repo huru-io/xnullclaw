@@ -12,7 +12,7 @@ PREFIX    := /usr/local
 
 .DEFAULT_GOAL := build
 
-.PHONY: all build test lint vet install clean cross
+.PHONY: all build test lint vet install install-local clean cross
 
 all: lint test build
 
@@ -32,6 +32,10 @@ lint: vet
 install: build
 	install -d $(DESTDIR)$(PREFIX)/bin
 	install -m 755 $(BUILD_DIR)/$(BINARY) $(DESTDIR)$(PREFIX)/bin/$(BINARY)
+
+install-local: build
+	@mkdir -p $(HOME)/bin
+	install -m 755 $(BUILD_DIR)/$(BINARY) $(HOME)/bin/$(BINARY)
 
 # Cross-compile for common platforms.
 cross:

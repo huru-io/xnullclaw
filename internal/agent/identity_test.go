@@ -62,7 +62,7 @@ func TestNextEmoji(t *testing.T) {
 	}
 
 	// Create an agent using that emoji.
-	dir := filepath.Join(home, "alice")
+	dir := filepath.Join(AgentsDir(home), "alice")
 	os.MkdirAll(dir, 0755)
 	WriteMeta(dir, "EMOJI", got)
 
@@ -79,7 +79,7 @@ func TestNextEmojiConflict(t *testing.T) {
 
 	// Pre-occupy the deterministic emoji for "alice".
 	preferred := EmojiForName("alice")
-	dir := filepath.Join(home, "other")
+	dir := filepath.Join(AgentsDir(home), "other")
 	os.MkdirAll(dir, 0755)
 	WriteMeta(dir, "EMOJI", preferred)
 
@@ -106,7 +106,7 @@ func TestNextEmojiCompound(t *testing.T) {
 
 	// Occupy all 107 single emojis.
 	for i, e := range EmojiPool {
-		dir := filepath.Join(home, fmt.Sprintf("agent%d", i))
+		dir := filepath.Join(AgentsDir(home), fmt.Sprintf("agent%d", i))
 		os.MkdirAll(dir, 0755)
 		WriteMeta(dir, "EMOJI", e)
 	}
@@ -140,7 +140,7 @@ func TestNextPort(t *testing.T) {
 	}
 
 	// Assign port 3001.
-	dir := filepath.Join(home, "agent1")
+	dir := filepath.Join(AgentsDir(home), "agent1")
 	os.MkdirAll(dir, 0755)
 	WriteMeta(dir, "HOST_PORT", "3001")
 
@@ -150,7 +150,7 @@ func TestNextPort(t *testing.T) {
 	}
 
 	// Assign port 3002.
-	dir2 := filepath.Join(home, "agent2")
+	dir2 := filepath.Join(AgentsDir(home), "agent2")
 	os.MkdirAll(dir2, 0755)
 	WriteMeta(dir2, "HOST_PORT", "3002")
 

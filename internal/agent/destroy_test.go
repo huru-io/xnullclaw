@@ -7,7 +7,7 @@ import (
 func TestDestroy(t *testing.T) {
 	home := t.TempDir()
 
-	Setup(home, "alice")
+	Setup(home, "alice", SetupOpts{})
 
 	if !Exists(home, "alice") {
 		t.Fatal("alice should exist before destroy")

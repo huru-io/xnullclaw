@@ -41,6 +41,8 @@ func Run(cmd string, args []string) {
 		cmdDestroy(g, args)
 	case "clone":
 		cmdClone(g, args)
+	case "rename":
+		cmdRename(g, args)
 	case "list":
 		cmdList(g, args)
 	case "running":

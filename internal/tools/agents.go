@@ -139,7 +139,7 @@ func sendToAgent(ctx context.Context, d Deps, agentName, message string) (string
 func startOpts(d Deps, name string, port int) docker.ContainerOpts {
 	return docker.ContainerOpts{
 		Image:    d.Image,
-		Cmd:      []string{"agent"},
+		Cmd:      []string{"gateway"},
 		AgentDir: agent.Dir(d.Home, name),
 		Port:     port,
 	}
@@ -316,6 +316,9 @@ func registerAgentTools(r *Registry, d Deps) {
 			if err != nil {
 				return "", err
 			}
+			if !agent.HasProviderKey(d.Home, agentName) {
+				return "", fmt.Errorf("agent %q has no API key configured", agentName)
+			}
 			cn := agent.ContainerName(d.Home, agentName)
 			opts := startOpts(d, agentName, 0)
 			if err := d.Docker.StartContainer(ctx, cn, opts); err != nil {
@@ -368,6 +371,9 @@ func registerAgentTools(r *Registry, d Deps) {
 			agentName, err := stringArg(args, "agent")
 			if err != nil {
 				return "", err
+			}
+			if !agent.HasProviderKey(d.Home, agentName) {
+				return "", fmt.Errorf("agent %q has no API key configured", agentName)
 			}
 			cn := agent.ContainerName(d.Home, agentName)
 			d.Docker.StopContainer(ctx, cn)
@@ -474,6 +480,72 @@ func registerAgentTools(r *Registry, d Deps) {
 		},
 	)
 
+	// rename_agent
+	r.Register(
+		Definition{
+			Name:        "rename_agent",
+			Description: "Rename an agent. The agent must be stopped first. Updates config, identity, and mux database.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"agent":    map[string]any{"type": "string", "description": "Current agent name"},
+					"new_name": map[string]any{"type": "string", "description": "New agent name"},
+				},
+				"required": []string{"agent", "new_name"},
+			},
+		},
+		func(ctx context.Context, args map[string]any) (string, error) {
+			oldName, err := stringArg(args, "agent")
+			if err != nil {
+				return "", err
+			}
+			newName, err := stringArg(args, "new_name")
+			if err != nil {
+				return "", err
+			}
+			if isReservedName(d.Cfg, newName) {
+				return "", fmt.Errorf("cannot rename to %q — that is the mux bot's own name", newName)
+			}
+
+			// Ensure agent is stopped.
+			cn := agent.ContainerName(d.Home, oldName)
+			running, _ := d.Docker.IsRunning(ctx, cn)
+			if running {
+				return "", fmt.Errorf("agent %q is running — stop it first", oldName)
+			}
+
+			// Filesystem rename.
+			if err := agent.Rename(d.Home, oldName, newName); err != nil {
+				return "", err
+			}
+
+			// Database rename.
+			if err := d.Store.RenameAgent(oldName, newName); err != nil {
+				return "", fmt.Errorf("database rename: %w (filesystem already renamed)", err)
+			}
+
+			var steps []string
+			steps = append(steps, fmt.Sprintf("Renamed %s → %s", oldName, newName))
+
+			// Start the agent and send identity-change message.
+			if agent.HasProviderKey(d.Home, newName) {
+				newCN := agent.ContainerName(d.Home, newName)
+				opts := startOpts(d, newName, 0)
+				if err := d.Docker.StartContainer(ctx, newCN, opts); err != nil {
+					steps = append(steps, fmt.Sprintf("Warning: start failed: %v", err))
+				} else {
+					steps = append(steps, "Started with new name")
+					msg := agent.IdentityChangeMessage(oldName, newName)
+					if resp, err := sendToAgent(ctx, d, newName, msg); err == nil {
+						steps = append(steps, fmt.Sprintf("%s says: %s", newName, strings.TrimSpace(resp)))
+					}
+				}
+			}
+
+			return strings.Join(steps, "\n"), nil
+		},
+	)
+
 	// provision_agent
 	r.Register(
 		Definition{
@@ -499,28 +571,18 @@ func registerAgentTools(r *Registry, d Deps) {
 			var steps []string
 			steps = append(steps, fmt.Sprintf("Name: %s", agentName))
 
-			// 1. Setup.
-			agent.Setup(d.Home, agentName)
-			steps = append(steps, "Created agent directory")
-
-			dir := agent.Dir(d.Home, agentName)
-
-			// 2. Configure credentials.
-			if d.Cfg.OpenAI.APIKey != "" {
-				agent.ConfigSet(dir, "openai_key", d.Cfg.OpenAI.APIKey)
-				steps = append(steps, "Configured OpenAI API key")
-			}
-			if len(d.Cfg.Telegram.AllowFrom) > 0 {
-				agent.ConfigSet(dir, "telegram_allow_from", strings.Join(d.Cfg.Telegram.AllowFrom, ","))
-				steps = append(steps, "Configured Telegram allow_from")
-			}
-			agent.ConfigSet(dir, "http_enabled", "true")
-			agent.ConfigSet(dir, "search_provider", "duckduckgo")
-			steps = append(steps, "Enabled web search + HTTP tools")
-
-			// 3. Set personality.
+			// 1. Setup with full configuration.
 			sysPrompt := buildAgentSystemPrompt(agentName, variant)
-			agent.ConfigSet(dir, "system_prompt", sysPrompt)
+			setupOpts := agent.SetupOpts{
+				SystemPrompt:  sysPrompt,
+				TelegramAllow: d.Cfg.Telegram.AllowFrom,
+			}
+			if d.Cfg.OpenAI.APIKey != "" {
+				setupOpts.OpenAIKey = d.Cfg.OpenAI.APIKey
+			}
+
+			agent.Setup(d.Home, agentName, setupOpts)
+			steps = append(steps, "Created agent directory")
 			steps = append(steps, fmt.Sprintf("Personality: %s", variant.Trait))
 
 			// Store persona in mux SQLite.
