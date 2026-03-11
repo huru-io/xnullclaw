@@ -39,6 +39,17 @@ var ConfigKeys = []ConfigKey{
 	{"http_max_response", "http_request.max_response_size", "int", "Max HTTP response size", false},
 	{"http_allowed_domains", "http_request.allowed_domains", "string_array", "Allowed HTTP domains", false},
 	{"search_provider", "http_request.search_provider", "string", "Web search provider", false},
+	{"persona_trait", "persona.trait", "string", "Personality trait descriptor", false},
+	{"persona_warmth", "persona.dimensions.warmth", "float", "Warmth (0.0-1.0)", false},
+	{"persona_humor", "persona.dimensions.humor", "float", "Humor (0.0-1.0)", false},
+	{"persona_verbosity", "persona.dimensions.verbosity", "float", "Verbosity (0.0-1.0)", false},
+	{"persona_proactiveness", "persona.dimensions.proactiveness", "float", "Proactiveness (0.0-1.0)", false},
+	{"persona_formality", "persona.dimensions.formality", "float", "Formality (0.0-1.0)", false},
+	{"persona_empathy", "persona.dimensions.empathy", "float", "Empathy (0.0-1.0)", false},
+	{"persona_sarcasm", "persona.dimensions.sarcasm", "float", "Sarcasm (0.0-1.0)", false},
+	{"persona_autonomy", "persona.dimensions.autonomy", "float", "Autonomy (0.0-1.0)", false},
+	{"persona_interpretation", "persona.dimensions.interpretation", "float", "Interpretation (0.0-1.0)", false},
+	{"persona_creativity", "persona.dimensions.creativity", "float", "Creativity (0.0-1.0)", false},
 }
 
 // LookupConfigKey finds a ConfigKey by its friendly name.
@@ -110,7 +121,7 @@ func ConfigSet(agentDir, key, value string) error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	return os.WriteFile(path, append(out, '\n'), 0644)
+	return os.WriteFile(path, append(out, '\n'), 0600)
 }
 
 // ConfigGetAll reads the entire agent config.json as a map.

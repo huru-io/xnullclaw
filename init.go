@@ -61,6 +61,10 @@ func runInit(args []string) {
 
 	interactive := opts.interactive()
 
+	// Read existing agent list and keys so we can preserve them on re-runs.
+	existingAgents, _ := agent.ListAll(home)
+	existingKeys := readExistingAgentKeysFrom(home, existingAgents)
+
 	// ── Section 1: LLM Provider keys ──
 
 	if interactive {
@@ -71,32 +75,54 @@ func runInit(args []string) {
 		fmt.Println()
 	}
 
-	openaiKey := resolveValue(opts.openaiKey, os.Getenv("OPENAI_API_KEY"), cfg.OpenAI.APIKey)
+	existingOpenAIKey := resolveValue(cfg.OpenAI.APIKey, existingKeys["openai"])
+	openaiKey := resolveValue(opts.openaiKey, os.Getenv("OPENAI_API_KEY"), existingOpenAIKey)
 	if openaiKey == "" && interactive {
 		openaiKey = promptInput("OpenAI API key (or OPENAI_API_KEY env): ")
+	} else if interactive && openaiKey != "" && opts.openaiKey == "" {
+		inp := promptInput(fmt.Sprintf("OpenAI API key [%s, Enter to keep]: ", redactKey(openaiKey)))
+		if inp != "" {
+			openaiKey = inp
+		}
 	}
 	if openaiKey != "" {
 		cfg.OpenAI.APIKey = openaiKey
 	}
 
-	anthropicKey := resolveValue(opts.anthropicKey, os.Getenv("ANTHROPIC_API_KEY"), "")
+	anthropicKey := resolveValue(opts.anthropicKey, os.Getenv("ANTHROPIC_API_KEY"), existingKeys["anthropic"])
 	if anthropicKey == "" && interactive {
 		anthropicKey = promptInput("Anthropic API key (optional, Enter to skip): ")
+	} else if interactive && anthropicKey != "" && opts.anthropicKey == "" {
+		inp := promptInput(fmt.Sprintf("Anthropic API key [%s, Enter to keep]: ", redactKey(anthropicKey)))
+		if inp != "" {
+			anthropicKey = inp
+		}
 	}
 
-	openrouterKey := resolveValue(opts.openrouterKey, os.Getenv("OPENROUTER_API_KEY"), "")
+	openrouterKey := resolveValue(opts.openrouterKey, os.Getenv("OPENROUTER_API_KEY"), existingKeys["openrouter"])
 	if openrouterKey == "" && interactive {
 		openrouterKey = promptInput("OpenRouter API key (optional, Enter to skip): ")
+	} else if interactive && openrouterKey != "" && opts.openrouterKey == "" {
+		inp := promptInput(fmt.Sprintf("OpenRouter API key [%s, Enter to keep]: ", redactKey(openrouterKey)))
+		if inp != "" {
+			openrouterKey = inp
+		}
 	}
 
-	// Validate keys early.
+	// Validate keys — only test keys that are new or changed from existing config.
+	anyKey := openaiKey != "" || anthropicKey != "" || openrouterKey != ""
 	anyKeyValid := false
-	for _, kv := range []struct{ provider, key string }{
-		{"openai", openaiKey},
-		{"anthropic", anthropicKey},
-		{"openrouter", openrouterKey},
+	for _, kv := range []struct{ provider, key, existing string }{
+		{"openai", openaiKey, existingOpenAIKey},
+		{"anthropic", anthropicKey, existingKeys["anthropic"]},
+		{"openrouter", openrouterKey, existingKeys["openrouter"]},
 	} {
 		if kv.key == "" {
+			continue
+		}
+		if kv.key == kv.existing {
+			// Key unchanged from existing config — skip re-validation.
+			anyKeyValid = true
 			continue
 		}
 		if err := agent.TestProviderKey(kv.provider, kv.key); err != nil {
@@ -106,7 +132,7 @@ func runInit(args []string) {
 			anyKeyValid = true
 		}
 	}
-	if !anyKeyValid && (openaiKey != "" || anthropicKey != "" || openrouterKey != "") {
+	if !anyKeyValid && anyKey {
 		log.Fatal("all provided API keys failed validation")
 	}
 
@@ -160,18 +186,26 @@ func runInit(args []string) {
 
 	// Agent model.
 	agentModel := opts.agentModel
-	if agentModel == "" && interactive {
-		agentModel = promptInput("Agent model [openai/gpt-5-mini]: ")
+	if agentModel == "" {
+		agentModel = existingKeys["model"]
+	}
+	if interactive && opts.agentModel == "" {
+		defaultModel := agentModel
+		if defaultModel == "" {
+			defaultModel = "openai/gpt-5-mini"
+		}
+		inp := promptInput(fmt.Sprintf("Agent model [%s]: ", defaultModel))
+		if inp != "" {
+			agentModel = inp
+		}
 	}
 	if agentModel == "" {
 		agentModel = "openai/gpt-5-mini"
 	}
 
-	// System prompt for agents.
+	// System prompt — not asked in wizard; auto-generated per agent name.
+	// Override later with: xnc config set <agent> system_prompt "..."
 	systemPrompt := opts.systemPrompt
-	if systemPrompt == "" && interactive {
-		systemPrompt = promptInput("Default agent system prompt (optional, Enter to skip): ")
-	}
 
 	// ── Section 3: Voice / STT / TTS ──
 
@@ -231,23 +265,41 @@ func runInit(args []string) {
 		fmt.Println()
 		fmt.Println("─── Agents ───")
 		fmt.Println("Agents are AI workers running in Docker containers.")
+		if len(existingAgents) > 0 {
+			names := make([]string, len(existingAgents))
+			for i, a := range existingAgents {
+				names[i] = a.Name
+			}
+			fmt.Printf("Existing agents: %s\n", strings.Join(names, ", "))
+		}
 		fmt.Println()
 	}
 
 	agentCount := opts.agentCount
 	if agentCount == 0 && interactive {
-		countStr := promptInput("Number of agents to create [1]: ")
-		if countStr != "" {
-			n, err := strconv.Atoi(countStr)
-			if err != nil || n < 0 {
-				log.Fatalf("invalid agent count: %s", countStr)
+		if len(existingAgents) > 0 {
+			countStr := promptInput("Additional agents to create [0]: ")
+			if countStr != "" {
+				n, err := strconv.Atoi(countStr)
+				if err != nil || n < 0 {
+					log.Fatalf("invalid agent count: %s", countStr)
+				}
+				agentCount = n
 			}
-			agentCount = n
 		} else {
-			agentCount = 1
+			countStr := promptInput("Number of agents to create [1]: ")
+			if countStr != "" {
+				n, err := strconv.Atoi(countStr)
+				if err != nil || n < 0 {
+					log.Fatalf("invalid agent count: %s", countStr)
+				}
+				agentCount = n
+			} else {
+				agentCount = 1
+			}
 		}
 	}
-	if agentCount == 0 {
+	if agentCount == 0 && len(existingAgents) == 0 {
 		agentCount = 1
 	}
 
@@ -279,48 +331,62 @@ func runInit(args []string) {
 	// ── Section 5: Telegram Mux (optional) ──
 
 	setupMux := opts.setupMux
+	muxAlreadyConfigured := cfg.Telegram.BotToken != ""
 	if interactive && !setupMux {
 		fmt.Println()
 		fmt.Println("─── Telegram Mux (optional) ───")
 		fmt.Println("The mux is a Telegram bot that orchestrates your agents.")
 		fmt.Println("You can skip this and use xnc in CLI-only mode.")
 		fmt.Println()
-		setupMux = isYes(promptInput("Set up Telegram mux? [y/N]: "))
+		if muxAlreadyConfigured {
+			setupMux = !isNo(promptInput("Reconfigure Telegram mux? [Y/n]: "))
+		} else {
+			setupMux = isYes(promptInput("Set up Telegram mux? [y/N]: "))
+		}
 	}
 
 	if setupMux {
 		telegramToken := resolveValue(opts.telegramToken, os.Getenv("TELEGRAM_BOT_TOKEN"), cfg.Telegram.BotToken)
 		if telegramToken == "" && interactive {
 			telegramToken = promptInput("Telegram bot token: ")
+		} else if interactive && telegramToken != "" && opts.telegramToken == "" {
+			inp := promptInput(fmt.Sprintf("Telegram bot token [%s, Enter to keep]: ", redactKey(telegramToken)))
+			if inp != "" {
+				telegramToken = inp
+			}
 		}
 		if telegramToken != "" {
-			if err := validateTelegramToken(telegramToken); err != nil {
-				if interactive {
-					fmt.Fprintf(os.Stderr, "warning: %v\n", err)
-					telegramToken = promptInput("Telegram bot token (format: 123456:ABC...): ")
-					if err := validateTelegramToken(telegramToken); err != nil {
+			existingToken := cfg.Telegram.BotToken
+			if telegramToken != existingToken {
+				// Token changed — validate it.
+				if err := validateTelegramToken(telegramToken); err != nil {
+					if interactive {
+						fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+						telegramToken = promptInput("Telegram bot token (format: 123456:ABC...): ")
+						if err := validateTelegramToken(telegramToken); err != nil {
+							log.Fatalf("invalid telegram token: %v", err)
+						}
+					} else {
 						log.Fatalf("invalid telegram token: %v", err)
 					}
-				} else {
-					log.Fatalf("invalid telegram token: %v", err)
 				}
-			}
-			// Verify token with Telegram API.
-			if err := agent.TestTelegramToken(telegramToken); err != nil {
-				if interactive {
-					fmt.Fprintf(os.Stderr, "warning: %v\n", err)
-					telegramToken = promptInput("Telegram bot token (try again): ")
-					if err := validateTelegramToken(telegramToken); err != nil {
-						log.Fatalf("invalid telegram token: %v", err)
-					}
-					if err := agent.TestTelegramToken(telegramToken); err != nil {
+				// Verify token with Telegram API.
+				if err := agent.TestTelegramToken(telegramToken); err != nil {
+					if interactive {
+						fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+						telegramToken = promptInput("Telegram bot token (try again): ")
+						if err := validateTelegramToken(telegramToken); err != nil {
+							log.Fatalf("invalid telegram token: %v", err)
+						}
+						if err := agent.TestTelegramToken(telegramToken); err != nil {
+							log.Fatalf("telegram token verification failed: %v", err)
+						}
+					} else {
 						log.Fatalf("telegram token verification failed: %v", err)
 					}
-				} else {
-					log.Fatalf("telegram token verification failed: %v", err)
 				}
+				fmt.Println("ok: telegram token verified")
 			}
-			fmt.Println("ok: telegram token verified")
 			cfg.Telegram.BotToken = telegramToken
 		}
 
@@ -371,11 +437,15 @@ func runInit(args []string) {
 
 	// ── Create agents ──
 
-	var createdAgents []string
+	// Start with existing agents so they get wired into mux config.
+	var allAgentNames []string
+	for _, a := range existingAgents {
+		allAgentNames = append(allAgentNames, a.Name)
+	}
+
 	for _, name := range agentNames {
 		if agent.Exists(home, name) {
 			fmt.Printf(":: agent %s already exists, skipping\n", name)
-			createdAgents = append(createdAgents, name)
 			continue
 		}
 
@@ -396,18 +466,36 @@ func runInit(args []string) {
 		dir := agent.Dir(home, name)
 		meta, _ := agent.ReadMeta(dir)
 		fmt.Printf("ok: agent %s %s created\n", meta["EMOJI"], name)
-		createdAgents = append(createdAgents, name)
+		allAgentNames = append(allAgentNames, name)
+	}
+	allAgentNames = uniqueStrings(allAgentNames)
+
+	// Update existing agents with any changed keys.
+	for _, a := range existingAgents {
+		dir := agent.Dir(home, a.Name)
+		for _, kv := range []struct{ configKey, value, existing string }{
+			{"openai_key", openaiKey, existingKeys["openai"]},
+			{"anthropic_key", anthropicKey, existingKeys["anthropic"]},
+			{"openrouter_key", openrouterKey, existingKeys["openrouter"]},
+		} {
+			if kv.value != "" && kv.value != kv.existing {
+				agent.ConfigSet(dir, kv.configKey, kv.value)
+			}
+		}
 	}
 
 	// Wire agents into mux config if mux is being set up.
-	if setupMux && len(createdAgents) > 0 {
-		cfg.Agents.AutoStart = uniqueStrings(append(cfg.Agents.AutoStart, createdAgents...))
-		cfg.Agents.MuxManaged = uniqueStrings(append(cfg.Agents.MuxManaged, createdAgents...))
+	if setupMux && len(allAgentNames) > 0 {
+		cfg.Agents.AutoStart = uniqueStrings(append(cfg.Agents.AutoStart, allAgentNames...))
+		cfg.Agents.MuxManaged = uniqueStrings(append(cfg.Agents.MuxManaged, allAgentNames...))
 		if cfg.Agents.Default == "" {
-			cfg.Agents.Default = createdAgents[0]
+			cfg.Agents.Default = allAgentNames[0]
 		}
 
-		for _, name := range createdAgents {
+		if cfg.Agents.Identities == nil {
+			cfg.Agents.Identities = map[string]config.AgentIdentity{}
+		}
+		for _, name := range allAgentNames {
 			dir := agent.Dir(home, name)
 			meta, _ := agent.ReadMeta(dir)
 			if meta["EMOJI"] != "" {
@@ -427,7 +515,11 @@ func runInit(args []string) {
 	fmt.Println()
 	fmt.Println("─── Summary ───")
 	fmt.Printf("  Home:         %s\n", home)
-	fmt.Printf("  Agents:       %d (%s)\n", len(createdAgents), strings.Join(createdAgents, ", "))
+	if len(allAgentNames) > 0 {
+		fmt.Printf("  Agents:       %d (%s)\n", len(allAgentNames), strings.Join(allAgentNames, ", "))
+	} else {
+		fmt.Println("  Agents:       none")
+	}
 	fmt.Printf("  Agent model:  %s\n", agentModel)
 
 	// Provider keys.
@@ -444,7 +536,7 @@ func runInit(args []string) {
 	}
 
 	// Mux details.
-	if setupMux {
+	if setupMux || muxAlreadyConfigured {
 		muxBase := cfg.OpenAI.BaseURL
 		if muxBase == "" {
 			muxBase = "api.openai.com"
@@ -478,9 +570,14 @@ func runInit(args []string) {
 
 	fmt.Println()
 	fmt.Println("Next steps:")
-	fmt.Println("  xnc image build          Pull the nullclaw Docker image")
-	fmt.Printf("  xnc start %-15sStart an agent\n", createdAgents[0])
-	fmt.Printf("  xnc send %s              Send a message via CLI\n", createdAgents[0])
+	if len(allAgentNames) > 0 {
+		fmt.Println("  xnc image build          Pull the nullclaw Docker image")
+		fmt.Printf("  xnc start %-15sStart an agent\n", allAgentNames[0])
+		fmt.Printf("  xnc persona %-13sTweak agent personality\n", allAgentNames[0])
+		fmt.Printf("  xnc send %s              Send a message via CLI\n", allAgentNames[0])
+	} else {
+		fmt.Println("  xnc setup <name>         Create an agent")
+	}
 	if setupMux && cfg.Telegram.BotToken != "" {
 		fmt.Println("  xnc mux                  Start the Telegram mux")
 	}
@@ -666,6 +763,10 @@ func suggestUnusedName(home string, pending map[string]bool) string {
 // validateTelegramToken checks that a string looks like a Telegram bot token.
 // Format: <bot_id>:<alphanumeric_string> e.g. 123456789:ABCdefGHI-jklMNOpqrs
 func validateTelegramToken(token string) error {
+	// Catch common mistake: pasting an API key instead.
+	if strings.HasPrefix(token, "sk-") {
+		return fmt.Errorf("this looks like an API key, not a Telegram bot token")
+	}
 	parts := strings.SplitN(token, ":", 2)
 	if len(parts) != 2 {
 		return fmt.Errorf("must contain a colon (format: 123456:ABCdef...)")
@@ -676,11 +777,49 @@ func validateTelegramToken(token string) error {
 	if len(parts[1]) < 20 {
 		return fmt.Errorf("token part after colon is too short")
 	}
-	// Catch common mistake: pasting an API key instead.
-	if strings.HasPrefix(token, "sk-") {
-		return fmt.Errorf("this looks like an API key, not a Telegram bot token")
-	}
 	return nil
+}
+
+// readExistingAgentKeysFrom scans existing agents and returns the first non-empty
+// key found for each provider. This lets init re-runs preserve configured keys.
+//
+// In the single-tenant model, all agents typically share the same provider keys.
+// If agents have conflicting keys for the same provider, the first agent's key
+// wins and a warning is printed.
+func readExistingAgentKeysFrom(home string, agents []agent.Info) map[string]string {
+	keys := map[string]string{}
+	if len(agents) == 0 {
+		return keys
+	}
+	for _, pair := range []struct {
+		configKey string
+		mapKey    string
+	}{
+		{"openai_key", "openai"},
+		{"anthropic_key", "anthropic"},
+		{"openrouter_key", "openrouter"},
+		{"model", "model"},
+	} {
+		for _, a := range agents {
+			dir := agent.Dir(home, a.Name)
+			val, err := agent.ConfigGet(dir, pair.configKey)
+			if err != nil {
+				continue
+			}
+			s, ok := val.(string)
+			if !ok || s == "" {
+				continue
+			}
+			if existing, found := keys[pair.mapKey]; found {
+				if s != existing {
+					fmt.Fprintf(os.Stderr, "warning: agent %s has a different %s than others, using first found\n", a.Name, pair.mapKey)
+				}
+				continue
+			}
+			keys[pair.mapKey] = s
+		}
+	}
+	return keys
 }
 
 // resolveValue returns the first non-empty value from the candidates.
@@ -693,12 +832,12 @@ func resolveValue(candidates ...string) string {
 	return ""
 }
 
-// redactKey shows first 4 and last 4 chars of a key.
+// redactKey shows a redacted version of a key for display.
 func redactKey(key string) string {
-	if len(key) >= 8 {
+	if len(key) > 12 {
 		return key[:4] + "..." + key[len(key)-4:]
 	}
-	return "***"
+	return "****"
 }
 
 // boolYN returns "Y" or "N" for display.
@@ -712,6 +851,11 @@ func boolYN(b bool) string {
 // isYes returns true if the input starts with y/Y.
 func isYes(s string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(s)), "y")
+}
+
+// isNo returns true if the input starts with n/N.
+func isNo(s string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(s)), "n")
 }
 
 // promptInput prints a prompt and reads a line from stdin.

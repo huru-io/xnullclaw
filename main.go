@@ -455,6 +455,7 @@ FILE TRANSFER:
 AGENT CONFIG:
   config   get <agent> [key]               Read agent config
   config   set <agent> <key> <value>       Write agent config
+  persona  <agent> [--show] [--preset N] [--reset] [--trait TEXT] [--warmth N] ...
   costs    <agent> [--today|--month|--json] Agent cost summary
 
 SKILLS:

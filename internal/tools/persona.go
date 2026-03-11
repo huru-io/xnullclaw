@@ -21,6 +21,16 @@ var personaPresets = map[string]config.PersonaDimensions{
 		Formality: 0.6, Empathy: 0.2, Sarcasm: 0.0, Autonomy: 0.3, Interpretation: 0.0, Creativity: 0.2},
 	"creative": {Warmth: 0.7, Humor: 0.6, Verbosity: 0.6, Proactiveness: 0.7,
 		Formality: 0.2, Empathy: 0.6, Sarcasm: 0.2, Autonomy: 0.8, Interpretation: 0.5, Creativity: 0.9},
+	"friendly": {Warmth: 0.7, Humor: 0.4, Verbosity: 0.4, Proactiveness: 0.6,
+		Formality: 0.3, Empathy: 0.6, Sarcasm: 0.1, Autonomy: 0.5, Interpretation: 0.2, Creativity: 0.4},
+	"analytical": {Warmth: 0.4, Humor: 0.2, Verbosity: 0.5, Proactiveness: 0.5,
+		Formality: 0.6, Empathy: 0.3, Sarcasm: 0.0, Autonomy: 0.4, Interpretation: 0.1, Creativity: 0.3},
+	"witty": {Warmth: 0.5, Humor: 0.7, Verbosity: 0.2, Proactiveness: 0.6,
+		Formality: 0.4, Empathy: 0.4, Sarcasm: 0.3, Autonomy: 0.6, Interpretation: 0.3, Creativity: 0.6},
+	"earnest": {Warmth: 0.7, Humor: 0.3, Verbosity: 0.5, Proactiveness: 0.8,
+		Formality: 0.5, Empathy: 0.7, Sarcasm: 0.0, Autonomy: 0.7, Interpretation: 0.2, Creativity: 0.4},
+	"playful": {Warmth: 0.6, Humor: 0.6, Verbosity: 0.3, Proactiveness: 0.7,
+		Formality: 0.2, Empathy: 0.5, Sarcasm: 0.2, Autonomy: 0.7, Interpretation: 0.4, Creativity: 0.9},
 }
 
 var validTTSVoices = map[string]bool{
@@ -233,11 +243,14 @@ func registerPersonaTools(r *Registry, d Deps) {
 	r.Register(
 		Definition{
 			Name:        "apply_persona_preset",
-			Description: "Apply a named persona preset: professional, casual, assistant, minimal, creative",
+			Description: "Apply a named persona preset",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"preset": map[string]any{"type": "string", "description": "Preset name", "enum": []string{"professional", "casual", "assistant", "minimal", "creative"}},
+					"preset": map[string]any{"type": "string", "description": "Preset name", "enum": []string{
+						"professional", "casual", "assistant", "minimal", "creative",
+						"friendly", "analytical", "witty", "earnest", "playful",
+					}},
 				},
 				"required": []string{"preset"},
 			},
