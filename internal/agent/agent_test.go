@@ -232,6 +232,59 @@ func TestSetupNameConflict(t *testing.T) {
 	}
 }
 
+func TestSetupComplete(t *testing.T) {
+	home := t.TempDir()
+
+	// Empty dir — not complete.
+	if SetupComplete(home) {
+		t.Fatal("empty dir should not be complete")
+	}
+
+	// Make it look like an xnc home.
+	InstanceID(home)
+	if SetupComplete(home) {
+		t.Fatal("xnc home with no agents should not be complete")
+	}
+
+	// Create an agent (no key).
+	if err := Setup(home, "nokey"); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	if SetupComplete(home) {
+		t.Fatal("agent with no API key should not be complete")
+	}
+
+	// Set a provider key.
+	if err := ConfigSet(Dir(home, "nokey"), "openai_key", "sk-test123"); err != nil {
+		t.Fatalf("ConfigSet: %v", err)
+	}
+	if !SetupComplete(home) {
+		t.Fatal("agent with API key should be complete")
+	}
+}
+
+func TestHasProviderKey(t *testing.T) {
+	home := t.TempDir()
+	InstanceID(home)
+
+	if err := Setup(home, "agent1"); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+
+	// No key set.
+	if HasProviderKey(home, "agent1") {
+		t.Error("should not have provider key initially")
+	}
+
+	// Set anthropic key.
+	if err := ConfigSet(Dir(home, "agent1"), "anthropic_key", "sk-ant-test"); err != nil {
+		t.Fatalf("ConfigSet: %v", err)
+	}
+	if !HasProviderKey(home, "agent1") {
+		t.Error("should have provider key after setting anthropic_key")
+	}
+}
+
 func TestDefaultHome(t *testing.T) {
 	// Reset env.
 	orig := os.Getenv("XNC_HOME")

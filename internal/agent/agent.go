@@ -102,13 +102,38 @@ func IsXNCHome(home string) bool {
 }
 
 // SetupComplete checks if xnc has been fully initialized:
-// the home is an xnc home AND at least one agent exists.
+// the home is an xnc home, at least one agent exists, and at least
+// one agent has a provider API key configured.
 func SetupComplete(home string) bool {
 	if !IsXNCHome(home) {
 		return false
 	}
 	agents, _ := ListAll(home)
-	return len(agents) > 0
+	if len(agents) == 0 {
+		return false
+	}
+	for _, info := range agents {
+		if HasProviderKey(home, info.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasProviderKey checks if an agent has at least one non-empty API key
+// configured (openai, anthropic, or openrouter).
+func HasProviderKey(home, name string) bool {
+	dir := Dir(home, name)
+	for _, key := range []string{"openai_key", "anthropic_key", "openrouter_key"} {
+		val, err := ConfigGet(dir, key)
+		if err != nil {
+			continue
+		}
+		if s, ok := val.(string); ok && s != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // IsEmptyDir checks if a directory is empty or doesn't exist.
