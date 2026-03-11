@@ -371,8 +371,13 @@ func cmdStatus(g Globals, args []string) {
 		return
 	}
 
-	// Build container state map if Docker is available.
+	// Build container state map — try Docker, skip gracefully if unavailable.
 	stateMap := map[string]docker.ContainerInfo{}
+	if g.Docker == nil {
+		if cli, err := docker.NewClient(); err == nil {
+			g.Docker = cli
+		}
+	}
 	if g.Docker != nil {
 		prefix := agent.ContainerPrefix(g.Home)
 		containers, err := g.Docker.ListContainers(context.Background(), prefix)
