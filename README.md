@@ -1,8 +1,33 @@
 # xnc
 
-Manage fleets of AI agents running in hardened Docker containers. One binary, full control.
+Manage fleets of AI agents from your phone. One binary, full control.
 
-`xnc` orchestrates [nullclaw](https://github.com/huru-io/nullclaw) AI agents — each running isolated with strict security constraints, resource limits, and persistent memory. Interact via CLI, pipe messages through scripts, or operate everything through a built-in Telegram bot.
+`xnc` orchestrates [nullclaw](https://github.com/huru-io/nullclaw) AI agents — each running isolated in hardened Docker containers with persistent memory. Talk to them from the terminal, pipe messages through scripts, or run your entire fleet from Telegram.
+
+## Telegram-native agent orchestration
+
+The killer feature. Run `xnc mux` and your Telegram bot becomes a full agent control plane:
+
+```bash
+xnc mux                    # start the mux daemon
+```
+
+From Telegram you can:
+
+- **Talk to any agent** — the mux AI routes your messages, starts agents on demand, and manages conversations
+- **Send voice messages** — transcribed via Whisper, agents can respond with TTS
+- **Manage your fleet** — start, stop, clone, rename, snapshot agents — all through natural conversation
+- **Install skills** — drop a `.md` or `.zip` file in the chat, the mux installs it to any agent or all of them
+- **Track costs** — ask "how much did alice spend today?" and get real answers
+- **Send files** — upload documents, the mux delivers them to the right agent's workspace
+
+Everything the CLI can do, the mux can do from your phone. No SSH, no terminal, no VPN.
+
+```bash
+xnc mux stop               # stop the daemon
+xnc mux logs -f            # follow logs
+xnc mux status             # check if running
+```
 
 ## Install
 
@@ -22,7 +47,7 @@ curl -fsSL https://github.com/huru-io/xnullclaw/releases/latest/download/xnc_$(c
 curl -fsSL https://github.com/huru-io/xnullclaw/releases/latest/download/xnc_$(curl -fsSL https://api.github.com/repos/huru-io/xnullclaw/releases/latest | grep tag_name | cut -d'"' -f4)_linux_arm64.tar.gz | tar xz -C /usr/local/bin
 ```
 
-Or download the right archive from the [Releases](https://github.com/huru-io/xnullclaw/releases) page, extract, and move `xnc` to somewhere on your `PATH`.
+Or grab the right archive from the [Releases](https://github.com/huru-io/xnullclaw/releases) page, extract, and put `xnc` somewhere on your `PATH`.
 
 ### Build from source
 
@@ -41,7 +66,7 @@ make install      # -> /usr/local/bin/xnc
 ## Quick start
 
 ```bash
-# Initialize (interactive wizard sets up keys, agents, optional Telegram bot)
+# Interactive wizard — sets up API keys, agents, optional Telegram bot
 xnc init
 
 # Pull the nullclaw Docker image
@@ -106,20 +131,6 @@ xnc skill list --all                      # see what's installed
 ```
 
 Shared skills (`~/.xnc/skills/`) are auto-installed to new agents. Agent-local skills override shared ones.
-
-### Telegram bot (mux)
-
-The mux daemon turns a Telegram bot into a full agent orchestration interface:
-
-```bash
-xnc mux                    # start as daemon
-xnc mux stop               # stop
-xnc mux logs -f            # follow logs
-```
-
-From Telegram, the mux AI can start/stop agents, send messages, install skills, clone agents, manage costs — anything xnc CLI does, the mux can do via tool calls.
-
-Voice messages are transcribed (Whisper) and can trigger TTS responses.
 
 ### Snapshots and cloning
 
@@ -263,4 +274,4 @@ xnc image    status                      Image info
 
 ## License
 
-Proprietary. Copyright Huru Inc.
+MIT License. See [LICENSE](LICENSE) for details.
