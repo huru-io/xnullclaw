@@ -22,6 +22,8 @@ type MockOps struct {
 	CopyFromContainerFn  func(ctx context.Context, name, srcPath string) (io.ReadCloser, error)
 	ImageExistsFn        func(ctx context.Context, image string) (bool, error)
 	ImageInspectFn       func(ctx context.Context, image string) (*ImageInfo, error)
+	ImagePullFn          func(ctx context.Context, refStr string) error
+	ImageTagFn           func(ctx context.Context, source, target string) error
 	ImageBuildFn         func(ctx context.Context, contextDir string, opts BuildOpts) error
 	CloseFn              func() error
 }
@@ -117,6 +119,20 @@ func (m *MockOps) ImageInspect(ctx context.Context, image string) (*ImageInfo, e
 		return m.ImageInspectFn(ctx, image)
 	}
 	return nil, fmt.Errorf("No such image: %s", image)
+}
+
+func (m *MockOps) ImagePull(ctx context.Context, refStr string) error {
+	if m.ImagePullFn != nil {
+		return m.ImagePullFn(ctx, refStr)
+	}
+	return nil
+}
+
+func (m *MockOps) ImageTag(ctx context.Context, source, target string) error {
+	if m.ImageTagFn != nil {
+		return m.ImageTagFn(ctx, source, target)
+	}
+	return nil
 }
 
 func (m *MockOps) ImageBuild(ctx context.Context, contextDir string, opts BuildOpts) error {

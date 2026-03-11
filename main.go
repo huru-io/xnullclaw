@@ -338,8 +338,8 @@ MUX (Telegram bot):
   mux      logs [-f]                       Mux log output
 
 IMAGE:
-  image    build                           Build nullclaw Docker image
-  image    update                          Rebuild from latest source
+  image    build   [--from-source]         Pull image (or build from source)
+  image    update  [--from-source]         Update image from registry/source
   image    status                          Show image info
 
 OTHER:

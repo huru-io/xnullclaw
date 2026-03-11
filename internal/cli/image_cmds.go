@@ -10,7 +10,11 @@ import (
 	"github.com/jotavich/xnullclaw/internal/docker"
 )
 
-const nullclawRepoURL = "https://github.com/nullclaw/nullclaw.git"
+const (
+	nullclawRepoURL   = "https://github.com/nullclaw/nullclaw.git"
+	nullclawRegistry  = "ghcr.io/nullclaw/nullclaw"
+	nullclawLatestRef = "ghcr.io/nullclaw/nullclaw:latest"
+)
 
 func cmdImage(g Globals, args []string) {
 	if len(args) == 0 {
@@ -18,14 +22,15 @@ func cmdImage(g Globals, args []string) {
 	}
 
 	subcmd := args[0]
+	rest := args[1:]
 
 	switch subcmd {
 	case "status":
 		cmdImageStatus(g)
 	case "build":
-		cmdImageBuild(g)
+		cmdImageBuild(g, rest)
 	case "update":
-		cmdImageUpdate(g)
+		cmdImageUpdate(g, rest)
 	default:
 		die("unknown image subcommand: %s", subcmd)
 	}
@@ -42,7 +47,7 @@ func cmdImageStatus(g Globals) {
 
 	if !exists {
 		fmt.Printf("image %s: not found\n", g.Image)
-		fmt.Println("Build it:  xnc image build")
+		fmt.Println("Get it:  xnc image build")
 		return
 	}
 
@@ -71,7 +76,6 @@ func buildDir(home string) string {
 }
 
 // ensureRepo clones or reuses the nullclaw repo in the build directory.
-// Returns the build directory path.
 func ensureRepo(home string) string {
 	dir := buildDir(home)
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
@@ -93,52 +97,97 @@ func ensureRepo(home string) string {
 	return dir
 }
 
-func cmdImageBuild(g Globals) {
+// cmdImageBuild gets the nullclaw Docker image.
+// Default: pull from ghcr.io and tag as the local image name.
+// --from-source: clone repo and build locally (slow, compiles Zig).
+func cmdImageBuild(g Globals, args []string) {
+	fromSource := hasFlag(&args, "--from-source")
+
 	g.ensureDocker()
 	ctx := context.Background()
 
+	if fromSource {
+		buildFromSource(g, ctx, false)
+		return
+	}
+
+	// Try pulling from registry first.
+	info("pulling %s ...", nullclawLatestRef)
+	if err := g.Docker.ImagePull(ctx, nullclawLatestRef); err != nil {
+		info("pull failed: %v", err)
+		info("falling back to building from source...")
+		buildFromSource(g, ctx, false)
+		return
+	}
+
+	// Tag as the local image name if different from the registry ref.
+	if g.Image != nullclawLatestRef && g.Image != nullclawRegistry+":latest" {
+		if err := g.Docker.ImageTag(ctx, nullclawLatestRef, g.Image); err != nil {
+			die("tag image: %v", err)
+		}
+	}
+
+	ok("image '%s' ready (pulled from registry)", g.Image)
+}
+
+// cmdImageUpdate updates the nullclaw Docker image.
+// Default: pull latest from ghcr.io.
+// --from-source: git pull + rebuild with no cache.
+func cmdImageUpdate(g Globals, args []string) {
+	fromSource := hasFlag(&args, "--from-source")
+
+	g.ensureDocker()
+	ctx := context.Background()
+
+	if fromSource {
+		dir := buildDir(g.Home)
+
+		// Pull latest or clone fresh.
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			info("pulling latest changes...")
+			cmd := exec.Command("git", "-C", dir, "pull", "--ff-only")
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Run(); err != nil {
+				die("git pull failed: %v", err)
+			}
+		} else {
+			ensureRepo(g.Home)
+		}
+
+		buildFromSource(g, ctx, true)
+		return
+	}
+
+	// Pull latest from registry.
+	info("pulling %s ...", nullclawLatestRef)
+	if err := g.Docker.ImagePull(ctx, nullclawLatestRef); err != nil {
+		die("pull failed: %v\nUse --from-source to build locally", err)
+	}
+
+	if g.Image != nullclawLatestRef && g.Image != nullclawRegistry+":latest" {
+		if err := g.Docker.ImageTag(ctx, nullclawLatestRef, g.Image); err != nil {
+			die("tag image: %v", err)
+		}
+	}
+
+	ok("image '%s' updated (pulled from registry)", g.Image)
+}
+
+// buildFromSource clones the repo and builds the Docker image locally.
+func buildFromSource(g Globals, ctx context.Context, noCache bool) {
 	dir := ensureRepo(g.Home)
 
-	info("building Docker image (compiling Zig — may take a few minutes)...")
+	info("building Docker image from source (compiling Zig — may take a few minutes)...")
 	err := g.Docker.ImageBuild(ctx, dir, docker.BuildOpts{
-		Tags: []string{g.Image},
+		Tags:    []string{g.Image},
+		NoCache: noCache,
 	})
 	if err != nil {
 		die("image build failed: %v", err)
 	}
 
-	ok("image '%s' built", g.Image)
-}
-
-func cmdImageUpdate(g Globals) {
-	g.ensureDocker()
-	ctx := context.Background()
-
-	dir := buildDir(g.Home)
-
-	// Pull latest or clone fresh.
-	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-		info("pulling latest changes...")
-		cmd := exec.Command("git", "-C", dir, "pull", "--ff-only")
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			die("git pull failed: %v", err)
-		}
-	} else {
-		ensureRepo(g.Home)
-	}
-
-	info("rebuilding Docker image (no cache)...")
-	err := g.Docker.ImageBuild(ctx, dir, docker.BuildOpts{
-		Tags:    []string{g.Image},
-		NoCache: true,
-	})
-	if err != nil {
-		die("image rebuild failed: %v", err)
-	}
-
-	ok("image '%s' updated", g.Image)
+	ok("image '%s' built from source", g.Image)
 }
 
 func humanSize(bytes int64) string {

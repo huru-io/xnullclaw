@@ -42,6 +42,26 @@ func (c *Client) ImageInspect(ctx context.Context, img string) (*ImageInfo, erro
 	}, nil
 }
 
+// ImagePull pulls an image from a registry.
+func (c *Client) ImagePull(ctx context.Context, refStr string) error {
+	reader, err := c.cli.ImagePull(ctx, refStr, image.PullOptions{})
+	if err != nil {
+		return fmt.Errorf("docker: pull %s: %w", refStr, err)
+	}
+	defer reader.Close()
+	// Must drain the reader for the pull to complete.
+	_, _ = io.Copy(io.Discard, reader)
+	return nil
+}
+
+// ImageTag tags a local image with a new name.
+func (c *Client) ImageTag(ctx context.Context, source, target string) error {
+	if err := c.cli.ImageTag(ctx, source, target); err != nil {
+		return fmt.Errorf("docker: tag %s → %s: %w", source, target, err)
+	}
+	return nil
+}
+
 // ImageBuild builds a Docker image from a context directory.
 func (c *Client) ImageBuild(ctx context.Context, contextDir string, opts BuildOpts) error {
 	pr, pw := io.Pipe()

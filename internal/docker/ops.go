@@ -31,6 +31,8 @@ type Ops interface {
 	// Image management
 	ImageExists(ctx context.Context, image string) (bool, error)
 	ImageInspect(ctx context.Context, image string) (*ImageInfo, error)
+	ImagePull(ctx context.Context, refStr string) error
+	ImageTag(ctx context.Context, source, target string) error
 	ImageBuild(ctx context.Context, contextDir string, opts BuildOpts) error
 
 	// Cleanup
