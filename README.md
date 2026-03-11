@@ -31,6 +31,16 @@ xnc mux status             # check if running
 
 ## Install
 
+### asdf (recommended)
+
+```bash
+asdf plugin add xnc https://github.com/huru-io/asdf-xnc.git
+asdf install xnc latest
+asdf set --home xnc latest
+```
+
+Manages versions automatically. Update with `asdf install xnc latest`.
+
 ### Download binary
 
 ```bash
@@ -199,6 +209,7 @@ xnc cp-from  <agent> <path> [dest]        Copy file out
 ```
 xnc config   get <agent> [key]            Read config
 xnc config   set <agent> <key> <value>    Write config
+xnc persona  <agent> [--show] [--preset]  Personality editor
 xnc costs    <agent> [--today|--month]    Cost summary
 ```
 
