@@ -61,7 +61,7 @@ func Clone(home, src, dst string, opts CloneOpts) error {
 	}
 
 	// Assign new identity.
-	emoji := NextEmoji(home)
+	emoji := NextEmoji(home, dst)
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	if err := WriteMetaBatch(dstDir, map[string]string{

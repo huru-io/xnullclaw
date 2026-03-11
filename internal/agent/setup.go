@@ -46,7 +46,7 @@ func Setup(home, name string) error {
 	}
 
 	// Assign identity.
-	emoji := NextEmoji(home)
+	emoji := NextEmoji(home, name)
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	if err := WriteMetaBatch(dir, map[string]string{
