@@ -214,10 +214,12 @@ xnc skill    info <name> [--agent N]      Skill details
 ### Fleet
 
 ```
-xnc list     [--json]                     All agents
-xnc running  [--json]                     Running agents
-xnc status   <agents...> [--json]         Agent status
+xnc status   [agents...] [flags] [--json] Agent status (default: all)
+xnc list                                  Alias for: status
+xnc running                               Alias for: status --running
 ```
+
+Status flags: `--running`, `--stopped`, `--error`. Combine with agent names to filter further.
 
 ### Snapshots
 

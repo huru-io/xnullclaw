@@ -286,13 +286,83 @@ func cmdDestroy(g Globals, args []string) {
 	}
 }
 
+// statusCategory maps Docker container state to a filter category.
+func statusCategory(state string) string {
+	switch state {
+	case "running":
+		return "running"
+	case "restarting", "dead":
+		return "error"
+	case "exited":
+		// Exited containers with non-zero exit codes are errors,
+		// but we can't distinguish from ListContainers alone.
+		// The Status string contains the exit code, e.g. "Exited (1) ...".
+		return "stopped"
+	default:
+		return "stopped"
+	}
+}
+
+// statusCategoryFromStatus refines the category using the human-readable status
+// string which contains exit codes, e.g. "Exited (1) 5 minutes ago".
+func statusCategoryFromStatus(state, status string) string {
+	cat := statusCategory(state)
+	if state == "exited" && strings.Contains(status, "Exited (") && !strings.Contains(status, "Exited (0)") {
+		cat = "error"
+	}
+	return cat
+}
+
 func cmdList(g Globals, args []string) {
-	agents, err := agent.ListAll(g.Home)
+	// list is an alias for status with no filters.
+	cmdStatus(g, args)
+}
+
+func cmdRunning(g Globals, args []string) {
+	// running is an alias for status --running.
+	args = append(args, "--running")
+	cmdStatus(g, args)
+}
+
+func cmdStatus(g Globals, args []string) {
+	filterRunning := hasFlag(&args, "--running")
+	filterStopped := hasFlag(&args, "--stopped")
+	filterError := hasFlag(&args, "--error")
+	hasFilter := filterRunning || filterStopped || filterError
+
+	names := agentNames(args)
+
+	allAgents, err := agent.ListAll(g.Home)
 	if err != nil {
-		die("list: %v", err)
+		die("status: %v", err)
 	}
 
-	if len(agents) == 0 {
+	// If specific names given, validate they exist.
+	if len(names) > 0 {
+		nameSet := map[string]bool{}
+		for _, n := range names {
+			nameSet[agent.CanonicalName(n)] = true
+		}
+		var filtered []agent.Info
+		for _, a := range allAgents {
+			if nameSet[agent.CanonicalName(a.Name)] {
+				filtered = append(filtered, a)
+			}
+		}
+		// Report names not found.
+		foundSet := map[string]bool{}
+		for _, a := range filtered {
+			foundSet[agent.CanonicalName(a.Name)] = true
+		}
+		for _, n := range names {
+			if !foundSet[agent.CanonicalName(n)] {
+				fmt.Fprintf(os.Stderr, "warning: agent %q not found\n", n)
+			}
+		}
+		allAgents = filtered
+	}
+
+	if len(allAgents) == 0 {
 		if g.JSON {
 			fmt.Println("[]")
 		} else {
@@ -314,25 +384,51 @@ func cmdList(g Globals, args []string) {
 		}
 	}
 
-	type listEntry struct {
-		Name    string `json:"name"`
-		Emoji   string `json:"emoji,omitempty"`
-		Created string `json:"created,omitempty"`
-		Status  string `json:"status"`
+	type statusEntry struct {
+		Name     string `json:"name"`
+		Emoji    string `json:"emoji,omitempty"`
+		State    string `json:"state"`
+		Status   string `json:"status"`
+		Category string `json:"category"` // running, stopped, error
+		Ports    string `json:"ports,omitempty"`
 	}
 
-	var entries []listEntry
-	for _, a := range agents {
-		e := listEntry{
-			Name:    a.Name,
-			Emoji:   a.Emoji,
-			Created: a.Created,
-			Status:  "stopped",
+	var entries []statusEntry
+	for _, a := range allAgents {
+		e := statusEntry{
+			Name:     a.Name,
+			Emoji:    a.Emoji,
+			State:    "stopped",
+			Status:   "stopped",
+			Category: "stopped",
 		}
 		canon := agent.CanonicalName(a.Name)
 		if c, ok := stateMap[canon]; ok {
+			e.State = c.State
 			e.Status = c.Status
+			e.Category = statusCategoryFromStatus(c.State, c.Status)
+			if len(c.Ports) > 0 {
+				e.Ports = strings.Join(c.Ports, ", ")
+			}
 		}
+
+		// Apply filters.
+		if hasFilter {
+			match := false
+			if filterRunning && e.Category == "running" {
+				match = true
+			}
+			if filterStopped && e.Category == "stopped" {
+				match = true
+			}
+			if filterError && e.Category == "error" {
+				match = true
+			}
+			if !match {
+				continue
+			}
+		}
+
 		entries = append(entries, e)
 	}
 
@@ -342,132 +438,21 @@ func cmdList(g Globals, args []string) {
 		return
 	}
 
+	if len(entries) == 0 {
+		info("no matching agents")
+		return
+	}
+
 	for _, e := range entries {
 		emoji := e.Emoji
 		if emoji == "" {
 			emoji = " "
 		}
-		fmt.Printf("  %s %-15s %s\n", emoji, e.Name, e.Status)
+		ports := ""
+		if e.Ports != "" {
+			ports = " [" + e.Ports + "]"
+		}
+		fmt.Printf("  %s %-15s %s%s\n", emoji, e.Name, e.Status, ports)
 	}
 	fmt.Printf("\n%d agent(s)\n", len(entries))
-}
-
-func cmdRunning(g Globals, args []string) {
-	g.ensureDocker()
-	ctx := context.Background()
-
-	prefix := agent.ContainerPrefix(g.Home)
-	containers, err := g.Docker.ListContainers(ctx, prefix)
-	if err != nil {
-		die("list containers: %v", err)
-	}
-
-	// Filter to running only.
-	var running []docker.ContainerInfo
-	for _, c := range containers {
-		if c.State == "running" {
-			running = append(running, c)
-		}
-	}
-
-	if g.JSON {
-		data, _ := json.MarshalIndent(running, "", "  ")
-		fmt.Println(string(data))
-		return
-	}
-
-	if len(running) == 0 {
-		info("no running agents")
-		return
-	}
-
-	for _, c := range running {
-		name := strings.TrimPrefix(c.Name, prefix)
-		dir := agent.Dir(g.Home, name)
-		meta, _ := agent.ReadMeta(dir)
-		emoji := meta["EMOJI"]
-		if emoji == "" {
-			emoji = " "
-		}
-
-		ports := ""
-		if len(c.Ports) > 0 {
-			ports = " [" + strings.Join(c.Ports, ", ") + "]"
-		}
-		fmt.Printf("  %s %-15s %s%s\n", emoji, name, c.Status, ports)
-	}
-	fmt.Printf("\n%d running\n", len(running))
-}
-
-func cmdStatus(g Globals, args []string) {
-	names := agentNames(args)
-	if len(names) == 0 {
-		die("usage: xnc status <agents...> [--json]")
-	}
-
-	g.ensureDocker()
-	ctx := context.Background()
-
-	type statusInfo struct {
-		Name      string `json:"name"`
-		Emoji     string `json:"emoji"`
-		Exists    bool   `json:"exists"`
-		Running   bool   `json:"running"`
-		Container string `json:"container,omitempty"`
-		Status    string `json:"status"`
-		Port      string `json:"port,omitempty"`
-	}
-
-	var results []statusInfo
-	for _, name := range names {
-		si := statusInfo{Name: name}
-
-		if !agent.Exists(g.Home, name) {
-			si.Status = "not found"
-			results = append(results, si)
-			continue
-		}
-
-		si.Exists = true
-		dir := agent.Dir(g.Home, name)
-		meta, _ := agent.ReadMeta(dir)
-		si.Emoji = meta["EMOJI"]
-		si.Port = meta["HOST_PORT"]
-
-		cn := agent.ContainerName(g.Home, name)
-		info, err := g.Docker.InspectContainer(ctx, cn)
-		if err != nil {
-			si.Status = "stopped"
-		} else {
-			si.Running = info.State == "running"
-			si.Container = info.ID
-			si.Status = info.Status
-		}
-		results = append(results, si)
-	}
-
-	if g.JSON {
-		data, _ := json.MarshalIndent(results, "", "  ")
-		fmt.Println(string(data))
-		return
-	}
-
-	for _, s := range results {
-		emoji := s.Emoji
-		if emoji == "" {
-			emoji = " "
-		}
-		state := "stopped"
-		if s.Running {
-			state = "running"
-		}
-		if !s.Exists {
-			state = "not found"
-		}
-		port := ""
-		if s.Port != "" {
-			port = fmt.Sprintf(" (port %s)", s.Port)
-		}
-		fmt.Printf("  %s %-15s %s%s\n", emoji, s.Name, state, port)
-	}
 }

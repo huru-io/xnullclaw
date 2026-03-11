@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/jotavich/xnullclaw/internal/agent"
 	"github.com/jotavich/xnullclaw/internal/cli"
+	"github.com/jotavich/xnullclaw/internal/docker"
 	"github.com/jotavich/xnullclaw/internal/mux"
 )
 
@@ -23,20 +25,8 @@ var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
-		// No args: if not initialized or incomplete, run init; otherwise show help.
-		home := agent.DefaultHome()
-		if !agent.SetupComplete(home) {
-			if agent.IsXNCHome(home) {
-				fmt.Println("Incomplete xnc setup detected. Resuming setup...")
-			} else {
-				fmt.Println("No xnc setup found. Starting guided setup...")
-			}
-			fmt.Println()
-			runInit(nil)
-			return
-		}
-		printUsage()
-		os.Exit(1)
+		printDashboard()
+		return
 	}
 
 	cmd := os.Args[1]
@@ -303,24 +293,157 @@ func runCLI(cmd string, args []string) {
 	cli.Run(cmd, args)
 }
 
-func printUsage() {
-	fmt.Print(`xnc — agent management
+func printDashboard() {
+	home := agent.DefaultHome()
 
+	fmt.Printf("xnc %s\n", version)
+	fmt.Printf("home: %s\n", home)
+	fmt.Println()
+
+	if !agent.IsXNCHome(home) {
+		fmt.Println("Not initialized. Run 'xnc init' to get started.")
+		fmt.Println("Run 'xnc help' for full command reference.")
+		return
+	}
+
+	// Agents.
+	agents, _ := agent.ListAll(home)
+	if len(agents) == 0 {
+		fmt.Println("No agents configured.")
+		fmt.Println()
+		fmt.Println("  xnc init          Resume setup wizard")
+		fmt.Println("  xnc setup <name>  Create an agent")
+		fmt.Println("  xnc help          Full command reference")
+		return
+	}
+
+	// Check provider keys.
+	hasKeys := false
+	for _, a := range agents {
+		if agent.HasProviderKey(home, a.Name) {
+			hasKeys = true
+			break
+		}
+	}
+	if !hasKeys {
+		fmt.Printf("%d agent(s), but no API keys configured.\n", len(agents))
+		fmt.Println()
+		fmt.Println("  xnc init                              Resume setup wizard")
+		fmt.Println("  xnc config set <agent> openai_key KEY  Set a key manually")
+		fmt.Println("  xnc help                               Full command reference")
+		return
+	}
+
+	// Count running containers.
+	running := 0
+	stopped := 0
+	errored := 0
+
+	// Try Docker — may not be available.
+	stateMap := map[string]string{}
+	dockerOK := false
+	if dc, err := docker.NewClient(); err == nil {
+		defer dc.Close()
+		dockerOK = true
+		prefix := agent.ContainerPrefix(home)
+		containers, err := dc.ListContainers(context.Background(), prefix)
+		if err == nil {
+			for _, c := range containers {
+				name := strings.TrimPrefix(c.Name, prefix)
+				stateMap[name] = c.State
+			}
+		}
+	}
+
+	for _, a := range agents {
+		canon := agent.CanonicalName(a.Name)
+		state, hasContainer := stateMap[canon]
+		if !hasContainer {
+			stopped++
+			continue
+		}
+		switch state {
+		case "running":
+			running++
+		case "restarting", "dead":
+			errored++
+		case "exited":
+			errored++ // could refine with exit code, but safe default
+		default:
+			stopped++
+		}
+	}
+
+	// Show counts.
+	fmt.Printf("agents: %d total", len(agents))
+	if dockerOK {
+		parts := []string{}
+		if running > 0 {
+			parts = append(parts, fmt.Sprintf("%d running", running))
+		}
+		if stopped > 0 {
+			parts = append(parts, fmt.Sprintf("%d stopped", stopped))
+		}
+		if errored > 0 {
+			parts = append(parts, fmt.Sprintf("%d error", errored))
+		}
+		if len(parts) > 0 {
+			fmt.Printf(" (%s)", strings.Join(parts, ", "))
+		}
+	} else {
+		fmt.Print(" (Docker not available)")
+	}
+	fmt.Println()
+
+	// Mux status.
+	muxHome := filepath.Join(home, "mux")
+	pidFile := filepath.Join(muxHome, "mux.pid")
+	pid := readPID(pidFile)
+	if pid > 0 && processAlive(pid) {
+		fmt.Printf("mux:    running (PID %d)\n", pid)
+	} else {
+		fmt.Println("mux:    not running")
+	}
+
+	fmt.Println()
+	fmt.Println("  xnc status        Show all agents")
+	fmt.Println("  xnc help          Full command reference")
+}
+
+func printUsage() {
+	fmt.Printf("xnc %s — AI agent management\n", version)
+	fmt.Print(`
 BOOTSTRAP:
-  init     [flags]                          Set up everything from scratch
+  init                                    Interactive setup wizard
+    --openai-key KEY                        OpenAI API key
+    --anthropic-key KEY                     Anthropic API key
+    --openrouter-key KEY                    OpenRouter API key
+    --telegram-token TOKEN                  Telegram bot token
+    --telegram-user USER                    Telegram username
+    --model MODEL                           Default LLM model
+    --agent-model MODEL                     Model for agents (if different)
+    -n N, --agents N                        Number of agents to create
+    --name NAME                             Agent name (repeatable)
+    --mux                                   Enable Telegram bot setup
+    --yes, -y                               Non-interactive mode
 
 AGENT LIFECYCLE:
-  setup    <names...> [flags]              Create new agent(s)
+  setup    <names...>                      Create new agent(s)
+    --openai-key KEY                        OpenAI API key
+    --anthropic-key KEY                     Anthropic API key
+    --openrouter-key KEY                    OpenRouter API key
+    --model MODEL                           LLM model
+    --system-prompt TEXT                     Custom system prompt
   start    <agents...> [--port N]          Start agent containers
   stop     <agents...> [--all]             Stop agent containers
   restart  <agents...> [--port N]          Restart agent containers
   destroy  <agents...> [--yes]             Delete agents permanently
   clone    <source> <new> [--with-data]    Clone an agent
-  rename   <old> <new>                   Rename an agent
+  rename   <old> <new>                     Rename an agent
 
 AGENT INTERACTION:
-  send     <agents...> [--all]             Send stdin message to agent(s)
-  cli      <agent> [args...]               Interactive chat session
+  send     <agents...> [--all]             Pipe stdin message to agent(s)
+  cli      <agent>                         Interactive chat session
   logs     <agent> [-f] [--tail N]         Container logs
   drain    <agent>                         Drain buffered output
   watch    <agent>                         Stream live output
@@ -341,9 +464,9 @@ SKILLS:
   skill    info <name> [--agent NAME]      Show skill details
 
 FLEET:
-  list     [--json]                        List all agents
-  running  [--json]                        List running agents
-  status   <agents...> [--json]            Show agent status
+  status   [agents...] [--running|--stopped|--error] [--json]
+  list                                     Alias for: status
+  running                                  Alias for: status --running
 
 SNAPSHOTS:
   snapshot  <agent>                         Snapshot agent state to backup
@@ -363,7 +486,7 @@ IMAGE:
   image    status                          Show image info
 
 OTHER:
-  help                                     Show help
+  help                                     Show this help
   version                                  Show version
 
 GLOBAL FLAGS:
