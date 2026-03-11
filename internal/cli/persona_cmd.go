@@ -4,10 +4,13 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/jotavich/xnullclaw/internal/agent"
+	"github.com/jotavich/xnullclaw/internal/config"
 )
 
 // numDimensions is the number of personality dimensions.
@@ -16,7 +19,7 @@ const numDimensions = 10
 // dimension describes a personality slider with human-readable labels.
 type dimension struct {
 	key  string // config key suffix and CLI flag name (e.g. "warmth")
-	name string // display name (must fit in 12 chars)
+	name string // display name (must fit in 14 chars)
 	low  string // description at 0.0
 	mid  string // description at 0.5
 	high string // description at 1.0
@@ -35,33 +38,36 @@ var dimensions = []dimension{
 	{"creativity", "Creativity", "straightforward", "balanced conventional/novel", "creative, surprising"},
 }
 
-// persona presets — each maps to a trait description + dimension values.
-type personaPreset struct {
-	Name   string
-	Trait  string
-	Values [numDimensions]float64 // same order as dimensions slice
+// assistantDefaults are the fallback values for unconfigured agents.
+var assistantDefaults = dimsToArray(config.PresetMap["assistant"])
+
+// muxDefaults are derived from config.PersonaDimensions.Defaults() at init time.
+var muxDefaults [numDimensions]float64
+
+func init() {
+	if len(dimensions) != numDimensions {
+		panic("dimensions slice length does not match numDimensions constant")
+	}
+	d := config.PersonaDimensions{}.Defaults()
+	muxDefaults = [numDimensions]float64{
+		d.Warmth, d.Humor, d.Verbosity, d.Proactiveness, d.Formality,
+		d.Empathy, d.Sarcasm, d.Autonomy, d.Interpretation, d.Creativity,
+	}
 }
 
-// assistantDefaults are the fallback values for unconfigured agents.
-var assistantDefaults = [numDimensions]float64{0.6, 0.3, 0.4, 0.8, 0.5, 0.5, 0.0, 0.7, 0.2, 0.4}
-
-var presets = []personaPreset{
-	{"professional", "precise and professional", [numDimensions]float64{0.4, 0.1, 0.3, 0.5, 0.9, 0.4, 0.0, 0.4, 0.1, 0.3}},
-	{"casual", "casual and approachable", [numDimensions]float64{0.8, 0.7, 0.5, 0.6, 0.1, 0.7, 0.3, 0.6, 0.4, 0.6}},
-	{"assistant", "helpful and balanced", assistantDefaults},
-	{"minimal", "terse and efficient", [numDimensions]float64{0.2, 0.0, 0.1, 0.3, 0.6, 0.2, 0.0, 0.3, 0.0, 0.2}},
-	{"creative", "inventive and expressive", [numDimensions]float64{0.7, 0.6, 0.6, 0.7, 0.2, 0.6, 0.2, 0.8, 0.5, 0.9}},
-	{"friendly", "friendly and straightforward", [numDimensions]float64{0.7, 0.4, 0.4, 0.6, 0.3, 0.6, 0.1, 0.5, 0.2, 0.4}},
-	{"analytical", "precise and analytical", [numDimensions]float64{0.4, 0.2, 0.5, 0.5, 0.6, 0.3, 0.0, 0.4, 0.1, 0.3}},
-	{"witty", "witty and concise", [numDimensions]float64{0.5, 0.7, 0.2, 0.6, 0.4, 0.4, 0.3, 0.6, 0.3, 0.6}},
-	{"earnest", "earnest and helpful", [numDimensions]float64{0.7, 0.3, 0.5, 0.8, 0.5, 0.7, 0.0, 0.7, 0.2, 0.4}},
-	{"playful", "playful and inventive", [numDimensions]float64{0.6, 0.6, 0.3, 0.7, 0.2, 0.5, 0.2, 0.7, 0.4, 0.9}},
+// dimsToArray converts a PersonaDimensions struct to an array in dimensions order.
+func dimsToArray(d config.PersonaDimensions) [numDimensions]float64 {
+	return [numDimensions]float64{
+		d.Warmth, d.Humor, d.Verbosity, d.Proactiveness, d.Formality,
+		d.Empathy, d.Sarcasm, d.Autonomy, d.Interpretation, d.Creativity,
+	}
 }
 
 func cmdPersona(g Globals, args []string) {
 	preset, _ := flagValue(&args, "--preset")
 	show := hasFlag(&args, "--show")
 	reset := hasFlag(&args, "--reset")
+	listPresets := hasFlag(&args, "--list-presets")
 
 	// Extract per-dimension flags (--warmth 0.8, --humor 0.3, etc.)
 	// Also accept short aliases --proactive and --interpret.
@@ -91,30 +97,49 @@ func cmdPersona(g Globals, args []string) {
 	}
 	trait, hasTrait := flagValue(&args, "--trait")
 
+	if listPresets {
+		printPresets()
+		return
+	}
+
 	names := agentNames(args)
 
 	if len(names) == 0 {
-		die("usage: xnc persona <agent> [--show] [--preset NAME] [--reset] [--warmth N] ...")
+		die("usage: xnc persona <agent|mux> [--show] [--preset NAME] [--list-presets] [--reset] [--warmth N] ...")
 	}
 
 	name := names[0]
-	if !agent.Exists(g.Home, name) {
-		die("agent %q does not exist", name)
+	isMux := strings.ToLower(name) == "mux"
+
+	var dir string
+	defaults := assistantDefaults
+	if isMux {
+		name = "mux"
+		dir = filepath.Join(g.Home, "mux")
+		defaults = muxDefaults
+		// Verify mux config exists.
+		if _, err := os.Stat(filepath.Join(dir, "config.json")); os.IsNotExist(err) {
+			die("mux not initialized — run 'xnc init' first")
+		}
+	} else {
+		if !agent.Exists(g.Home, name) {
+			die("agent %q does not exist", name)
+		}
+		dir = agent.Dir(g.Home, name)
 	}
 
-	dir := agent.Dir(g.Home, name)
-
 	if show {
-		showPersona(dir, name)
+		showPersona(dir, name, defaults)
 		return
 	}
 
 	if reset {
-		writePersona(dir, name, "helpful and balanced", assistantDefaults)
+		resetTrait := inferTrait(defaults)
+		writePersona(dir, name, resetTrait, defaults, isMux)
 		ok("reset %s to default personality", name)
-		restartHint(name)
+		restartHint(isMux, name)
 		fmt.Println()
-		showPersona(dir, name)
+		showPersona(dir, name, defaults)
 		return
 	}
 
@@ -125,32 +150,32 @@ func cmdPersona(g Globals, args []string) {
 			printPresets()
 			os.Exit(1)
 		}
-		writePersona(dir, name, found.Trait, found.Values)
+		writePersona(dir, name, found.Trait, dimsToArray(found.Dims), isMux)
 		// Apply any overrides on top of the preset.
 		if len(dimOverrides) > 0 || hasTrait {
-			applyOverrides(dir, name, dimOverrides, trait, hasTrait)
+			applyOverrides(dir, name, defaults, isMux, dimOverrides, trait, hasTrait)
 		} else {
 			ok("applied %q preset to %s", found.Name, name)
-			restartHint(name)
+			restartHint(isMux, name)
 			fmt.Println()
-			showPersona(dir, name)
+			showPersona(dir, name, defaults)
 		}
 		return
 	}
 
 	// If any dimension flags given, apply them directly (no interactive).
 	if len(dimOverrides) > 0 || hasTrait {
-		applyOverrides(dir, name, dimOverrides, trait, hasTrait)
+		applyOverrides(dir, name, defaults, isMux, dimOverrides, trait, hasTrait)
 		return
 	}
 
 	// Interactive mode.
-	interactivePersona(dir, name)
+	interactivePersona(dir, name, defaults, isMux)
 }
 
 // applyOverrides modifies specific dimensions on an existing persona.
-func applyOverrides(dir, name string, overrides map[int]float64, trait string, hasTrait bool) {
-	values := readDimensionValues(dir)
+func applyOverrides(dir, name string, defaults [numDimensions]float64, isMux bool, overrides map[int]float64, trait string, hasTrait bool) {
+	values := readDimensionValues(dir, defaults)
 	for i, v := range overrides {
 		values[i] = v
 	}
@@ -164,17 +189,16 @@ func applyOverrides(dir, name string, overrides map[int]float64, trait string, h
 		currentTrait = inferTrait(values)
 	}
 
-	writePersona(dir, name, currentTrait, values)
+	writePersona(dir, name, currentTrait, values, isMux)
 	ok("updated %s personality", name)
-	restartHint(name)
+	restartHint(isMux, name)
 	fmt.Println()
-	showPersona(dir, name)
+	showPersona(dir, name, defaults)
 }
 
 // showPersona displays current personality dimensions.
-func showPersona(dir, name string) {
+func showPersona(dir, name string, defaults [numDimensions]float64) {
 	configured := personaConfigured(dir)
-	trait := configStr(dir, "persona_trait")
 	if !configured {
 		fmt.Printf("%s — no persona configured (using default system prompt)\n", name)
 		fmt.Println("Run 'xnc persona " + name + "' to set one.")
@@ -182,29 +206,34 @@ func showPersona(dir, name string) {
 		return
 	}
 
+	values := readDimensionValues(dir, defaults)
+	trait := configStr(dir, "persona_trait")
+	if trait == "" {
+		trait = inferTrait(values)
+	}
+
 	fmt.Printf("%s — %s\n\n", name, trait)
-	for _, d := range dimensions {
-		val := configFloat(dir, "persona_"+d.key)
-		bar := renderBar(val)
-		label := pickLabel(val, d.low, d.mid, d.high)
-		fmt.Printf("  %-12s %s %.1f  %s\n", d.name, bar, val, label)
+	for i, d := range dimensions {
+		bar := renderBar(values[i])
+		label := pickLabel(values[i], d.low, d.mid, d.high)
+		fmt.Printf("  %-14s %s %.1f  %s\n", d.name, bar, values[i], label)
 	}
 	fmt.Println()
 }
 
 // findPreset looks up a preset by name (case-insensitive).
-func findPreset(presetName string) *personaPreset {
+func findPreset(presetName string) *config.Preset {
 	lower := strings.ToLower(presetName)
-	for i := range presets {
-		if presets[i].Name == lower {
-			return &presets[i]
+	for i := range config.Presets {
+		if config.Presets[i].Name == lower {
+			return &config.Presets[i]
 		}
 	}
 	return nil
 }
 
 // interactivePersona walks the user through personality configuration.
-func interactivePersona(dir, name string) {
+func interactivePersona(dir, name string, defaults [numDimensions]float64, isMux bool) {
 	fmt.Printf("Personality editor for %s\n\n", name)
 
 	// Show presets.
@@ -216,6 +245,9 @@ func interactivePersona(dir, name string) {
 	configured := personaConfigured(dir)
 	currentTrait := configStr(dir, "persona_trait")
 	if configured {
+		if currentTrait == "" {
+			currentTrait = inferTrait(readDimensionValues(dir, defaults))
+		}
 		fmt.Printf("Current: %s\n", currentTrait)
 	}
 
@@ -247,11 +279,11 @@ func interactivePersona(dir, name string) {
 			fmt.Fprintf(os.Stderr, "unknown preset %q\n", choice)
 			return
 		}
-		writePersona(dir, name, found.Trait, found.Values)
+		writePersona(dir, name, found.Trait, dimsToArray(found.Dims), isMux)
 		ok("applied %q preset to %s", found.Name, name)
-		restartHint(name)
+		restartHint(isMux, name)
 		fmt.Println()
-		showPersona(dir, name)
+		showPersona(dir, name, defaults)
 		return
 	}
 
@@ -260,7 +292,7 @@ func interactivePersona(dir, name string) {
 	fmt.Println("Adjust each dimension (0.0 to 1.0). Enter to keep current.")
 	fmt.Println()
 
-	values := readDimensionValues(dir)
+	values := readDimensionValues(dir, defaults)
 	for i, d := range dimensions {
 		label := pickLabel(values[i], d.low, d.mid, d.high)
 		fmt.Printf("  %s (%.1f = %s)\n", d.name, values[i], label)
@@ -293,32 +325,43 @@ func interactivePersona(dir, name string) {
 		trait = inferred
 	}
 
-	writePersona(dir, name, trait, values)
+	writePersona(dir, name, trait, values, isMux)
 
 	fmt.Println()
 	ok("personality updated for %s", name)
-	restartHint(name)
+	restartHint(isMux, name)
 	fmt.Println()
-	showPersona(dir, name)
+	showPersona(dir, name, defaults)
 }
 
 // printPresets shows all available presets with a compact dimension summary.
 func printPresets() {
-	for _, p := range presets {
+	for _, p := range config.Presets {
 		fmt.Printf("  %-14s %s\n", p.Name, p.Trait)
 	}
 }
 
-// personaConfigured returns true if the agent has a persona explicitly set.
+// personaConfigured returns true if the target has persona dimensions set.
+// Checks for persona.trait (agents) or any explicitly written dimension (mux).
 func personaConfigured(dir string) bool {
-	return configStr(dir, "persona_trait") != ""
+	if configStr(dir, "persona_trait") != "" {
+		return true
+	}
+	// Mux has dimensions without trait — check if any dimension key exists in config.
+	// We check for non-empty string (not non-zero float) so that 0.0 is recognized as set.
+	for _, d := range dimensions {
+		if configStr(dir, "persona_"+d.key) != "" {
+			return true
+		}
+	}
+	return false
 }
 
-// readDimensionValues reads current dimension values from agent config.
-// Returns assistant defaults if no persona has been configured.
-func readDimensionValues(dir string) [numDimensions]float64 {
+// readDimensionValues reads current dimension values from config.
+// Returns the provided defaults if no persona has been configured.
+func readDimensionValues(dir string, defaults [numDimensions]float64) [numDimensions]float64 {
 	if !personaConfigured(dir) {
-		return assistantDefaults
+		return defaults
 	}
 	var vals [numDimensions]float64
 	for i, d := range dimensions {
@@ -328,14 +371,10 @@ func readDimensionValues(dir string) [numDimensions]float64 {
 }
 
 // writePersona stores dimensions, trait, and regenerates the system prompt.
-// Calls die() on config write failure.
-func writePersona(dir, name, trait string, values [numDimensions]float64) {
-	// Sanitize trait: strip newlines to prevent prompt injection, cap length.
-	trait = strings.ReplaceAll(trait, "\n", " ")
-	trait = strings.ReplaceAll(trait, "\r", " ")
-	if len(trait) > 200 {
-		trait = trait[:200]
-	}
+// Calls die() on config write failure. Skips system prompt for mux.
+func writePersona(dir, name, trait string, values [numDimensions]float64, isMux bool) {
+	// Sanitize trait: strip control characters, cap at 200 runes.
+	trait = config.SanitizeText(trait, 200)
 
 	if err := agent.ConfigSet(dir, "persona_trait", trait); err != nil {
 		die("write persona: %v", err)
@@ -346,24 +385,30 @@ func writePersona(dir, name, trait string, values [numDimensions]float64) {
 		}
 	}
 
-	// Regenerate system prompt.
-	var lines []string
-	lines = append(lines, fmt.Sprintf("You are %s, an AI assistant.", name))
-	lines = append(lines, fmt.Sprintf("Your personality: %s.", trait))
-	lines = append(lines, "")
-	lines = append(lines, "Communication style:")
-	for i, d := range dimensions {
-		label := pickLabel(values[i], d.low, d.mid, d.high)
-		lines = append(lines, "- "+label)
-	}
-	if err := agent.ConfigSet(dir, "system_prompt", strings.Join(lines, "\n")); err != nil {
-		die("write system prompt: %v", err)
+	// Regenerate system prompt for agents (mux builds its own dynamically).
+	if !isMux {
+		var lines []string
+		lines = append(lines, fmt.Sprintf("You are %s, an AI assistant.", name))
+		lines = append(lines, fmt.Sprintf("Your personality: %s.", trait))
+		lines = append(lines, "")
+		lines = append(lines, "Communication style:")
+		for i, d := range dimensions {
+			label := pickLabel(values[i], d.low, d.mid, d.high)
+			lines = append(lines, "- "+label)
+		}
+		if err := agent.ConfigSet(dir, "system_prompt", strings.Join(lines, "\n")); err != nil {
+			die("write system prompt: %v", err)
+		}
 	}
 }
 
-// restartHint prints a reminder that the agent needs a restart.
-func restartHint(name string) {
-	fmt.Fprintf(os.Stderr, "hint: restart %s to apply: xnc restart %s\n", name, name)
+// restartHint prints a reminder that the agent/mux needs a restart.
+func restartHint(isMux bool, name string) {
+	if isMux {
+		fmt.Fprintf(os.Stderr, "hint: restart mux to apply: xnc mux stop && xnc mux\n")
+	} else {
+		fmt.Fprintf(os.Stderr, "hint: restart %s to apply: xnc restart %s\n", name, name)
+	}
 }
 
 // inferTrait generates a trait descriptor from dimension values.
@@ -388,14 +433,10 @@ func inferTrait(values [numDimensions]float64) string {
 		scores = append(scores, scored{name, dist})
 	}
 
-	// Sort by distance descending.
-	for i := 0; i < len(scores); i++ {
-		for j := i + 1; j < len(scores); j++ {
-			if scores[j].dist > scores[i].dist {
-				scores[i], scores[j] = scores[j], scores[i]
-			}
-		}
-	}
+	// Sort by distance descending (stable to break ties deterministically).
+	sort.SliceStable(scores, func(i, j int) bool {
+		return scores[i].dist > scores[j].dist
+	})
 
 	// If no dimension is distinctive, say balanced.
 	if len(scores) < 2 || scores[0].dist < 0.1 {

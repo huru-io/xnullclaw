@@ -789,8 +789,8 @@ func registerAgentTools(r *Registry, d Deps) {
 			applyDim("creativity", &p.Creativity)
 
 			if trait := optionalStringArg(args, "trait", ""); trait != "" {
-				p.Trait = trait
-				changed = append(changed, fmt.Sprintf("trait=%q", trait))
+				p.Trait = config.SanitizeText(trait, 200)
+				changed = append(changed, fmt.Sprintf("trait=%q", p.Trait))
 			}
 
 			if len(changed) == 0 {

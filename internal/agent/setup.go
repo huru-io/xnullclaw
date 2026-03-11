@@ -104,7 +104,7 @@ func Setup(home, name string, opts SetupOpts) error {
 	if err != nil {
 		return fmt.Errorf("setup: marshal config: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "config.json"), append(cfgData, '\n'), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), append(cfgData, '\n'), 0600); err != nil {
 		return fmt.Errorf("setup: write config: %w", err)
 	}
 

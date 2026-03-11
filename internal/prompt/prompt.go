@@ -60,30 +60,6 @@ var dimensionDescriptors = []dimensionDesc{
 	{"creativity", "Be straightforward and predictable", "Balance conventional and novel approaches", "Prefer creative and surprising solutions"},
 }
 
-// Presets returns the named dimension presets as described in the PRD.
-var Presets = map[string]config.PersonaDimensions{
-	"professional": {Formality: 0.8, Humor: 0.1, Sarcasm: 0.0, Verbosity: 0.4, Warmth: 0.3,
-		Proactiveness: 0.7, Empathy: 0.5, Autonomy: 0.6, Interpretation: 0.2, Creativity: 0.5},
-	"casual": {Formality: 0.2, Humor: 0.6, Sarcasm: 0.3, Verbosity: 0.3, Warmth: 0.7,
-		Proactiveness: 0.7, Empathy: 0.5, Autonomy: 0.6, Interpretation: 0.2, Creativity: 0.5},
-	"assistant": {Proactiveness: 0.8, Autonomy: 0.7, Empathy: 0.6, Verbosity: 0.4,
-		Warmth: 0.6, Humor: 0.4, Formality: 0.4, Sarcasm: 0.2, Interpretation: 0.2, Creativity: 0.5},
-	"minimal": {Verbosity: 0.1, Humor: 0.0, Sarcasm: 0.0, Proactiveness: 0.3,
-		Warmth: 0.6, Formality: 0.4, Empathy: 0.5, Autonomy: 0.6, Interpretation: 0.2, Creativity: 0.5},
-	"creative": {Creativity: 0.9, Humor: 0.5, Interpretation: 0.6, Autonomy: 0.7,
-		Warmth: 0.6, Verbosity: 0.3, Proactiveness: 0.7, Formality: 0.4, Empathy: 0.5, Sarcasm: 0.2},
-	"friendly": {Warmth: 0.7, Humor: 0.4, Verbosity: 0.4, Proactiveness: 0.6,
-		Formality: 0.3, Empathy: 0.6, Sarcasm: 0.1, Autonomy: 0.5, Interpretation: 0.2, Creativity: 0.4},
-	"analytical": {Warmth: 0.4, Humor: 0.2, Verbosity: 0.5, Proactiveness: 0.5,
-		Formality: 0.6, Empathy: 0.3, Sarcasm: 0.0, Autonomy: 0.4, Interpretation: 0.1, Creativity: 0.3},
-	"witty": {Warmth: 0.5, Humor: 0.7, Verbosity: 0.2, Proactiveness: 0.6,
-		Formality: 0.4, Empathy: 0.4, Sarcasm: 0.3, Autonomy: 0.6, Interpretation: 0.3, Creativity: 0.6},
-	"earnest": {Warmth: 0.7, Humor: 0.3, Verbosity: 0.5, Proactiveness: 0.8,
-		Formality: 0.5, Empathy: 0.7, Sarcasm: 0.0, Autonomy: 0.7, Interpretation: 0.2, Creativity: 0.4},
-	"playful": {Warmth: 0.6, Humor: 0.6, Verbosity: 0.3, Proactiveness: 0.7,
-		Formality: 0.2, Empathy: 0.5, Sarcasm: 0.2, Autonomy: 0.7, Interpretation: 0.4, Creativity: 0.9},
-}
-
 // nowFunc is the function used to get the current time. Tests can override it.
 var nowFunc = time.Now
 

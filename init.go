@@ -572,13 +572,14 @@ func runInit(args []string) {
 	fmt.Println("Next steps:")
 	if len(allAgentNames) > 0 {
 		fmt.Println("  xnc image build          Pull the nullclaw Docker image")
-		fmt.Printf("  xnc start %-15sStart an agent\n", allAgentNames[0])
 		fmt.Printf("  xnc persona %-13sTweak agent personality\n", allAgentNames[0])
+		fmt.Printf("  xnc start %-15sStart an agent\n", allAgentNames[0])
 		fmt.Printf("  xnc send %s              Send a message via CLI\n", allAgentNames[0])
 	} else {
 		fmt.Println("  xnc setup <name>         Create an agent")
 	}
 	if setupMux && cfg.Telegram.BotToken != "" {
+		fmt.Println("  xnc persona mux          Tweak mux personality")
 		fmt.Println("  xnc mux                  Start the Telegram mux")
 	}
 	fmt.Println()

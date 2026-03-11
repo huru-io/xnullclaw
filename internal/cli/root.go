@@ -91,7 +91,7 @@ func Run(cmd string, args []string) {
 func parseGlobals(args *[]string) Globals {
 	g := Globals{
 		Home:  agent.DefaultHome(),
-		Image: defaultImage(),
+		Image: agent.DefaultImage(),
 	}
 
 	var remaining []string
@@ -118,16 +118,6 @@ func parseGlobals(args *[]string) Globals {
 	}
 	*args = remaining
 	return g
-}
-
-func defaultImage() string {
-	if img := os.Getenv("XNC_IMAGE"); img != "" {
-		return img
-	}
-	if img := os.Getenv("XNULLCLAW_IMAGE"); img != "" {
-		return img
-	}
-	return "nullclaw:latest"
 }
 
 // ensureDocker lazily initializes the Docker client.

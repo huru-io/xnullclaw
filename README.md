@@ -209,7 +209,7 @@ xnc cp-from  <agent> <path> [dest]        Copy file out
 ```
 xnc config   get <agent> [key]            Read config
 xnc config   set <agent> <key> <value>    Write config
-xnc persona  <agent> [--show] [--preset]  Personality editor
+xnc persona  <agent|mux> [--show] [--reset] [--preset NAME] [--list-presets] [--trait TEXT] [--warmth N] ...  Personality editor
 xnc costs    <agent> [--today|--month]    Cost summary
 ```
 
@@ -284,6 +284,7 @@ xnc image    status                      Image info
 | `OPENAI_API_KEY` | OpenAI key (read during init/setup) |
 | `ANTHROPIC_API_KEY` | Anthropic key (read during init/setup) |
 | `OPENROUTER_API_KEY` | OpenRouter key (read during init/setup) |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token (read during init) |
 
 ## License
 

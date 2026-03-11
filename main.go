@@ -50,7 +50,7 @@ func main() {
 func runMux(args []string) {
 	// Parse flags.
 	home := agent.DefaultHome()
-	image := defaultImage()
+	image := agent.DefaultImage()
 	foreground := false
 
 	var remaining []string
@@ -278,16 +278,6 @@ func processAlive(pid int) bool {
 	return p.Signal(syscall.Signal(0)) == nil
 }
 
-func defaultImage() string {
-	if img := os.Getenv("XNC_IMAGE"); img != "" {
-		return img
-	}
-	if img := os.Getenv("XNULLCLAW_IMAGE"); img != "" {
-		return img
-	}
-	return "nullclaw:latest"
-}
-
 // runCLI dispatches CLI commands.
 func runCLI(cmd string, args []string) {
 	cli.Run(cmd, args)
@@ -455,7 +445,7 @@ FILE TRANSFER:
 AGENT CONFIG:
   config   get <agent> [key]               Read agent config
   config   set <agent> <key> <value>       Write agent config
-  persona  <agent> [--show] [--preset N] [--reset] [--trait TEXT] [--warmth N] ...
+  persona  <agent|mux> [--show] [--preset NAME] [--list-presets] [--reset] [--trait TEXT] [--warmth N] ...
   costs    <agent> [--today|--month|--json] Agent cost summary
 
 SKILLS:

@@ -393,18 +393,22 @@ func TestBuild_AllSections(t *testing.T) {
 // ---------- Presets tests ----------
 
 func TestPresets_Exist(t *testing.T) {
-	expected := []string{"professional", "casual", "assistant", "minimal", "creative"}
+	expected := []string{"professional", "casual", "assistant", "minimal", "creative",
+		"friendly", "analytical", "witty", "earnest", "playful"}
 	for _, name := range expected {
-		if _, ok := Presets[name]; !ok {
+		if _, ok := config.PresetMap[name]; !ok {
 			t.Errorf("missing preset %q", name)
 		}
+	}
+	if len(config.Presets) != 10 {
+		t.Errorf("expected 10 presets, got %d", len(config.Presets))
 	}
 }
 
 func TestPresets_Professional(t *testing.T) {
-	p := Presets["professional"]
-	if p.Formality != 0.8 {
-		t.Errorf("professional formality = %v, want 0.8", p.Formality)
+	p := config.PresetMap["professional"]
+	if p.Formality != 0.9 {
+		t.Errorf("professional formality = %v, want 0.9", p.Formality)
 	}
 	if p.Humor != 0.1 {
 		t.Errorf("professional humor = %v, want 0.1", p.Humor)

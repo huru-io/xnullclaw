@@ -25,6 +25,17 @@ func DefaultHome() string {
 	return filepath.Join(home, ".xnc")
 }
 
+// DefaultImage returns the Docker image name for nullclaw containers.
+func DefaultImage() string {
+	if img := os.Getenv("XNC_IMAGE"); img != "" {
+		return img
+	}
+	if img := os.Getenv("XNULLCLAW_IMAGE"); img != "" {
+		return img
+	}
+	return "nullclaw:latest"
+}
+
 // nameRe validates agent names: starts with a letter, ends with letter/digit,
 // at most one hyphen or one underscore in the middle.
 var nameRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9]*([_-][a-zA-Z0-9]+)?$`)

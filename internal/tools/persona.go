@@ -10,29 +10,6 @@ import (
 	"github.com/jotavich/xnullclaw/internal/config"
 )
 
-var personaPresets = map[string]config.PersonaDimensions{
-	"professional": {Warmth: 0.4, Humor: 0.1, Verbosity: 0.3, Proactiveness: 0.5,
-		Formality: 0.9, Empathy: 0.4, Sarcasm: 0.0, Autonomy: 0.4, Interpretation: 0.1, Creativity: 0.3},
-	"casual": {Warmth: 0.8, Humor: 0.7, Verbosity: 0.5, Proactiveness: 0.6,
-		Formality: 0.1, Empathy: 0.7, Sarcasm: 0.3, Autonomy: 0.6, Interpretation: 0.4, Creativity: 0.6},
-	"assistant": {Warmth: 0.6, Humor: 0.3, Verbosity: 0.4, Proactiveness: 0.8,
-		Formality: 0.5, Empathy: 0.5, Sarcasm: 0.0, Autonomy: 0.7, Interpretation: 0.2, Creativity: 0.4},
-	"minimal": {Warmth: 0.2, Humor: 0.0, Verbosity: 0.1, Proactiveness: 0.3,
-		Formality: 0.6, Empathy: 0.2, Sarcasm: 0.0, Autonomy: 0.3, Interpretation: 0.0, Creativity: 0.2},
-	"creative": {Warmth: 0.7, Humor: 0.6, Verbosity: 0.6, Proactiveness: 0.7,
-		Formality: 0.2, Empathy: 0.6, Sarcasm: 0.2, Autonomy: 0.8, Interpretation: 0.5, Creativity: 0.9},
-	"friendly": {Warmth: 0.7, Humor: 0.4, Verbosity: 0.4, Proactiveness: 0.6,
-		Formality: 0.3, Empathy: 0.6, Sarcasm: 0.1, Autonomy: 0.5, Interpretation: 0.2, Creativity: 0.4},
-	"analytical": {Warmth: 0.4, Humor: 0.2, Verbosity: 0.5, Proactiveness: 0.5,
-		Formality: 0.6, Empathy: 0.3, Sarcasm: 0.0, Autonomy: 0.4, Interpretation: 0.1, Creativity: 0.3},
-	"witty": {Warmth: 0.5, Humor: 0.7, Verbosity: 0.2, Proactiveness: 0.6,
-		Formality: 0.4, Empathy: 0.4, Sarcasm: 0.3, Autonomy: 0.6, Interpretation: 0.3, Creativity: 0.6},
-	"earnest": {Warmth: 0.7, Humor: 0.3, Verbosity: 0.5, Proactiveness: 0.8,
-		Formality: 0.5, Empathy: 0.7, Sarcasm: 0.0, Autonomy: 0.7, Interpretation: 0.2, Creativity: 0.4},
-	"playful": {Warmth: 0.6, Humor: 0.6, Verbosity: 0.3, Proactiveness: 0.7,
-		Formality: 0.2, Empathy: 0.5, Sarcasm: 0.2, Autonomy: 0.7, Interpretation: 0.4, Creativity: 0.9},
-}
-
 var validTTSVoices = map[string]bool{
 	"alloy": true, "ash": true, "ballad": true, "coral": true,
 	"echo": true, "fable": true, "onyx": true, "nova": true,
@@ -75,6 +52,18 @@ func registerPersonaTools(r *Registry, d Deps) {
 			value, err := stringArg(args, "value")
 			if err != nil {
 				return "", err
+			}
+
+			// Sanitize input based on field type.
+			switch field {
+			case "name":
+				value = config.SanitizeName(value, 32)
+			case "owner_name":
+				value = config.SanitizeName(value, 64)
+			case "bio":
+				value = config.SanitizeText(value, 500)
+			case "extra_instructions":
+				value = config.SanitizeText(value, 1000)
 			}
 
 			var oldValue string
@@ -247,10 +236,7 @@ func registerPersonaTools(r *Registry, d Deps) {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"preset": map[string]any{"type": "string", "description": "Preset name", "enum": []string{
-						"professional", "casual", "assistant", "minimal", "creative",
-						"friendly", "analytical", "witty", "earnest", "playful",
-					}},
+					"preset": map[string]any{"type": "string", "description": "Preset name", "enum": config.PresetNames},
 				},
 				"required": []string{"preset"},
 			},
@@ -260,7 +246,7 @@ func registerPersonaTools(r *Registry, d Deps) {
 			if err != nil {
 				return "", err
 			}
-			dims, ok := personaPresets[preset]
+			dims, ok := config.PresetMap[preset]
 			if !ok {
 				return "", fmt.Errorf("invalid preset: %s", preset)
 			}
