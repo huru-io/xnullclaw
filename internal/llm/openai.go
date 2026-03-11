@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/jotavich/xnullclaw/internal/config"
@@ -21,6 +22,13 @@ type OpenAIAdapter struct {
 	temperature float64
 	httpClient  *http.Client
 	baseURL     string
+
+	// mu protects unsupported.
+	mu sync.Mutex
+	// unsupported tracks parameters that a model has rejected,
+	// so we skip them on subsequent calls without a round trip.
+	// Key: model name, value: set of rejected parameter names.
+	unsupported map[string]map[string]bool
 }
 
 // NewOpenAIAdapter creates a new adapter from config.
@@ -36,7 +44,8 @@ func NewOpenAIAdapter(cfg *config.Config) *OpenAIAdapter {
 		httpClient: &http.Client{
 			Timeout: 120 * time.Second,
 		},
-		baseURL: base,
+		baseURL:     base,
+		unsupported: make(map[string]map[string]bool),
 	}
 }
 
@@ -87,45 +96,90 @@ func (a *OpenAIAdapter) Complete(ctx context.Context, req loop.ChatRequest) (loo
 		})
 	}
 
-	body := oaiRequest{
-		Model:       req.Model,
-		Messages:    messages,
-		Temperature: req.Temperature,
-	}
-	if len(oaiTools) > 0 {
-		body.Tools = oaiTools
+	body := a.buildRequest(req.Model, messages, oaiTools, req.Temperature)
+
+	// Try up to 3 times, dropping unsupported parameters on each retry.
+	const maxRetries = 3
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		resp, retryParam, err := a.doRequest(ctx, body)
+		if err != nil {
+			return loop.ChatResponse{}, err
+		}
+		if retryParam == "" {
+			return resp, nil
+		}
+		// Model rejected a parameter — drop it and retry.
+		a.markUnsupported(req.Model, retryParam)
+		body = a.buildRequest(req.Model, messages, oaiTools, req.Temperature)
 	}
 
+	return loop.ChatResponse{}, fmt.Errorf("openai: too many unsupported-parameter retries for model %s", req.Model)
+}
+
+// buildRequest constructs an oaiRequest, skipping parameters that the model
+// has previously rejected.
+func (a *OpenAIAdapter) buildRequest(model string, messages []oaiMessage, tools []oaiTool, temperature float64) oaiRequest {
+	a.mu.Lock()
+	skip := a.unsupported[model]
+	a.mu.Unlock()
+
+	body := oaiRequest{
+		Model:    model,
+		Messages: messages,
+	}
+	if temperature > 0 && !skip["temperature"] {
+		t := temperature
+		body.Temperature = &t
+	}
+	if len(tools) > 0 && !skip["tools"] {
+		body.Tools = tools
+	}
+	return body
+}
+
+// doRequest sends the HTTP request and parses the response.
+// If the API returns a 400 for an unsupported parameter/value, it returns
+// the parameter name in retryParam so the caller can retry without it.
+// On success, retryParam is empty.
+func (a *OpenAIAdapter) doRequest(ctx context.Context, body oaiRequest) (loop.ChatResponse, string, error) {
 	bodyJSON, err := json.Marshal(body)
 	if err != nil {
-		return loop.ChatResponse{}, fmt.Errorf("openai: marshal request: %w", err)
+		return loop.ChatResponse{}, "", fmt.Errorf("openai: marshal request: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", a.baseURL+"/chat/completions", bytes.NewReader(bodyJSON))
 	if err != nil {
-		return loop.ChatResponse{}, fmt.Errorf("openai: create request: %w", err)
+		return loop.ChatResponse{}, "", fmt.Errorf("openai: create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+a.apiKey)
 
 	resp, err := a.httpClient.Do(httpReq)
 	if err != nil {
-		return loop.ChatResponse{}, fmt.Errorf("openai: request failed: %w", err)
+		return loop.ChatResponse{}, "", fmt.Errorf("openai: request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return loop.ChatResponse{}, fmt.Errorf("openai: read response: %w", err)
+		return loop.ChatResponse{}, "", fmt.Errorf("openai: read response: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusBadRequest {
+		// Check if this is an unsupported parameter/value error we can retry.
+		if param := parseUnsupportedParam(respBody); param != "" {
+			return loop.ChatResponse{}, param, nil
+		}
+		return loop.ChatResponse{}, "", fmt.Errorf("openai: API error %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return loop.ChatResponse{}, fmt.Errorf("openai: API error %d: %s", resp.StatusCode, string(respBody))
+		return loop.ChatResponse{}, "", fmt.Errorf("openai: API error %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var oaiResp oaiResponse
 	if err := json.Unmarshal(respBody, &oaiResp); err != nil {
-		return loop.ChatResponse{}, fmt.Errorf("openai: parse response: %w", err)
+		return loop.ChatResponse{}, "", fmt.Errorf("openai: parse response: %w", err)
 	}
 
 	result := loop.ChatResponse{
@@ -152,7 +206,37 @@ func (a *OpenAIAdapter) Complete(ctx context.Context, req loop.ChatRequest) (loo
 		}
 	}
 
-	return result, nil
+	return result, "", nil
+}
+
+// markUnsupported records that a model does not support a given parameter.
+func (a *OpenAIAdapter) markUnsupported(model, param string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.unsupported[model] == nil {
+		a.unsupported[model] = make(map[string]bool)
+	}
+	a.unsupported[model][param] = true
+}
+
+// parseUnsupportedParam checks if an OpenAI error response indicates an
+// unsupported parameter or unsupported value and returns the parameter name.
+// Returns "" if the error is not of this type.
+func parseUnsupportedParam(body []byte) string {
+	var errResp struct {
+		Error struct {
+			Code  string `json:"code"`
+			Param string `json:"param"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return ""
+	}
+	switch errResp.Error.Code {
+	case "unsupported_parameter", "unsupported_value":
+		return errResp.Error.Param
+	}
+	return ""
 }
 
 // ---------------------------------------------------------------------------
@@ -163,7 +247,7 @@ type oaiRequest struct {
 	Model       string       `json:"model"`
 	Messages    []oaiMessage `json:"messages"`
 	Tools       []oaiTool    `json:"tools,omitempty"`
-	Temperature float64      `json:"temperature"`
+	Temperature *float64     `json:"temperature,omitempty"`
 }
 
 type oaiMessage struct {

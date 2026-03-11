@@ -191,6 +191,8 @@ func (l *Logger) write(f *os.File, e Entry) {
 
 // fieldsToMap converts variadic key/value pairs into a map.
 // Odd-length slices have their last value set to nil.
+// Error values are converted to their string representation so they
+// serialize properly in JSON (Go error types have no exported fields).
 func fieldsToMap(kvs []any) map[string]any {
 	if len(kvs) == 0 {
 		return nil
@@ -201,6 +203,9 @@ func fieldsToMap(kvs []any) map[string]any {
 		var val any
 		if i+1 < len(kvs) {
 			val = kvs[i+1]
+			if e, ok := val.(error); ok {
+				val = e.Error()
+			}
 		}
 		m[key] = val
 	}
