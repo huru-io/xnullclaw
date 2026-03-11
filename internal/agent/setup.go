@@ -65,7 +65,7 @@ func DefaultAgentConfig() map[string]any {
 		"agents": map[string]any{
 			"defaults": map[string]any{
 				"model": map[string]any{
-					"primary": "openai/gpt-4o-mini",
+					"primary": "openai/gpt-5-mini",
 				},
 				"system_prompt": "",
 			},

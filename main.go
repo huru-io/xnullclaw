@@ -23,6 +23,18 @@ var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
+		// No args: if not initialized or incomplete, run init; otherwise show help.
+		home := agent.DefaultHome()
+		if !agent.SetupComplete(home) {
+			if agent.IsXNCHome(home) {
+				fmt.Println("Incomplete xnc setup detected. Resuming setup...")
+			} else {
+				fmt.Println("No xnc setup found. Starting guided setup...")
+			}
+			fmt.Println()
+			runInit(nil)
+			return
+		}
 		printUsage()
 		os.Exit(1)
 	}

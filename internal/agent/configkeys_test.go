@@ -46,8 +46,8 @@ func TestConfigGetSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConfigGet: %v", err)
 	}
-	if val != "openai/gpt-4o-mini" {
-		t.Errorf("expected 'openai/gpt-4o-mini', got %v", val)
+	if val != "openai/gpt-5-mini" {
+		t.Errorf("expected 'openai/gpt-5-mini', got %v", val)
 	}
 
 	// Set using friendly key.

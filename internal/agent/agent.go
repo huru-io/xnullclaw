@@ -101,6 +101,16 @@ func IsXNCHome(home string) bool {
 	return false
 }
 
+// SetupComplete checks if xnc has been fully initialized:
+// the home is an xnc home AND at least one agent exists.
+func SetupComplete(home string) bool {
+	if !IsXNCHome(home) {
+		return false
+	}
+	agents, _ := ListAll(home)
+	return len(agents) > 0
+}
+
 // IsEmptyDir checks if a directory is empty or doesn't exist.
 func IsEmptyDir(path string) bool {
 	entries, err := os.ReadDir(path)

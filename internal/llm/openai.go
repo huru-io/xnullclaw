@@ -25,6 +25,10 @@ type OpenAIAdapter struct {
 
 // NewOpenAIAdapter creates a new adapter from config.
 func NewOpenAIAdapter(cfg *config.Config) *OpenAIAdapter {
+	base := cfg.OpenAI.BaseURL
+	if base == "" {
+		base = "https://api.openai.com/v1"
+	}
 	return &OpenAIAdapter{
 		apiKey:      cfg.OpenAI.APIKey,
 		model:       cfg.OpenAI.Model,
@@ -32,7 +36,7 @@ func NewOpenAIAdapter(cfg *config.Config) *OpenAIAdapter {
 		httpClient: &http.Client{
 			Timeout: 120 * time.Second,
 		},
-		baseURL: "https://api.openai.com/v1",
+		baseURL: base,
 	}
 }
 

@@ -64,9 +64,11 @@ type TelegramConfig struct {
 	AllowFrom []string `json:"allow_from"`
 }
 
-// OpenAIConfig holds OpenAI API settings.
+// OpenAIConfig holds OpenAI-compatible API settings.
+// BaseURL can be overridden to point to OpenRouter or other compatible APIs.
 type OpenAIConfig struct {
 	APIKey       string  `json:"api_key"`
+	BaseURL      string  `json:"base_url,omitempty"` // default: https://api.openai.com/v1
 	Model        string  `json:"model"`
 	Temperature  float64 `json:"temperature"`
 	WhisperModel string  `json:"whisper_model"`
@@ -152,7 +154,7 @@ func DefaultConfig() *Config {
 		},
 		OpenAI: OpenAIConfig{
 			APIKey:       "",
-			Model:        "gpt-4o",
+			Model:        "gpt-5-mini",
 			Temperature:  0.7,
 			WhisperModel: "whisper-1",
 			TTSVoice:     "nova",
