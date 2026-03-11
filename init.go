@@ -294,6 +294,33 @@ func runInit(args []string) {
 			telegramToken = promptInput("Telegram bot token: ")
 		}
 		if telegramToken != "" {
+			if err := validateTelegramToken(telegramToken); err != nil {
+				if interactive {
+					fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+					telegramToken = promptInput("Telegram bot token (format: 123456:ABC...): ")
+					if err := validateTelegramToken(telegramToken); err != nil {
+						log.Fatalf("invalid telegram token: %v", err)
+					}
+				} else {
+					log.Fatalf("invalid telegram token: %v", err)
+				}
+			}
+			// Verify token with Telegram API.
+			if err := agent.TestTelegramToken(telegramToken); err != nil {
+				if interactive {
+					fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+					telegramToken = promptInput("Telegram bot token (try again): ")
+					if err := validateTelegramToken(telegramToken); err != nil {
+						log.Fatalf("invalid telegram token: %v", err)
+					}
+					if err := agent.TestTelegramToken(telegramToken); err != nil {
+						log.Fatalf("telegram token verification failed: %v", err)
+					}
+				} else {
+					log.Fatalf("telegram token verification failed: %v", err)
+				}
+			}
+			fmt.Println("ok: telegram token verified")
 			cfg.Telegram.BotToken = telegramToken
 		}
 
@@ -634,6 +661,26 @@ func suggestUnusedName(home string, pending map[string]bool) string {
 		}
 	}
 	return fmt.Sprintf("agent%d", len(pending)+1)
+}
+
+// validateTelegramToken checks that a string looks like a Telegram bot token.
+// Format: <bot_id>:<alphanumeric_string> e.g. 123456789:ABCdefGHI-jklMNOpqrs
+func validateTelegramToken(token string) error {
+	parts := strings.SplitN(token, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("must contain a colon (format: 123456:ABCdef...)")
+	}
+	if _, err := strconv.Atoi(parts[0]); err != nil {
+		return fmt.Errorf("bot ID before colon must be numeric (got %q)", parts[0])
+	}
+	if len(parts[1]) < 20 {
+		return fmt.Errorf("token part after colon is too short")
+	}
+	// Catch common mistake: pasting an API key instead.
+	if strings.HasPrefix(token, "sk-") {
+		return fmt.Errorf("this looks like an API key, not a Telegram bot token")
+	}
+	return nil
 }
 
 // resolveValue returns the first non-empty value from the candidates.

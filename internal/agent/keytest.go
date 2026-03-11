@@ -64,6 +64,28 @@ func TestProviderKey(provider, key string) error {
 	}
 }
 
+// TestTelegramToken validates a Telegram bot token by calling the getMe API.
+// Returns nil if the token is valid, an error otherwise.
+func TestTelegramToken(token string) error {
+	client := &http.Client{Timeout: 10 * time.Second}
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/getMe", token)
+	resp, err := client.Get(url)
+	if err != nil {
+		return fmt.Errorf("network error (token not verified): %v", err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+
+	switch {
+	case resp.StatusCode == 200:
+		return nil
+	case resp.StatusCode == 401 || resp.StatusCode == 404:
+		return fmt.Errorf("telegram token rejected (HTTP %d)", resp.StatusCode)
+	default:
+		return fmt.Errorf("telegram returned HTTP %d (token not verified)", resp.StatusCode)
+	}
+}
+
 // TestAgentKeys tests all configured provider keys for an agent.
 // Returns a map of provider → error (nil means valid).
 // Only tests providers that have a non-empty key.

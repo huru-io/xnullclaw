@@ -70,7 +70,7 @@ func New(cfg *config.TelegramConfig) (*Bot, error) {
 
 	api, err := tgbotapi.NewBotAPI(cfg.BotToken)
 	if err != nil {
-		return nil, fmt.Errorf("bot: failed to create bot API: %w", err)
+		return nil, fmt.Errorf("bot: invalid or expired Telegram token — verify with @BotFather and update bot_token in mux config: %w", err)
 	}
 
 	allow := make(map[string]bool, len(cfg.AllowFrom))
