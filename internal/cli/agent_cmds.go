@@ -292,25 +292,64 @@ func cmdList(g Globals, args []string) {
 		die("list: %v", err)
 	}
 
+	if len(agents) == 0 {
+		if g.JSON {
+			fmt.Println("[]")
+		} else {
+			info("no agents configured")
+		}
+		return
+	}
+
+	// Build container state map if Docker is available.
+	stateMap := map[string]docker.ContainerInfo{}
+	if g.Docker != nil {
+		prefix := agent.ContainerPrefix(g.Home)
+		containers, err := g.Docker.ListContainers(context.Background(), prefix)
+		if err == nil {
+			for _, c := range containers {
+				name := strings.TrimPrefix(c.Name, prefix)
+				stateMap[name] = c
+			}
+		}
+	}
+
+	type listEntry struct {
+		Name    string `json:"name"`
+		Emoji   string `json:"emoji,omitempty"`
+		Created string `json:"created,omitempty"`
+		Status  string `json:"status"`
+	}
+
+	var entries []listEntry
+	for _, a := range agents {
+		e := listEntry{
+			Name:    a.Name,
+			Emoji:   a.Emoji,
+			Created: a.Created,
+			Status:  "stopped",
+		}
+		canon := agent.CanonicalName(a.Name)
+		if c, ok := stateMap[canon]; ok {
+			e.Status = c.Status
+		}
+		entries = append(entries, e)
+	}
+
 	if g.JSON {
-		data, _ := json.MarshalIndent(agents, "", "  ")
+		data, _ := json.MarshalIndent(entries, "", "  ")
 		fmt.Println(string(data))
 		return
 	}
 
-	if len(agents) == 0 {
-		info("no agents configured")
-		return
-	}
-
-	for _, a := range agents {
-		emoji := a.Emoji
+	for _, e := range entries {
+		emoji := e.Emoji
 		if emoji == "" {
 			emoji = " "
 		}
-		fmt.Printf("  %s %s\n", emoji, a.Name)
+		fmt.Printf("  %s %-15s %s\n", emoji, e.Name, e.Status)
 	}
-	fmt.Printf("\n%d agent(s)\n", len(agents))
+	fmt.Printf("\n%d agent(s)\n", len(entries))
 }
 
 func cmdRunning(g Globals, args []string) {
