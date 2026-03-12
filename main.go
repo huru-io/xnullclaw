@@ -90,28 +90,11 @@ func runMux(args []string) {
 	}
 
 	switch sub {
-	case "stop":
-		muxStop(pidFile)
-	case "status":
-		muxStatus(pidFile)
-	case "logs":
-		follow := false
-		for _, a := range remaining[1:] {
-			if a == "-f" || a == "--follow" {
-				follow = true
-			}
-		}
-		muxLogs(logFile, follow)
-	case "config":
-		muxConfig(cfgPath, remaining[1:])
-	default:
-		// Start mux.
-		if foreground || sub == "" {
-			// Check if already running.
-			if pid := readPID(pidFile); pid > 0 && processAlive(pid) {
-				fmt.Fprintf(os.Stderr, "mux already running (PID %d)\n", pid)
-				os.Exit(1)
-			}
+	case "start":
+		// Check if already running.
+		if pid := readPID(pidFile); pid > 0 && processAlive(pid) {
+			fmt.Fprintf(os.Stderr, "mux already running (PID %d)\n", pid)
+			os.Exit(1)
 		}
 
 		if foreground {
@@ -135,6 +118,50 @@ func runMux(args []string) {
 			// Daemon mode: re-exec self with --foreground, redirect output to log file.
 			muxDaemon(home, image, muxHome, logFile)
 		}
+	case "stop":
+		muxStop(pidFile)
+	case "restart":
+		// Stop if running, then start.
+		if pid := readPID(pidFile); pid > 0 && processAlive(pid) {
+			p, err := os.FindProcess(pid)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "cannot find process %d: %v\n", pid, err)
+				os.Exit(1)
+			}
+			if err := p.Signal(syscall.SIGTERM); err != nil {
+				fmt.Fprintf(os.Stderr, "signal PID %d: %v\n", pid, err)
+				os.Exit(1)
+			}
+			fmt.Printf("sent SIGTERM to mux (PID %d), waiting...\n", pid)
+			// Wait for process to exit (up to 10s).
+			for i := 0; i < 50; i++ {
+				if !processAlive(pid) {
+					break
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
+			if processAlive(pid) {
+				fmt.Fprintln(os.Stderr, "mux did not stop in time")
+				os.Exit(1)
+			}
+		}
+		muxDaemon(home, image, muxHome, logFile)
+	case "status", "":
+		muxStatus(pidFile)
+	case "logs":
+		follow := false
+		for _, a := range remaining[1:] {
+			if a == "-f" || a == "--follow" {
+				follow = true
+			}
+		}
+		muxLogs(logFile, follow)
+	case "config":
+		muxConfig(cfgPath, remaining[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown mux command: %s\n", sub)
+		fmt.Fprintln(os.Stderr, "usage: xnc mux [start|stop|restart|status|logs|config]")
+		os.Exit(1)
 	}
 }
 
@@ -153,7 +180,7 @@ func muxDaemon(home, image, muxHome, logFile string) {
 		log.Fatalf("resolve executable: %v", err)
 	}
 
-	cmd := exec.Command(exe, "mux", "--foreground", "--home", home, "--image", image)
+	cmd := exec.Command(exe, "mux", "start", "--foreground", "--home", home, "--image", image)
 	cmd.Stdout = lf
 	cmd.Stderr = lf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -472,8 +499,10 @@ SNAPSHOTS:
   snapshot-delete <snapshot>                Delete a snapshot
 
 MUX (Telegram bot):
-  mux      [--foreground]                  Start mux (default: daemon)
+  mux                                      Show mux status (same as mux status)
+  mux      start [--foreground]            Start mux (default: daemon)
   mux      stop                            Stop mux daemon
+  mux      restart                         Restart mux daemon
   mux      status                          Check mux status
   mux      logs [-f]                       Mux log output
   mux      config                          Show mux config (secrets redacted)

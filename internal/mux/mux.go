@@ -439,6 +439,7 @@ All other messages are handled by the mux AI.`)
 
 	// Auto-start agents (direct Go calls, no wrapper).
 	go func() {
+		started := 0
 		for _, agentName := range cfg.Agents.AutoStart {
 			logger.LogLifecycle("auto-starting", agentName, "")
 			cn := agent.ContainerName(mc.Home, agentName)
@@ -447,6 +448,7 @@ All other messages are handled by the mux AI.`)
 			running, err := dk.IsRunning(ctx, cn)
 			if err == nil && running {
 				logger.LogLifecycle("already-running", agentName, "")
+				started++
 				continue
 			}
 
@@ -460,6 +462,16 @@ All other messages are handled by the mux AI.`)
 				logger.Error("auto-start failed", "agent", agentName, "error", err)
 			} else {
 				logger.LogLifecycle("started", agentName, "")
+				started++
+			}
+		}
+
+		// Send online message to Telegram.
+		chatID := cfg.Telegram.GroupID
+		if chatID != 0 {
+			msg := fmt.Sprintf("Mux online. %d agent(s) managed.", started)
+			if err := tgBot.Send(chatID, msg); err != nil {
+				logger.Error("failed to send online message", "error", err)
 			}
 		}
 	}()
