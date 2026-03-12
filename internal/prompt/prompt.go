@@ -120,10 +120,11 @@ func buildDrainBlock(msgs []memory.Message) string {
 	if len(msgs) == 0 {
 		return ""
 	}
+	now := nowFunc()
 	var lines []string
-	lines = append(lines, "Recent agent activity (already delivered to user):")
+	lines = append(lines, "Recent agent activity (already delivered to user — do NOT repeat or relay these):")
 	for _, m := range msgs {
-		ago := time.Since(m.Timestamp).Truncate(time.Second)
+		ago := now.Sub(m.Timestamp).Truncate(time.Second)
 		lines = append(lines, fmt.Sprintf("- [%s ago] %s", ago, m.Content))
 	}
 	return strings.Join(lines, "\n")

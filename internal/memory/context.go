@@ -151,37 +151,6 @@ func (a *Assembler) lastUserMessageTime() (*time.Time, error) {
 	return &ts, nil
 }
 
-// RelativeTime returns a human-readable relative time string.
-// Examples: "30s ago", "5m ago", "2h ago", "1d ago", "7d ago", "1mo ago".
-func RelativeTime(d time.Duration) string {
-	if d < 0 {
-		d = -d
-	}
-
-	seconds := int(d.Seconds())
-	if seconds < 60 {
-		return fmt.Sprintf("%ds ago", seconds)
-	}
-
-	minutes := int(d.Minutes())
-	if minutes < 60 {
-		return fmt.Sprintf("%dm ago", minutes)
-	}
-
-	hours := int(d.Hours())
-	if hours < 24 {
-		return fmt.Sprintf("%dh ago", hours)
-	}
-
-	days := hours / 24
-	if days < 30 {
-		return fmt.Sprintf("%dd ago", days)
-	}
-
-	months := days / 30
-	return fmt.Sprintf("%dmo ago", months)
-}
-
 // stopWords is the set of common words filtered out during keyword extraction.
 var stopWords = map[string]bool{
 	"the": true, "a": true, "an": true, "is": true, "are": true,

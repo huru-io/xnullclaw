@@ -469,8 +469,8 @@ All other messages are handled by the mux AI.`)
 		chatID: &lastChatID,
 		turnMu: &turnMu,
 	}
-	go drainer.Run(5*time.Second, drainDone)
-	logger.Info("drain goroutine started", "interval", "5s")
+	go drainer.Run(drainInterval, drainDone)
+	logger.Info("drain goroutine started", "interval", drainInterval)
 
 	logger.Info("mux online")
 
@@ -481,12 +481,7 @@ All other messages are handled by the mux AI.`)
 	logger.Info("shutdown signal received", "signal", sig.String())
 
 	// Graceful shutdown.
-	// Final drain pass — pick up any messages written since last tick.
-	drainer.drainAll()
-	// Stop drain goroutine.
-	close(drainDone)
-
-	// Stop mux-managed agents.
+	// 1. Stop agents first — let them flush final output.
 	for _, agentName := range cfg.Agents.MuxManaged {
 		logger.LogLifecycle("stopping", agentName, "shutdown")
 		cn := agent.ContainerName(mc.Home, agentName)
@@ -494,6 +489,11 @@ All other messages are handled by the mux AI.`)
 			logger.Error("agent stop failed", "agent", agentName, "error", err)
 		}
 	}
+
+	// 2. Final drain pass — pick up messages written before/during agent shutdown.
+	drainer.drainAll()
+	// 3. Stop drain goroutine.
+	close(drainDone)
 
 	// Send goodbye before stopping the bot (Stop closes the send queue).
 	if cid := atomic.LoadInt64(&lastChatID); cid != 0 {

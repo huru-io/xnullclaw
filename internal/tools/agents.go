@@ -141,7 +141,7 @@ func sendToAgent(ctx context.Context, d Deps, agentName, message string) (string
 		"sh", "-c",
 		`flock /tmp/.send.lock sh -c '
 			mkdir -p /nullclaw-data/.outbox
-			f=/nullclaw-data/.outbox/$(date +%s)_$$_${RANDOM:-0}.pending
+			f=$(mktemp /nullclaw-data/.outbox/XXXXXXXXXX.pending)
 			nullclaw agent -s mux > "$f" 2>&1
 			mv "$f" "${f%.pending}.msg"
 		'`,
