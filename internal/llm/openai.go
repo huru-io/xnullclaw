@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"sync"
 	"time"
@@ -15,6 +17,36 @@ import (
 	"github.com/jotavich/xnullclaw/internal/loop"
 )
 
+// Retry defaults for transient server errors (5xx, 429).
+const (
+	defaultMaxRetries    = 3
+	defaultRetryBaseDelay = 1 * time.Second
+	defaultRetryMaxDelay  = 30 * time.Second
+)
+
+// serverError represents an HTTP error from the upstream API.
+type serverError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *serverError) Error() string {
+	return fmt.Sprintf("openai: API error %d: %s", e.StatusCode, e.Body)
+}
+
+// isRetryableStatus returns true for HTTP status codes that are likely transient.
+func isRetryableStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests,      // 429
+		http.StatusInternalServerError,   // 500
+		http.StatusBadGateway,            // 502
+		http.StatusServiceUnavailable,    // 503
+		http.StatusGatewayTimeout:        // 504
+		return true
+	}
+	return false
+}
+
 // OpenAIAdapter implements loop.ChatClient using the OpenAI chat completions API.
 type OpenAIAdapter struct {
 	apiKey      string
@@ -22,6 +54,11 @@ type OpenAIAdapter struct {
 	temperature float64
 	httpClient  *http.Client
 	baseURL     string
+
+	// Retry config for transient errors.
+	maxRetries    int
+	retryBaseDelay time.Duration
+	retryMaxDelay  time.Duration
 
 	// mu protects unsupported.
 	mu sync.Mutex
@@ -44,8 +81,11 @@ func NewOpenAIAdapter(cfg *config.Config) *OpenAIAdapter {
 		httpClient: &http.Client{
 			Timeout: 120 * time.Second,
 		},
-		baseURL:     base,
-		unsupported: make(map[string]map[string]bool),
+		baseURL:        base,
+		maxRetries:     defaultMaxRetries,
+		retryBaseDelay: defaultRetryBaseDelay,
+		retryMaxDelay:  defaultRetryMaxDelay,
+		unsupported:    make(map[string]map[string]bool),
 	}
 }
 
@@ -99,9 +139,9 @@ func (a *OpenAIAdapter) Complete(ctx context.Context, req loop.ChatRequest) (loo
 	body := a.buildRequest(req.Model, messages, oaiTools, req.Temperature)
 
 	// Try up to 3 times, dropping unsupported parameters on each retry.
-	const maxRetries = 3
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		resp, retryParam, err := a.doRequest(ctx, body)
+	const maxParamRetries = 3
+	for attempt := 0; attempt < maxParamRetries; attempt++ {
+		resp, retryParam, err := a.doRequestWithRetry(ctx, body)
 		if err != nil {
 			return loop.ChatResponse{}, err
 		}
@@ -174,7 +214,7 @@ func (a *OpenAIAdapter) doRequest(ctx context.Context, body oaiRequest) (loop.Ch
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return loop.ChatResponse{}, "", fmt.Errorf("openai: API error %d: %s", resp.StatusCode, string(respBody))
+		return loop.ChatResponse{}, "", &serverError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 
 	var oaiResp oaiResponse
@@ -207,6 +247,44 @@ func (a *OpenAIAdapter) doRequest(ctx context.Context, body oaiRequest) (loop.Ch
 	}
 
 	return result, "", nil
+}
+
+// doRequestWithRetry wraps doRequest with exponential backoff for transient errors.
+func (a *OpenAIAdapter) doRequestWithRetry(ctx context.Context, body oaiRequest) (loop.ChatResponse, string, error) {
+	var lastErr error
+	for attempt := 0; attempt <= a.maxRetries; attempt++ {
+		if attempt > 0 {
+			delay := a.backoffDelay(attempt)
+			select {
+			case <-ctx.Done():
+				return loop.ChatResponse{}, "", ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+		resp, retryParam, err := a.doRequest(ctx, body)
+		if err == nil {
+			return resp, retryParam, nil
+		}
+		// Retry only on transient server errors.
+		var srvErr *serverError
+		if errors.As(err, &srvErr) && isRetryableStatus(srvErr.StatusCode) {
+			lastErr = err
+			continue
+		}
+		// Non-retryable error — return immediately.
+		return loop.ChatResponse{}, "", err
+	}
+	return loop.ChatResponse{}, "", fmt.Errorf("openai: max retries (%d) exceeded: %w", a.maxRetries, lastErr)
+}
+
+// backoffDelay returns the delay before the given retry attempt using
+// exponential backoff with full jitter: uniform random in [0, min(base*2^(attempt-1), max)].
+func (a *OpenAIAdapter) backoffDelay(attempt int) time.Duration {
+	base := a.retryBaseDelay * time.Duration(1<<(attempt-1))
+	if base > a.retryMaxDelay {
+		base = a.retryMaxDelay
+	}
+	return time.Duration(rand.Int63n(int64(base) + 1))
 }
 
 // markUnsupported records that a model does not support a given parameter.

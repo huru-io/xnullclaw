@@ -4,6 +4,7 @@ package mux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -168,11 +169,17 @@ func Run(mc Config) error {
 		lastChatID int64
 	)
 
+	// maxTurnDuration caps how long a single agentic loop turn can run.
+	// This prevents the turnMu from being held indefinitely (H9).
+	const maxTurnDuration = 5 * time.Minute
+
 	// runTurn executes one agentic loop turn. The stream parameter controls
 	// where messages are stored ("conversation" for user/task turns,
 	// "scheduler" for heartbeats to avoid polluting conversation context).
 	// Returns the LLM response text (empty on error).
 	runTurn := func(chatID int64, userText, stream string) string {
+		turnCtx, turnCancel := context.WithTimeout(ctx, maxTurnDuration)
+		defer turnCancel()
 
 		ctxData, err := assembler.Assemble(userText)
 		if err != nil {
@@ -197,10 +204,15 @@ func Run(mc Config) error {
 			tgBot.SendTyping(chatID)
 		}
 
-		response, err := muxLoop.Run(ctx, userText)
+		response, err := muxLoop.Run(turnCtx, userText)
 		if err != nil {
-			logger.Error("loop error", "error", err)
-			tgBot.Send(chatID, "Something went wrong processing your message. Please try again.")
+			if errors.Is(err, context.DeadlineExceeded) {
+				logger.Error("turn timed out", "timeout", maxTurnDuration, "input_len", len(userText))
+				tgBot.Send(chatID, "Your request timed out. Please try a simpler request.")
+			} else {
+				logger.Error("loop error", "error", err)
+				tgBot.Send(chatID, "Something went wrong processing your message. Please try again.")
+			}
 			return ""
 		}
 
