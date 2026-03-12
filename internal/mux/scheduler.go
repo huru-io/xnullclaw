@@ -63,9 +63,12 @@ type Scheduler struct {
 	cfg    *config.Config
 	logger *logging.Logger
 
-	// runTurn fires a synthetic turn. Returns the LLM response text.
-	// stream controls where messages are stored ("conversation" or "scheduler").
-	runTurn func(chatID int64, userText, stream string) string
+	// runTurn fires a synthetic turn. Returns a turnResult for deferred
+	// delivery outside the turn lock (M20).
+	runTurn func(chatID int64, userText, stream string) turnResult
+
+	// deliver sends a turnResult to Telegram, called after releasing turnMu.
+	deliver func(r turnResult)
 
 	// chatID points to the mux's lastChatID (atomic).
 	chatID *int64
@@ -80,6 +83,14 @@ type Scheduler struct {
 	// (either Tier 1 clear or Tier 2 HEARTBEAT_OK), for exponential backoff.
 	// Only accessed from the scheduler goroutine — no synchronization needed.
 	consecutiveNoops int
+}
+
+// lockedRunTurn runs a turn under the already-held turnMu and guarantees
+// the lock is released even if runTurn panics (#1 panic safety).
+// Caller must hold turnMu before calling.
+func (s *Scheduler) lockedRunTurn(chatID int64, msg, stream string) turnResult {
+	defer s.turnMu.Unlock()
+	return s.runTurn(chatID, msg, stream)
 }
 
 // Run polls for due tasks on the given interval until done is closed.
@@ -138,14 +149,17 @@ func (s *Scheduler) tick() {
 			s.logger.Info("scheduler: firing task", "id", t.ID, "description", t.Description)
 
 			// Mark as fired BEFORE running the turn to prevent re-firing.
+			// NOTE: at-most-once delivery — if the process crashes after
+			// marking but before delivery, the task is lost. This trade-off
+			// prevents double-firing on restart (#12).
 			if err := s.store.MarkTaskFired(t.ID); err != nil {
 				s.logger.Error("scheduler: mark task fired", "id", t.ID, "error", err)
 				s.turnMu.Unlock()
 				continue
 			}
 			msg := formatScheduledTaskMessage(t)
-			s.runTurn(chatID, msg, "conversation") // tasks are user-requested → conversation stream
-			s.turnMu.Unlock()
+			result := s.lockedRunTurn(chatID, msg, "conversation") // unlocks turnMu (panic-safe)
+			s.deliver(result)
 			firedTasks = true
 		}
 		// Real activity resets backoff.
@@ -218,16 +232,15 @@ func (s *Scheduler) maybeHeartbeat(now time.Time, chatID int64) {
 	if !s.turnMu.TryLock() {
 		return // signals will be re-detected next tick
 	}
-	defer s.turnMu.Unlock()
 
 	s.logger.Info("scheduler: heartbeat firing", "signals", len(signals))
 	s.lastHeartbeat = now
 
 	msg := formatHeartbeatMessage(signals)
-	response := s.runTurn(chatID, msg, "scheduler") // heartbeat → scheduler stream
+	result := s.lockedRunTurn(chatID, msg, "scheduler") // unlocks turnMu (panic-safe)
 
 	// Track noop for backoff: HEARTBEAT_OK means the LLM found nothing to do.
-	if IsHeartbeatOK(response) {
+	if result.heartbeatOK {
 		s.consecutiveNoops++
 		s.logger.Info("scheduler: heartbeat noop (tier-2 ack)",
 			"consecutive_noops", s.consecutiveNoops,
@@ -235,6 +248,8 @@ func (s *Scheduler) maybeHeartbeat(now time.Time, chatID int64) {
 	} else {
 		s.consecutiveNoops = 0
 	}
+
+	s.deliver(result)
 }
 
 // preCheck performs lightweight rule-based checks (Tier 1) and returns a

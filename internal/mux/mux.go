@@ -29,6 +29,20 @@ import (
 	"github.com/jotavich/xnullclaw/internal/voice"
 )
 
+// turnResult holds the output of a turn for deferred delivery after
+// releasing the turn lock. This decouples Telegram I/O from the
+// serialization mutex so new messages aren't blocked during sends (M20).
+//
+// Invariant: errMsg and text/attachments are mutually exclusive.
+// When errMsg is set, text and attachments are always empty.
+type turnResult struct {
+	heartbeatOK bool               // true if LLM responded with HEARTBEAT_OK (suppresses delivery)
+	chatID      int64              // target chat for delivery
+	text        string             // clean text to send (after media.Parse)
+	attachments []media.Attachment // media attachments to send
+	errMsg      string             // error message to send (mutually exclusive with text)
+}
+
 // Config holds the parameters needed to run the mux.
 type Config struct {
 	Home       string // XNC home (e.g. ~/.xnc)
@@ -176,16 +190,16 @@ func Run(mc Config) error {
 	// runTurn executes one agentic loop turn. The stream parameter controls
 	// where messages are stored ("conversation" for user/task turns,
 	// "scheduler" for heartbeats to avoid polluting conversation context).
-	// Returns the LLM response text (empty on error).
-	runTurn := func(chatID int64, userText, stream string) string {
+	// Returns a turnResult for deferred delivery outside the turn lock (M20).
+	// Callers are responsible for SendTyping before acquiring the lock.
+	runTurn := func(chatID int64, userText, stream string) turnResult {
 		turnCtx, turnCancel := context.WithTimeout(ctx, maxTurnDuration)
 		defer turnCancel()
 
 		ctxData, err := assembler.Assemble(userText)
 		if err != nil {
 			logger.Error("context assembly failed", "error", err)
-			tgBot.Send(chatID, "Internal error assembling context.")
-			return ""
+			return turnResult{chatID: chatID, errMsg: "Internal error assembling context."}
 		}
 
 		systemPrompt := promptBuilder.Build(ctxData.Agents, ctxData.Facts, ctxData.Compactions, ctxData.Rules, ctxData.DrainMsgs)
@@ -199,27 +213,20 @@ func Run(mc Config) error {
 			logger.Error("failed to store user message", "error", err)
 		}
 
-		// Only show typing for user-facing turns.
-		if stream == "conversation" {
-			tgBot.SendTyping(chatID)
-		}
-
 		response, err := muxLoop.Run(turnCtx, userText)
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
 				logger.Error("turn timed out", "timeout", maxTurnDuration, "input_len", len(userText))
-				tgBot.Send(chatID, "Your request timed out. Please try a simpler request.")
-			} else {
-				logger.Error("loop error", "error", err)
-				tgBot.Send(chatID, "Something went wrong processing your message. Please try again.")
+				return turnResult{chatID: chatID, errMsg: "Your request timed out. Please try a simpler request."}
 			}
-			return ""
+			logger.Error("loop error", "error", err)
+			return turnResult{chatID: chatID, errMsg: "Something went wrong processing your message. Please try again."}
 		}
 
 		// Suppress HEARTBEAT_OK responses — don't store or forward.
 		if IsHeartbeatOK(response) {
 			logger.Info("turn complete (heartbeat ack suppressed)", "input_len", len(userText))
-			return response
+			return turnResult{heartbeatOK: true, chatID: chatID}
 		}
 
 		if err := store.AddMessage(memory.Message{
@@ -231,34 +238,41 @@ func Run(mc Config) error {
 		}
 
 		cleanText, attachments := media.Parse(response)
-
-		if cleanText != "" {
-			if err := tgBot.Send(chatID, cleanText); err != nil {
-				logger.Error("telegram send failed", "error", err)
-			}
-		}
-
-		for _, att := range attachments {
-			sendAttachment(tgBot, logger, chatID, att, "")
-		}
-
 		logger.Info("turn complete", "input_len", len(userText), "output_len", len(response), "attachments", len(attachments))
-		return response
+		return turnResult{
+			chatID:      chatID,
+			text:        cleanText,
+			attachments: attachments,
+		}
+	}
+
+	// deliverResult sends the turn output to Telegram. Called AFTER releasing
+	// the turn lock so that Telegram I/O doesn't block incoming messages (M20).
+	// A deliverMu serializes delivery calls to preserve message ordering
+	// between consecutive turns (#10).
+	var deliverMu sync.Mutex
+	deliverResult := func(r turnResult) {
+		deliverMu.Lock()
+		defer deliverMu.Unlock()
+		deliverTurnResult(tgBot, logger, r)
 	}
 
 	// Text messages.
 	tgBot.SetOnMessage(func(chatID int64, userID string, text string) {
-		turnMu.Lock()
-		defer turnMu.Unlock()
 		atomic.StoreInt64(&lastChatID, chatID)
 		logger.LogIncoming(userID, text, "text")
-		runTurn(chatID, text, "conversation")
+		tgBot.SendTyping(chatID)
+
+		turnMu.Lock()
+		result := runTurn(chatID, text, "conversation")
+		turnMu.Unlock()
+
+		deliverResult(result)
 	})
 
-	// Voice messages.
+	// Voice messages — all preprocessing (download, transcribe) happens
+	// before acquiring the turn lock so network I/O doesn't starve other turns.
 	tgBot.SetOnVoice(func(chatID int64, userID string, fileID string) {
-		turnMu.Lock()
-		defer turnMu.Unlock()
 		atomic.StoreInt64(&lastChatID, chatID)
 		logger.LogIncoming(userID, fileID, "voice")
 
@@ -290,13 +304,17 @@ func Run(mc Config) error {
 			tgBot.Send(chatID, fmt.Sprintf("_Heard:_ %s", transcript))
 		}
 		logger.Info("voice transcribed", "text", transcript)
-		runTurn(chatID, transcript, "conversation")
+
+		turnMu.Lock()
+		result := runTurn(chatID, transcript, "conversation")
+		turnMu.Unlock()
+
+		deliverResult(result)
 	})
 
-	// Media messages (photos, documents).
+	// Media messages (photos, documents) — download happens before the lock
+	// so network I/O doesn't starve other turns.
 	tgBot.SetOnMedia(func(chatID int64, userID string, fileID string, mediaType string, caption string, fileName string) {
-		turnMu.Lock()
-		defer turnMu.Unlock()
 		atomic.StoreInt64(&lastChatID, chatID)
 		logger.LogIncoming(userID, fileID, mediaType)
 
@@ -340,7 +358,12 @@ func Run(mc Config) error {
 			userText = fmt.Sprintf("[User sent a %s%s]\nThe file has been saved to: %s", mediaType, nameInfo, destPath)
 		}
 		logger.Info("media received", "type", mediaType, "path", destPath, "caption", caption, "filename", fileName)
-		runTurn(chatID, userText, "conversation")
+
+		turnMu.Lock()
+		result := runTurn(chatID, userText, "conversation")
+		turnMu.Unlock()
+
+		deliverResult(result)
 	})
 
 	// Commands.
@@ -429,12 +452,19 @@ func Run(mc Config) error {
 
 		case "clear":
 			if cmd.Args == "confirm" {
-				if err := store.ClearAll(); err != nil {
-					logger.Error("memory clear failed", "error", err)
+				// Acquire turnMu to prevent races with concurrent loop turns
+				// that read/write muxLoop.messages and store (#3).
+				turnMu.Lock()
+				clearErr := store.ClearAll()
+				if clearErr == nil {
+					muxLoop.ClearHistory()
+				}
+				turnMu.Unlock()
+				if clearErr != nil {
+					logger.Error("memory clear failed", "error", clearErr)
 					tgBot.Send(chatID, "Failed to clear memory. Check logs for details.")
 					return
 				}
-				muxLoop.ClearHistory()
 				tgBot.Send(chatID, "Memory cleared. Conversation history, facts, compactions, and costs have been wiped. Agent state preserved.")
 				logger.Info("memory cleared by user", "user", userID)
 			} else {
@@ -527,6 +557,7 @@ func Run(mc Config) error {
 		chatID:        &lastChatID,
 		turnMu:        &turnMu,
 		runTurn:       runTurn,
+		deliver:       deliverResult,
 		lastHeartbeat: time.Now(), // avoid stale drain scan on first tick (M8)
 	}
 	go scheduler.Run(schedulerInterval, schedulerDone)
@@ -579,6 +610,26 @@ func Run(mc Config) error {
 	cancel()
 	logger.Info("mux shutdown complete")
 	return nil
+}
+
+// deliverTurnResult sends a turnResult to Telegram. Extracted from the
+// deliverResult closure for testability (#7). The deliverResult closure
+// wraps this with a deliverMu for ordering (#10).
+func deliverTurnResult(bot telegram.Sender, logger *logging.Logger, r turnResult) {
+	if r.errMsg != "" {
+		if err := bot.Send(r.chatID, r.errMsg); err != nil {
+			logger.Error("telegram send failed", "error", err)
+		}
+		return
+	}
+	if r.text != "" {
+		if err := bot.Send(r.chatID, r.text); err != nil {
+			logger.Error("telegram send failed", "error", err)
+		}
+	}
+	for _, att := range r.attachments {
+		sendAttachment(bot, logger, r.chatID, att, "")
+	}
 }
 
 // sendAttachment sends a media attachment via Telegram.

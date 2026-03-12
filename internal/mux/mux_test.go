@@ -1,12 +1,56 @@
 package mux
 
 import (
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jotavich/xnullclaw/internal/config"
+	"github.com/jotavich/xnullclaw/internal/logging"
+	"github.com/jotavich/xnullclaw/internal/media"
 	"github.com/jotavich/xnullclaw/internal/memory"
 )
+
+// mockSender records all Send calls for test assertions.
+type mockSender struct {
+	mu       sync.Mutex
+	messages []mockMsg
+}
+
+type mockMsg struct {
+	chatID int64
+	text   string
+}
+
+func (m *mockSender) Send(chatID int64, text string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.messages = append(m.messages, mockMsg{chatID, text})
+	return nil
+}
+func (m *mockSender) SendTyping(int64) error                          { return nil }
+func (m *mockSender) SendPhoto(int64, string, string) error           { return nil }
+func (m *mockSender) SendDocument(int64, string, string) error        { return nil }
+func (m *mockSender) SendVoice(int64, string) error                   { return nil }
+func (m *mockSender) SendAudio(int64, string, string) error           { return nil }
+func (m *mockSender) SendVideo(int64, string, string) error           { return nil }
+func (m *mockSender) sent() []mockMsg {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]mockMsg, len(m.messages))
+	copy(cp, m.messages)
+	return cp
+}
+
+func testLogger(t *testing.T) *logging.Logger {
+	t.Helper()
+	l, err := logging.New(&config.LoggingConfig{}, t.TempDir())
+	if err != nil {
+		t.Fatalf("create test logger: %v", err)
+	}
+	t.Cleanup(func() { l.Close() })
+	return l
+}
 
 func dummyTask(desc string, ctx *string) memory.ScheduledTask {
 	return memory.ScheduledTask{
@@ -189,6 +233,123 @@ func TestEffectiveHeartbeatInterval(t *testing.T) {
 	if got != time.Duration(maxExpected) {
 		t.Errorf("max backoff: got %v, want %v", got, time.Duration(maxExpected))
 	}
+}
+
+// --- deliverTurnResult tests (#7) ---
+
+func TestDeliverTurnResult_TextOnly(t *testing.T) {
+	bot := &mockSender{}
+	logger := testLogger(t)
+
+	deliverTurnResult(bot, logger, turnResult{chatID: 123, text: "hello"})
+
+	msgs := bot.sent()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 send, got %d", len(msgs))
+	}
+	if msgs[0].chatID != 123 || msgs[0].text != "hello" {
+		t.Errorf("got %+v", msgs[0])
+	}
+}
+
+func TestDeliverTurnResult_ErrMsg(t *testing.T) {
+	bot := &mockSender{}
+	logger := testLogger(t)
+
+	deliverTurnResult(bot, logger, turnResult{chatID: 42, errMsg: "something broke"})
+
+	msgs := bot.sent()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 send, got %d", len(msgs))
+	}
+	if msgs[0].text != "something broke" {
+		t.Errorf("got %q", msgs[0].text)
+	}
+}
+
+func TestDeliverTurnResult_ErrMsgPreventsTextSend(t *testing.T) {
+	bot := &mockSender{}
+	logger := testLogger(t)
+
+	// errMsg takes priority — text should NOT be sent (#11).
+	deliverTurnResult(bot, logger, turnResult{chatID: 1, errMsg: "err", text: "should not send"})
+
+	msgs := bot.sent()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 send, got %d", len(msgs))
+	}
+	if msgs[0].text != "err" {
+		t.Errorf("expected errMsg, got %q", msgs[0].text)
+	}
+}
+
+func TestDeliverTurnResult_HeartbeatOK_NothingSent(t *testing.T) {
+	bot := &mockSender{}
+	logger := testLogger(t)
+
+	// HEARTBEAT_OK: text and errMsg are both empty, nothing should be sent.
+	deliverTurnResult(bot, logger, turnResult{heartbeatOK: true, chatID: 99})
+
+	if len(bot.sent()) != 0 {
+		t.Errorf("expected no sends for heartbeat-ok, got %d", len(bot.sent()))
+	}
+}
+
+func TestDeliverTurnResult_ZeroValue_NothingSent(t *testing.T) {
+	bot := &mockSender{}
+	logger := testLogger(t)
+
+	deliverTurnResult(bot, logger, turnResult{})
+
+	if len(bot.sent()) != 0 {
+		t.Errorf("expected no sends for zero-value, got %d", len(bot.sent()))
+	}
+}
+
+func TestDeliverTurnResult_TextWithAttachments(t *testing.T) {
+	bot := &mockSender{}
+	logger := testLogger(t)
+
+	deliverTurnResult(bot, logger, turnResult{
+		chatID:      10,
+		text:        "Here's a file",
+		attachments: []media.Attachment{{Type: media.TypeImage, Path: "/nonexistent/test.jpg"}},
+	})
+
+	// Should send text + attempt attachment (which will fail gracefully
+	// because the file doesn't exist, sending an error message instead).
+	msgs := bot.sent()
+	if len(msgs) < 1 {
+		t.Fatalf("expected at least 1 send, got %d", len(msgs))
+	}
+	if msgs[0].text != "Here's a file" {
+		t.Errorf("first message should be text, got %q", msgs[0].text)
+	}
+}
+
+func TestLockedRunTurn_PanicReleasesLock(t *testing.T) {
+	var mu sync.Mutex
+
+	s := &Scheduler{
+		turnMu: &mu,
+		runTurn: func(chatID int64, userText, stream string) turnResult {
+			panic("test panic")
+		},
+	}
+
+	mu.Lock() // simulate TryLock success
+
+	// lockedRunTurn should release the lock even though runTurn panics.
+	func() {
+		defer func() { recover() }()
+		s.lockedRunTurn(0, "", "")
+	}()
+
+	// The lock should be free now — TryLock should succeed.
+	if !mu.TryLock() {
+		t.Fatal("mutex still locked after panic in lockedRunTurn")
+	}
+	mu.Unlock()
 }
 
 // --- helpers ---
