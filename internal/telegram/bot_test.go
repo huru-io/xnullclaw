@@ -739,6 +739,27 @@ func TestHandleUpdate_GroupMode_DiscoveryMode(t *testing.T) {
 	}
 }
 
+func TestHandleUpdate_GroupMode_DiscoveryLogsAllChats(t *testing.T) {
+	// Discovery mode should log messages from ANY chat, not just the configured group.
+	// This lets users find the correct group_id.
+	b := newTestBot(-100999, -1, nil)
+	var discoveredChatIDs []int64
+	b.onDiscovery = func(chatID int64, userID string, threadID int, text string) {
+		discoveredChatIDs = append(discoveredChatIDs, chatID)
+	}
+
+	// Message from a different group.
+	b.handleUpdate(makeUpdate(-100888, "supergroup", 99, "other group"), 5)
+	// Message from configured group.
+	b.handleUpdate(makeUpdate(-100999, "supergroup", 99, "our group"), 10)
+	// Message from a private chat.
+	b.handleUpdate(makeUpdate(12345, "private", 99, "dm"), 0)
+
+	if len(discoveredChatIDs) != 3 {
+		t.Errorf("discovery should log all chats, got %d", len(discoveredChatIDs))
+	}
+}
+
 func TestHandleUpdate_GroupMode_TopicZeroAcceptsAll(t *testing.T) {
 	b := newTestBot(-100999, 0, nil)
 	var calls []int

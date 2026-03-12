@@ -220,16 +220,17 @@ func (b *Bot) handleUpdate(update tgbotapi.Update, threadID int) {
 
 	// Chat filtering.
 	if b.groupID != 0 {
-		// Group mode: only accept messages from the configured group.
-		if chatID != b.groupID {
-			return
-		}
-
-		// Discovery mode (topic_id = -1): notify via callback, don't process.
+		// Discovery mode (topic_id = -1): log ALL incoming messages
+		// regardless of group_id so the user can find the right IDs.
 		if b.topicID == -1 {
 			if b.onDiscovery != nil {
 				b.onDiscovery(chatID, userID, threadID, msg.Text)
 			}
+			return
+		}
+
+		// Group mode: only accept messages from the configured group.
+		if chatID != b.groupID {
 			return
 		}
 
