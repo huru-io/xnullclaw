@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/jotavich/xnullclaw/internal/agent"
 )
@@ -40,8 +39,8 @@ func cmdConfigGet(g Globals, args []string) {
 	dir := agent.Dir(g.Home, name)
 
 	if len(args) < 2 {
-		// Show all config.
-		all, err := agent.ConfigGetAll(dir)
+		// Show all config with secrets redacted.
+		all, err := agent.ConfigGetAllRedacted(dir)
 		if err != nil {
 			die("%v", err)
 		}
@@ -58,9 +57,8 @@ func cmdConfigGet(g Globals, args []string) {
 
 	// Check if should be redacted.
 	if ck, ok := agent.LookupConfigKey(key); ok && ck.Redacted {
-		s, ok := val.(string)
-		if ok && len(s) > 8 {
-			val = s[:4] + strings.Repeat("*", len(s)-8) + s[len(s)-4:]
+		if s, ok := val.(string); ok && s != "" {
+			val = agent.RedactKey(s)
 		}
 	}
 
@@ -70,13 +68,6 @@ func cmdConfigGet(g Globals, args []string) {
 	} else {
 		fmt.Println(val)
 	}
-}
-
-// keyProviders maps config key names to provider names for key testing.
-var keyProviders = map[string]string{
-	"openai_key":     "openai",
-	"anthropic_key":  "anthropic",
-	"openrouter_key": "openrouter",
 }
 
 func cmdConfigSet(g Globals, args []string) {
@@ -92,12 +83,12 @@ func cmdConfigSet(g Globals, args []string) {
 		die("agent %q does not exist", name)
 	}
 
-	// Test API key before saving.
-	if provider, isKey := keyProviders[key]; isKey && value != "" {
-		if err := agent.TestProviderKey(provider, value); err != nil {
+	// Test API key before saving (driven by ConfigKey.Provider field).
+	if ck, found := agent.LookupConfigKey(key); found && ck.Provider != "" && value != "" {
+		if err := agent.TestProviderKey(ck.Provider, value); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 		} else {
-			ok("%s key verified", provider)
+			ok("%s key verified", ck.Provider)
 		}
 	}
 

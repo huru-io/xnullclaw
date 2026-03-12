@@ -632,6 +632,32 @@ func TestHandleUpdate_PrivateMode_NilMessage(t *testing.T) {
 	}
 }
 
+func TestHandleUpdate_PrivateMode_IgnoresCommentHash(t *testing.T) {
+	b := newTestBot(0, 0, nil)
+	called := false
+	b.onMessage = func(chatID int64, userID string, text string) {
+		called = true
+	}
+
+	// "#" alone should be ignored.
+	b.handleUpdate(makeUpdate(12345, "private", 99, "#"), 0)
+	if called {
+		t.Error("should ignore '#' alone")
+	}
+
+	// "# comment" should be ignored.
+	b.handleUpdate(makeUpdate(12345, "private", 99, "# not for the bot"), 0)
+	if called {
+		t.Error("should ignore '# ...' messages")
+	}
+
+	// "#hashtag" (no space) should be processed normally.
+	b.handleUpdate(makeUpdate(12345, "private", 99, "#this"), 0)
+	if !called {
+		t.Error("should process '#hashtag' (no space after #)")
+	}
+}
+
 func TestHandleUpdate_PrivateMode_EmptyText(t *testing.T) {
 	b := newTestBot(0, 0, nil)
 	called := false

@@ -25,8 +25,7 @@ type PersonaConfig struct {
 	Language          string            `json:"language"`
 	Bio               string            `json:"bio"`
 	ExtraInstructions string            `json:"extra_instructions"`
-	ShowHeader        bool              `json:"show_header,omitempty"`
-	Dimensions        PersonaDimensions `json:"dimensions"`
+	Dimensions PersonaDimensions `json:"dimensions"`
 }
 
 // PersonaDimensions holds the 0.0–1.0 personality sliders.

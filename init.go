@@ -63,7 +63,7 @@ func runInit(args []string) {
 
 	// Read existing agent list and keys so we can preserve them on re-runs.
 	existingAgents, _ := agent.ListAll(home)
-	existingKeys := readExistingAgentKeysFrom(home, existingAgents)
+	existingKeys := agent.CollectKeysWithWarnings(home, existingAgents)
 
 	// ── Section 1: LLM Provider keys ──
 
@@ -80,7 +80,7 @@ func runInit(args []string) {
 	if openaiKey == "" && interactive {
 		openaiKey = promptInput("OpenAI API key (or OPENAI_API_KEY env): ")
 	} else if interactive && openaiKey != "" && opts.openaiKey == "" {
-		inp := promptInput(fmt.Sprintf("OpenAI API key [%s, Enter to keep]: ", redactKey(openaiKey)))
+		inp := promptInput(fmt.Sprintf("OpenAI API key [%s, Enter to keep]: ", agent.RedactKey(openaiKey)))
 		if inp != "" {
 			openaiKey = inp
 		}
@@ -93,7 +93,7 @@ func runInit(args []string) {
 	if anthropicKey == "" && interactive {
 		anthropicKey = promptInput("Anthropic API key (optional, Enter to skip): ")
 	} else if interactive && anthropicKey != "" && opts.anthropicKey == "" {
-		inp := promptInput(fmt.Sprintf("Anthropic API key [%s, Enter to keep]: ", redactKey(anthropicKey)))
+		inp := promptInput(fmt.Sprintf("Anthropic API key [%s, Enter to keep]: ", agent.RedactKey(anthropicKey)))
 		if inp != "" {
 			anthropicKey = inp
 		}
@@ -103,7 +103,7 @@ func runInit(args []string) {
 	if openrouterKey == "" && interactive {
 		openrouterKey = promptInput("OpenRouter API key (optional, Enter to skip): ")
 	} else if interactive && openrouterKey != "" && opts.openrouterKey == "" {
-		inp := promptInput(fmt.Sprintf("OpenRouter API key [%s, Enter to keep]: ", redactKey(openrouterKey)))
+		inp := promptInput(fmt.Sprintf("OpenRouter API key [%s, Enter to keep]: ", agent.RedactKey(openrouterKey)))
 		if inp != "" {
 			openrouterKey = inp
 		}
@@ -134,6 +134,24 @@ func runInit(args []string) {
 	}
 	if !anyKeyValid && anyKey {
 		log.Fatal("all provided API keys failed validation")
+	}
+
+	// ── Section 1b: Brave Search ──
+
+	braveKey := resolveValue(opts.braveKey, os.Getenv("BRAVE_API_KEY"), existingKeys["brave"])
+	if braveKey == "" && interactive {
+		fmt.Println()
+		fmt.Println("─── Web Search ───")
+		fmt.Println("Agents use Brave Search for web queries (free: 2000 queries/month).")
+		fmt.Println("Get a key at https://brave.com/search/api/")
+		fmt.Println("DuckDuckGo is used as fallback (limited to instant answers).")
+		fmt.Println()
+		braveKey = promptInput("Brave Search API key (optional, Enter to skip): ")
+	} else if interactive && braveKey != "" && opts.braveKey == "" {
+		inp := promptInput(fmt.Sprintf("Brave Search API key [%s, Enter to keep]: ", agent.RedactKey(braveKey)))
+		if inp != "" {
+			braveKey = inp
+		}
 	}
 
 	// ── Section 2: Models ──
@@ -350,7 +368,7 @@ func runInit(args []string) {
 		if telegramToken == "" && interactive {
 			telegramToken = promptInput("Telegram bot token: ")
 		} else if interactive && telegramToken != "" && opts.telegramToken == "" {
-			inp := promptInput(fmt.Sprintf("Telegram bot token [%s, Enter to keep]: ", redactKey(telegramToken)))
+			inp := promptInput(fmt.Sprintf("Telegram bot token [%s, Enter to keep]: ", agent.RedactKey(telegramToken)))
 			if inp != "" {
 				telegramToken = inp
 			}
@@ -497,6 +515,7 @@ func runInit(args []string) {
 			OpenAIKey:     openaiKey,
 			AnthropicKey:  anthropicKey,
 			OpenRouterKey: openrouterKey,
+			BraveKey:      braveKey,
 			SystemPrompt:  systemPrompt,
 		}
 		if agentModel != "openai/gpt-5-mini" {
@@ -521,6 +540,7 @@ func runInit(args []string) {
 			{"openai_key", openaiKey, existingKeys["openai"]},
 			{"anthropic_key", anthropicKey, existingKeys["anthropic"]},
 			{"openrouter_key", openrouterKey, existingKeys["openrouter"]},
+			{"brave_key", braveKey, existingKeys["brave"]},
 		} {
 			if kv.value != "" && kv.value != kv.existing {
 				agent.ConfigSet(dir, kv.configKey, kv.value)
@@ -568,15 +588,18 @@ func runInit(args []string) {
 
 	// Provider keys.
 	if cfg.OpenAI.APIKey != "" {
-		fmt.Printf("  OpenAI key:   %s\n", redactKey(cfg.OpenAI.APIKey))
+		fmt.Printf("  OpenAI key:   %s\n", agent.RedactKey(cfg.OpenAI.APIKey))
 	} else {
 		fmt.Println("  OpenAI key:   not set")
 	}
 	if anthropicKey != "" {
-		fmt.Printf("  Anthropic:    %s\n", redactKey(anthropicKey))
+		fmt.Printf("  Anthropic:    %s\n", agent.RedactKey(anthropicKey))
 	}
 	if openrouterKey != "" {
-		fmt.Printf("  OpenRouter:   %s\n", redactKey(openrouterKey))
+		fmt.Printf("  OpenRouter:   %s\n", agent.RedactKey(openrouterKey))
+	}
+	if braveKey != "" {
+		fmt.Printf("  Brave Search: %s\n", agent.RedactKey(braveKey))
 	}
 
 	// Mux details.
@@ -647,6 +670,7 @@ type initOpts struct {
 	openaiKey     string
 	anthropicKey  string
 	openrouterKey string
+	braveKey      string
 	telegramToken string
 	telegramUser  string
 	model         string // mux model
@@ -703,6 +727,11 @@ func parseInitFlags(args []string) initOpts {
 		case "--openrouter-key":
 			if i+1 < len(args) {
 				opts.openrouterKey = args[i+1]
+				i++
+			}
+		case "--brave-key":
+			if i+1 < len(args) {
+				opts.braveKey = args[i+1]
 				i++
 			}
 		case "--telegram-token":
@@ -850,47 +879,6 @@ func validateTelegramToken(token string) error {
 	return nil
 }
 
-// readExistingAgentKeysFrom scans existing agents and returns the first non-empty
-// key found for each provider. This lets init re-runs preserve configured keys.
-//
-// In the single-tenant model, all agents typically share the same provider keys.
-// If agents have conflicting keys for the same provider, the first agent's key
-// wins and a warning is printed.
-func readExistingAgentKeysFrom(home string, agents []agent.Info) map[string]string {
-	keys := map[string]string{}
-	if len(agents) == 0 {
-		return keys
-	}
-	for _, pair := range []struct {
-		configKey string
-		mapKey    string
-	}{
-		{"openai_key", "openai"},
-		{"anthropic_key", "anthropic"},
-		{"openrouter_key", "openrouter"},
-		{"model", "model"},
-	} {
-		for _, a := range agents {
-			dir := agent.Dir(home, a.Name)
-			val, err := agent.ConfigGet(dir, pair.configKey)
-			if err != nil {
-				continue
-			}
-			s, ok := val.(string)
-			if !ok || s == "" {
-				continue
-			}
-			if existing, found := keys[pair.mapKey]; found {
-				if s != existing {
-					fmt.Fprintf(os.Stderr, "warning: agent %s has a different %s than others, using first found\n", a.Name, pair.mapKey)
-				}
-				continue
-			}
-			keys[pair.mapKey] = s
-		}
-	}
-	return keys
-}
 
 // resolveValue returns the first non-empty value from the candidates.
 func resolveValue(candidates ...string) string {
@@ -902,13 +890,6 @@ func resolveValue(candidates ...string) string {
 	return ""
 }
 
-// redactKey shows a redacted version of a key for display.
-func redactKey(key string) string {
-	if len(key) > 12 {
-		return key[:4] + "..." + key[len(key)-4:]
-	}
-	return "****"
-}
 
 // boolYN returns "Y" or "N" for display.
 func boolYN(b bool) string {
@@ -947,6 +928,7 @@ PROVIDER KEYS:
   --openai-key KEY        OpenAI API key (also reads OPENAI_API_KEY env)
   --anthropic-key KEY     Anthropic API key (also reads ANTHROPIC_API_KEY env)
   --openrouter-key KEY    OpenRouter API key (also reads OPENROUTER_API_KEY env)
+  --brave-key KEY         Brave Search API key (also reads BRAVE_API_KEY env)
 
 MODELS:
   --model MODEL           Mux LLM model (default: gpt-5-mini)

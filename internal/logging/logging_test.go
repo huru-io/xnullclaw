@@ -433,3 +433,75 @@ func TestFieldsToMapEmpty(t *testing.T) {
 		t.Errorf("expected nil, got %v", m)
 	}
 }
+
+func TestRedactToolArgs_NilArgs(t *testing.T) {
+	got := redactToolArgs("update_agent_config", nil)
+	if got != nil {
+		t.Errorf("expected nil, got %v", got)
+	}
+}
+
+func TestRedactToolArgs_NonConfigTool(t *testing.T) {
+	args := map[string]any{"key": "openai_key", "value": "sk-secret-key-12345678"}
+	got := redactToolArgs("web_search", args)
+	// Non-config tools should pass through unchanged.
+	if got["value"] != "sk-secret-key-12345678" {
+		t.Errorf("expected unredacted value, got %v", got["value"])
+	}
+}
+
+func TestRedactToolArgs_RedactedConfigKey(t *testing.T) {
+	args := map[string]any{"key": "openai_key", "value": "sk-secret-key-12345678"}
+	got := redactToolArgs("update_agent_config", args)
+	// openai_key is Redacted=true, so value should be masked.
+	val, _ := got["value"].(string)
+	if val == "sk-secret-key-12345678" {
+		t.Error("expected value to be redacted")
+	}
+	if !strings.Contains(val, "*") {
+		t.Errorf("expected stars in redacted value, got %q", val)
+	}
+	// key itself should not be redacted.
+	if got["key"] != "openai_key" {
+		t.Errorf("key should be unchanged, got %v", got["key"])
+	}
+}
+
+func TestRedactToolArgs_NonRedactedConfigKey(t *testing.T) {
+	args := map[string]any{"key": "model", "value": "gpt-4o"}
+	got := redactToolArgs("update_agent_config", args)
+	// model is not Redacted, so value should pass through.
+	if got["value"] != "gpt-4o" {
+		t.Errorf("expected unredacted value, got %v", got["value"])
+	}
+}
+
+func TestRedactToolArgs_EmptyKey(t *testing.T) {
+	args := map[string]any{"value": "something"}
+	got := redactToolArgs("update_agent_config", args)
+	// No key field → pass through unchanged.
+	if got["value"] != "something" {
+		t.Errorf("expected unredacted value, got %v", got["value"])
+	}
+}
+
+func TestRedactToolArgs_BraveKey(t *testing.T) {
+	args := map[string]any{"key": "brave_key", "value": "BSA-test-brave-key-12345"}
+	got := redactToolArgs("update_agent_config", args)
+	val, _ := got["value"].(string)
+	if val == "BSA-test-brave-key-12345" {
+		t.Error("expected brave_key value to be redacted")
+	}
+	if !strings.Contains(val, "*") {
+		t.Errorf("expected stars in redacted value, got %q", val)
+	}
+}
+
+func TestRedactToolArgs_NonStringValue(t *testing.T) {
+	// If value is not a string, it passes through unchanged.
+	args := map[string]any{"key": "openai_key", "value": 42}
+	got := redactToolArgs("update_agent_config", args)
+	if got["value"] != 42 {
+		t.Errorf("expected non-string value to pass through, got %v", got["value"])
+	}
+}

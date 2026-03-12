@@ -17,12 +17,13 @@ func cmdSetup(g Globals, args []string) {
 	openaiKey, _ := flagValue(&args, "--openai-key")
 	anthropicKey, _ := flagValue(&args, "--anthropic-key")
 	openrouterKey, _ := flagValue(&args, "--openrouter-key")
+	braveKey, _ := flagValue(&args, "--brave-key")
 	model, _ := flagValue(&args, "--model")
 	systemPrompt, _ := flagValue(&args, "--system-prompt")
 
 	names := agentNames(args)
 	if len(names) == 0 {
-		die("usage: xnc setup <name> [--openai-key KEY] [--anthropic-key KEY] [--openrouter-key KEY] [--model MODEL] [--system-prompt TEXT]")
+		die("usage: xnc setup <name> [--openai-key KEY] [--anthropic-key KEY] [--openrouter-key KEY] [--brave-key KEY] [--model MODEL] [--system-prompt TEXT]")
 	}
 
 	// Fall back to environment variables.
@@ -35,11 +36,15 @@ func cmdSetup(g Globals, args []string) {
 	if openrouterKey == "" {
 		openrouterKey = os.Getenv("OPENROUTER_API_KEY")
 	}
+	if braveKey == "" {
+		braveKey = os.Getenv("BRAVE_API_KEY")
+	}
 
 	opts := agent.SetupOpts{
 		OpenAIKey:     openaiKey,
 		AnthropicKey:  anthropicKey,
 		OpenRouterKey: openrouterKey,
+		BraveKey:      braveKey,
 		Model:         model,
 		SystemPrompt:  systemPrompt,
 	}
@@ -146,13 +151,7 @@ func cmdStart(g Globals, args []string) {
 		if i == 0 {
 			agentPort = port
 		}
-		agentDir := agent.Dir(g.Home, name)
-		opts := docker.ContainerOpts{
-			Image:    g.Image,
-			Cmd:      []string{"gateway"},
-			AgentDir: agentDir,
-			Port:     agentPort,
-		}
+		opts := agent.StartOpts(g.Image, g.Home, name, agentPort)
 
 		wg.Add(1)
 		go func(n, cn string, o docker.ContainerOpts) {

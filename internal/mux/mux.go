@@ -202,14 +202,6 @@ func Run(mc Config) error {
 		cleanText, attachments := media.Parse(response)
 
 		if cleanText != "" {
-			// Optional mux identity header (off by default).
-			if cfg.Persona.ShowHeader && !isAgentPassthrough(cleanText, ctxData.Agents) {
-				if cfg.Persona.Name != "" {
-					cleanText = fmt.Sprintf("🔀 *%s*\n\n%s", cfg.Persona.Name, cleanText)
-				} else {
-					cleanText = "🔀\n\n" + cleanText
-				}
-			}
 			if err := tgBot.Send(chatID, cleanText); err != nil {
 				logger.Error("telegram send failed", "error", err)
 			}
@@ -442,11 +434,7 @@ All other messages are handled by the mux AI.`)
 				continue
 			}
 
-			opts := docker.ContainerOpts{
-				Image:    mc.Image,
-				Cmd:      []string{"gateway"},
-				AgentDir: agent.Dir(mc.Home, agentName),
-			}
+			opts := agent.StartOpts(mc.Image, mc.Home, agentName, 0)
 			if err := dk.StartContainer(ctx, cn, opts); err != nil {
 				logger.Error("auto-start failed", "agent", agentName, "error", err)
 			} else {
@@ -527,18 +515,6 @@ func sendAttachment(tgBot *telegram.Bot, logger *logging.Logger, chatID int64, a
 	}
 }
 
-// isAgentPassthrough checks if the response starts with a known agent emoji,
-// indicating this is forwarded agent output (not mux speaking).
-func isAgentPassthrough(text string, agents []memory.AgentState) bool {
-	for _, a := range agents {
-		if a.Emoji != nil && *a.Emoji != "" {
-			if strings.HasPrefix(text, *a.Emoji+" ") {
-				return true
-			}
-		}
-	}
-	return false
-}
 
 // truncateLog truncates a string for log output at rune boundaries.
 func truncateLog(s string, n int) string {

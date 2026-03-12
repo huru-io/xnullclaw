@@ -55,6 +55,38 @@ func TestSetup(t *testing.T) {
 	}
 }
 
+func TestSetupWithBraveKey(t *testing.T) {
+	home := t.TempDir()
+
+	if err := Setup(home, "alice", SetupOpts{BraveKey: "BSA-test-123"}); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+
+	dir := Dir(home, "alice")
+	val, err := ConfigGet(dir, "brave_key")
+	if err != nil {
+		t.Fatalf("ConfigGet brave_key: %v", err)
+	}
+	if val != "BSA-test-123" {
+		t.Errorf("expected 'BSA-test-123', got %v", val)
+	}
+}
+
+func TestSetupConfigPermissions(t *testing.T) {
+	home := t.TempDir()
+
+	Setup(home, "alice", SetupOpts{})
+	dir := Dir(home, "alice")
+	info, err := os.Stat(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatalf("stat config.json: %v", err)
+	}
+	perm := info.Mode().Perm()
+	if perm != 0600 {
+		t.Errorf("expected 0600 permissions, got %o", perm)
+	}
+}
+
 func TestSetupDuplicate(t *testing.T) {
 	home := t.TempDir()
 

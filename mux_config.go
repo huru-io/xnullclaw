@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jotavich/xnullclaw/internal/agent"
 	"github.com/jotavich/xnullclaw/internal/config"
 )
 
@@ -32,7 +33,6 @@ var muxConfigKeys = []muxConfigKey{
 	{"costs.daily_budget_usd", "float", "Daily budget in USD", false},
 	{"costs.monthly_budget_usd", "float", "Monthly budget in USD", false},
 	{"logging.level", "string", "Log level (debug/info/warn/error)", false},
-	{"persona.show_header", "bool", "Show mux identity header (🔀) on messages", false},
 }
 
 func lookupMuxKey(path string) (muxConfigKey, bool) {
@@ -96,7 +96,7 @@ func muxConfigDump(cfgPath string) {
 			continue
 		}
 		if val, ok := section[parts[1]].(string); ok && val != "" {
-			section[parts[1]] = redactSecret(val)
+			section[parts[1]] = agent.RedactKey(val)
 		}
 	}
 
@@ -116,7 +116,7 @@ func muxConfigGet(cfgPath string, key string) {
 	var m map[string]any
 	json.Unmarshal(data, &m)
 
-	val := getPath(m, key)
+	val := agent.GetPath(m, key)
 	if val == nil {
 		// Key might be absent due to omitempty — if it's a known key, return zero value.
 		if mk, ok := lookupMuxKey(key); ok {
@@ -141,7 +141,7 @@ func muxConfigGet(cfgPath string, key string) {
 	mk, known := lookupMuxKey(key)
 	if known && mk.Redacted {
 		if s, ok := val.(string); ok && s != "" {
-			val = redactSecret(s)
+			val = agent.RedactKey(s)
 		}
 	}
 
@@ -236,15 +236,6 @@ func muxConfigSet(cfgPath string, key string, value string) {
 		default:
 			log.Fatalf("invalid log level %q (must be debug/info/warn/error)", value)
 		}
-	case "persona.show_header":
-		switch strings.ToLower(value) {
-		case "true", "1", "yes":
-			cfg.Persona.ShowHeader = true
-		case "false", "0", "no":
-			cfg.Persona.ShowHeader = false
-		default:
-			log.Fatalf("invalid bool for %s: %s (use true/false)", key, value)
-		}
 	}
 
 	if err := cfg.Save(cfgPath); err != nil {
@@ -253,8 +244,8 @@ func muxConfigSet(cfgPath string, key string, value string) {
 
 	// Show confirmation.
 	display := value
-	if mk.Redacted && len(value) > 8 {
-		display = redactSecret(value)
+	if mk.Redacted {
+		display = agent.RedactKey(value)
 	}
 	fmt.Printf("ok: set %s = %s\n", key, display)
 
@@ -273,27 +264,4 @@ func muxConfigListKeys() {
 	}
 }
 
-// getPath navigates a map[string]any by dotted path.
-func getPath(m map[string]any, path string) any {
-	parts := strings.Split(path, ".")
-	var current any = m
-	for _, p := range parts {
-		cm, ok := current.(map[string]any)
-		if !ok {
-			return nil
-		}
-		current, ok = cm[p]
-		if !ok {
-			return nil
-		}
-	}
-	return current
-}
 
-// redactSecret masks a string, showing first 4 and last 4 characters.
-func redactSecret(s string) string {
-	if len(s) <= 8 {
-		return "****"
-	}
-	return s[:4] + strings.Repeat("*", len(s)-8) + s[len(s)-4:]
-}

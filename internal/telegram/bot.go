@@ -284,6 +284,11 @@ func (b *Bot) handleUpdate(update tgbotapi.Update, threadID int) {
 		return
 	}
 
+	// Ignore comments: "#" alone or "# ..." (but not "#hashtag").
+	if text == "#" || strings.HasPrefix(text, "# ") {
+		return
+	}
+
 	// Check for /commands.
 	if strings.HasPrefix(text, "/") {
 		cmd := ParseCommand(text)

@@ -410,6 +410,7 @@ BOOTSTRAP:
     --openai-key KEY                        OpenAI API key
     --anthropic-key KEY                     Anthropic API key
     --openrouter-key KEY                    OpenRouter API key
+    --brave-key KEY                         Brave Search API key
     --telegram-token TOKEN                  Telegram bot token
     --telegram-user USER                    Telegram username
     --model MODEL                           Default LLM model
@@ -426,6 +427,7 @@ AGENT LIFECYCLE:
     --openai-key KEY                        OpenAI API key
     --anthropic-key KEY                     Anthropic API key
     --openrouter-key KEY                    OpenRouter API key
+    --brave-key KEY                         Brave Search API key
     --model MODEL                           LLM model
     --system-prompt TEXT                     Custom system prompt
   start    <agents...> [--port N]          Start agent containers

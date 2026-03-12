@@ -37,7 +37,7 @@ func Snapshot(home, name string) (SnapshotInfo, error) {
 	snapName := name + "-" + stamp
 
 	snapDir := filepath.Join(SnapshotDir(home), snapName)
-	if err := os.MkdirAll(snapDir, 0755); err != nil {
+	if err := os.MkdirAll(snapDir, 0700); err != nil {
 		return SnapshotInfo{}, fmt.Errorf("snapshot: create dir: %w", err)
 	}
 

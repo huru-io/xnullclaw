@@ -113,9 +113,5 @@ func cmdSnapshotDelete(g Globals, args []string) {
 
 // defaultStartOpts returns basic ContainerOpts for restarting an agent after snapshot.
 func defaultStartOpts(g Globals, name string) docker.ContainerOpts {
-	return docker.ContainerOpts{
-		Image:    g.Image,
-		Cmd:      []string{"gateway"},
-		AgentDir: agent.Dir(g.Home, name),
-	}
+	return agent.StartOpts(g.Image, g.Home, name, 0)
 }

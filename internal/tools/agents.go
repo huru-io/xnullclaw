@@ -137,12 +137,7 @@ func sendToAgent(ctx context.Context, d Deps, agentName, message string) (string
 
 // startOpts returns ContainerOpts for starting an agent.
 func startOpts(d Deps, name string, port int) docker.ContainerOpts {
-	return docker.ContainerOpts{
-		Image:    d.Image,
-		Cmd:      []string{"gateway"},
-		AgentDir: agent.Dir(d.Home, name),
-		Port:     port,
-	}
+	return agent.StartOpts(d.Image, d.Home, name, port)
 }
 
 func registerAgentTools(r *Registry, d Deps) {
@@ -581,6 +576,15 @@ func registerAgentTools(r *Registry, d Deps) {
 				setupOpts.OpenAIKey = d.Cfg.OpenAI.APIKey
 			}
 
+			// Propagate keys from existing agents (single-tenant: all share the same keys).
+			existingKeys := agent.CollectKeys(d.Home)
+			if setupOpts.OpenAIKey == "" {
+				setupOpts.OpenAIKey = existingKeys["openai"]
+			}
+			setupOpts.AnthropicKey = existingKeys["anthropic"]
+			setupOpts.OpenRouterKey = existingKeys["openrouter"]
+			setupOpts.BraveKey = existingKeys["brave"]
+
 			agent.Setup(d.Home, agentName, setupOpts)
 			steps = append(steps, "Created agent directory")
 			steps = append(steps, fmt.Sprintf("Personality: %s", variant.Trait))
@@ -643,7 +647,7 @@ func registerAgentTools(r *Registry, d Deps) {
 				return "", err
 			}
 			dir := agent.Dir(d.Home, agentName)
-			all, err := agent.ConfigGetAll(dir)
+			all, err := agent.ConfigGetAllRedacted(dir)
 			if err != nil {
 				return "", err
 			}

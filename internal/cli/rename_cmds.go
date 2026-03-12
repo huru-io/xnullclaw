@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/jotavich/xnullclaw/internal/agent"
-	"github.com/jotavich/xnullclaw/internal/docker"
 )
 
 func cmdRename(g Globals, args []string) {
@@ -46,11 +45,7 @@ func cmdRename(g Globals, args []string) {
 	// Start agent and send identity-change message.
 	if agent.HasProviderKey(g.Home, newName) {
 		newCN := agent.ContainerName(g.Home, newName)
-		opts := docker.ContainerOpts{
-			Image:    g.Image,
-			Cmd:      []string{"gateway"},
-			AgentDir: agent.Dir(g.Home, newName),
-		}
+		opts := agent.StartOpts(g.Image, g.Home, newName, 0)
 		if err := g.Docker.StartContainer(ctx, newCN, opts); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not start %s: %v\n", newName, err)
 		} else {

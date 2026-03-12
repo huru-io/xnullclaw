@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jotavich/xnullclaw/internal/agent"
 	"github.com/jotavich/xnullclaw/internal/config"
 )
 
@@ -101,22 +102,22 @@ func New(cfg *config.LoggingConfig, baseDir string) (*Logger, error) {
 		logDir = filepath.Join(baseDir, logDir)
 	}
 
-	if err := os.MkdirAll(logDir, 0755); err != nil {
+	if err := os.MkdirAll(logDir, 0700); err != nil {
 		return nil, fmt.Errorf("logging: create log dir %s: %w", logDir, err)
 	}
 
-	muxFile, err := os.OpenFile(filepath.Join(logDir, "mux.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	muxFile, err := os.OpenFile(filepath.Join(logDir, "mux.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("logging: open mux.log: %w", err)
 	}
 
-	agentFile, err := os.OpenFile(filepath.Join(logDir, "agents.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	agentFile, err := os.OpenFile(filepath.Join(logDir, "agents.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		muxFile.Close()
 		return nil, fmt.Errorf("logging: open agents.log: %w", err)
 	}
 
-	costFile, err := os.OpenFile(filepath.Join(logDir, "costs.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	costFile, err := os.OpenFile(filepath.Join(logDir, "costs.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		muxFile.Close()
 		agentFile.Close()
@@ -281,10 +282,11 @@ func (l *Logger) LogRouting(agent string, reason string, confidence float64) {
 }
 
 // LogToolCall logs a tool call execution to agents.log.
+// Sensitive values in args are redacted before writing.
 func (l *Logger) LogToolCall(name string, args map[string]any, result string, duration time.Duration, err error) {
 	fields := map[string]any{
 		"tool":        name,
-		"args":        args,
+		"args":        redactToolArgs(name, args),
 		"result_len":  len(result),
 		"duration_ms": duration.Milliseconds(),
 	}
@@ -377,4 +379,45 @@ func (l *Logger) LogPersonaChange(field string, oldValue, newValue string) {
 		"old_value", oldValue,
 		"new_value", newValue,
 	})
+}
+
+// redactToolArgs returns a copy of args with sensitive values masked.
+// For tools that write config values, the "value" arg is redacted if
+// the "key" arg corresponds to a secret config key.
+func redactToolArgs(toolName string, args map[string]any) map[string]any {
+	if args == nil {
+		return nil
+	}
+
+	// Only redact tools that accept a key/value pair for config writes.
+	switch toolName {
+	case "update_agent_config":
+	default:
+		return args
+	}
+
+	key, _ := args["key"].(string)
+	if key == "" {
+		return args
+	}
+
+	ck, ok := agent.LookupConfigKey(key)
+	if !ok || !ck.Redacted {
+		return args
+	}
+
+	// Copy args and redact the value.
+	out := make(map[string]any, len(args))
+	for k, v := range args {
+		if k == "value" {
+			if s, ok := v.(string); ok {
+				out[k] = agent.RedactKey(s)
+			} else {
+				out[k] = v
+			}
+		} else {
+			out[k] = v
+		}
+	}
+	return out
 }

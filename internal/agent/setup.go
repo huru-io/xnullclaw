@@ -9,10 +9,12 @@ import (
 )
 
 // SetupOpts holds optional configuration to inject during agent creation.
+// Contains secret fields (API keys) — never log this struct directly.
 type SetupOpts struct {
 	OpenAIKey     string
 	AnthropicKey  string
 	OpenRouterKey string
+	BraveKey      string   // Brave Search API key
 	SystemPrompt  string   // if empty, auto-generated from name
 	Model         string   // if empty, uses default
 	TelegramAllow []string // allowed Telegram user IDs
@@ -80,6 +82,11 @@ func Setup(home, name string, opts SetupOpts) error {
 	}
 	if opts.OpenRouterKey != "" {
 		providers["openrouter"] = map[string]any{"api_key": opts.OpenRouterKey}
+	}
+
+	// Brave Search API key.
+	if opts.BraveKey != "" {
+		cfg["http_request"].(map[string]any)["brave_api_key"] = opts.BraveKey
 	}
 
 	// Telegram — only add when there's something to configure.
@@ -154,11 +161,12 @@ func DefaultAgentConfig() map[string]any {
 			"providers": map[string]any{},
 		},
 		"http_request": map[string]any{
-			"enabled":           true,
-			"timeout_secs":      30,
-			"max_response_size": 100000,
-			"allowed_domains":   []any{},
-			"search_provider":   "duckduckgo",
+			"enabled":                    true,
+			"timeout_secs":               30,
+			"max_response_size":          100000,
+			"allowed_domains":            []any{},
+			"search_provider":            "brave",
+			"search_fallback_providers":  []any{"duckduckgo"},
 		},
 	}
 }
