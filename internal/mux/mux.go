@@ -163,7 +163,24 @@ func Run(mc Config) error {
 		lastChatID int64
 	)
 
+	// Track which agent(s) were called via send_to_agent during a turn,
+	// so we can prepend the identity header when sending to Telegram.
+	var turnAgents []string
+	origOnToolCall := muxLoop.OnToolCall
+	muxLoop.OnToolCall = func(name string, args map[string]any, result string, duration time.Duration, err error) {
+		if name == "send_to_agent" {
+			if a, ok := args["agent"].(string); ok {
+				turnAgents = append(turnAgents, a)
+			}
+		}
+		if origOnToolCall != nil {
+			origOnToolCall(name, args, result, duration, err)
+		}
+	}
+
 	runTurn := func(chatID int64, userText string) {
+		turnAgents = nil // reset for this turn
+
 		ctxData, err := assembler.Assemble(userText)
 		if err != nil {
 			logger.Error("context assembly failed", "error", err)
@@ -202,6 +219,10 @@ func Run(mc Config) error {
 		cleanText, attachments := media.Parse(response)
 
 		if cleanText != "" {
+			// If exactly one agent was called, prepend its identity header.
+			if len(turnAgents) == 1 {
+				cleanText = agentIdentityHeader(cfg, turnAgents[0]) + cleanText
+			}
 			if err := tgBot.Send(chatID, cleanText); err != nil {
 				logger.Error("telegram send failed", "error", err)
 			}
@@ -515,6 +536,17 @@ func sendAttachment(tgBot *telegram.Bot, logger *logging.Logger, chatID int64, a
 	}
 }
 
+
+// agentIdentityHeader returns "emoji name\n\n" for a given agent,
+// using the mux config identities map.
+func agentIdentityHeader(cfg *config.Config, name string) string {
+	if cfg.Agents.Identities != nil {
+		if id, ok := cfg.Agents.Identities[name]; ok && id.Emoji != "" {
+			return fmt.Sprintf("%s %s\n\n", id.Emoji, name)
+		}
+	}
+	return fmt.Sprintf("%s\n\n", name)
+}
 
 // truncateLog truncates a string for log output at rune boundaries.
 func truncateLog(s string, n int) string {
