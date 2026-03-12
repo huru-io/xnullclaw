@@ -147,19 +147,20 @@ func registerCostTools(r *Registry, d Deps) {
 				return "", fmt.Errorf("limit_usd must be non-negative")
 			}
 
+			if scope != "total" {
+				return "", fmt.Errorf("only scope 'total' is currently supported (per-agent budgets not yet implemented)")
+			}
+
 			var result strings.Builder
-			switch {
-			case scope == "total" && period == "daily":
+			switch period {
+			case "daily":
 				d.Cfg.Costs.DailyBudgetUSD = limitUSD
 				fmt.Fprintf(&result, "Daily budget set to $%.2f", limitUSD)
-			case scope == "total" && period == "monthly":
+			case "monthly":
 				d.Cfg.Costs.MonthlyBudgetUSD = limitUSD
 				fmt.Fprintf(&result, "Monthly budget set to $%.2f", limitUSD)
-			case period == "daily":
-				d.Cfg.Costs.PerAgentDailyLimit = limitUSD
-				fmt.Fprintf(&result, "Per-agent daily limit set to $%.2f (scope: %s)", limitUSD, scope)
 			default:
-				return "", fmt.Errorf("unsupported scope/period combination: %s/%s", scope, period)
+				return "", fmt.Errorf("unsupported period: %s (use 'daily' or 'monthly')", period)
 			}
 
 			if err := d.Cfg.Save(d.CfgPath); err != nil {

@@ -69,7 +69,7 @@ type TelegramConfig struct {
 	BotToken  string   `json:"bot_token"`
 	AllowFrom []string `json:"allow_from"`
 	GroupID   int64    `json:"group_id,omitempty"`  // 0 = private chat mode (default)
-	TopicID   int      `json:"topic_id,omitempty"`  // -1 = discover, 0 = no topic, 1 = General, N = specific
+	TopicID   int      `json:"topic_id"`  // -1 = discover, 0 = no topic, 1 = General, N = specific
 }
 
 // OpenAIConfig holds OpenAI-compatible API settings.
@@ -85,9 +85,9 @@ type OpenAIConfig struct {
 
 // AgentsConfig holds agent routing settings.
 type AgentsConfig struct {
-	Default    string                   `json:"default"`
-	AutoStart  []string                 `json:"auto_start"`
-	MuxManaged []string                 `json:"mux_managed"`
+	Default    string                   `json:"default"`       // agent name used when routing is ambiguous
+	AutoStart  []string                 `json:"auto_start"`    // agents started automatically when mux boots
+	MuxManaged []string                 `json:"mux_managed"`   // agents whose lifecycle the mux controls (stopped on mux shutdown)
 	Identities map[string]AgentIdentity `json:"identities"`
 }
 
@@ -111,7 +111,7 @@ type VoiceConfig struct {
 // MemoryConfig holds persistent memory/DB settings.
 type MemoryConfig struct {
 	DBPath                  string `json:"db_path"`
-	SummaryIntervalMessages int    `json:"summary_interval_messages"`
+	SummaryIntervalMessages int    `json:"summary_interval_messages"` // number of messages between compaction summaries (0 = disabled)
 }
 
 // CostsConfig holds budget and cost tracking settings.
@@ -119,7 +119,7 @@ type CostsConfig struct {
 	Track              bool    `json:"track"`
 	MonthlyBudgetUSD   float64 `json:"monthly_budget_usd"`
 	DailyBudgetUSD     float64 `json:"daily_budget_usd"`
-	WarnAtPercent      int     `json:"warn_at_percent"`
+	WarnAtPercent      int     `json:"warn_at_percent"`           // percentage threshold for budget warnings (tracking-only, not enforced)
 	PerAgentDailyLimit float64 `json:"per_agent_daily_limit_usd"`
 }
 

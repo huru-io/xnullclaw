@@ -20,7 +20,7 @@ type Message struct {
 	ToolCalls  *string // JSON array of tool calls (nullable)
 	ToolCallID *string // for tool result messages (nullable)
 	Agent      *string // related agent (nullable)
-	Stream     string  // "conversation" or "background"
+	Stream     string  // "conversation", "drain", or "scheduler"
 	TokenCount int
 	Timestamp  time.Time
 }
@@ -195,6 +195,27 @@ CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_status_trigger
 
 // ---------- Store ----------
 
+// validTables is the allow-list of table names that may appear in
+// dynamically constructed SQL. Every string-concatenated query must
+// validate against this set to prevent SQL injection if the table
+// list is ever changed or extended from external input.
+var validTables = map[string]bool{
+	"messages":        true,
+	"facts":           true,
+	"compactions":     true,
+	"costs":           true,
+	"agent_state":     true,
+	"agent_persona":   true,
+	"scheduled_tasks": true,
+}
+
+func validateTable(name string) error {
+	if !validTables[name] {
+		return fmt.Errorf("memory: invalid table name %q", name)
+	}
+	return nil
+}
+
 // Store manages the mux's persistent memory in SQLite.
 type Store struct {
 	db *sql.DB
@@ -219,6 +240,10 @@ func New(dbPath string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("memory: create schema: %w", err)
 	}
+	// SQLite supports only one concurrent writer. Limiting to a single
+	// connection avoids WAL contention under concurrent goroutines.
+	db.SetMaxOpenConns(1)
+
 	return &Store{db: db}, nil
 }
 
@@ -276,8 +301,14 @@ func (s *Store) MessageTokenCount(stream string) (int, error) {
 // DeleteOldestMessages removes the oldest count messages from the given stream and
 // returns them (useful for compaction — the caller can summarise them).
 func (s *Store) DeleteOldestMessages(stream string, count int) ([]Message, error) {
-	// Read them first.
-	rows, err := s.db.Query(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Read them first (within transaction to guarantee consistency).
+	rows, err := tx.Query(
 		`SELECT id, role, content, tool_calls, tool_call_id, agent, stream, token_count, timestamp
 		 FROM messages WHERE stream = ?
 		 ORDER BY id ASC LIMIT ?`, stream, count,
@@ -301,12 +332,15 @@ func (s *Store) DeleteOldestMessages(stream string, count int) ([]Message, error
 		ids[i] = m.ID
 		placeholders[i] = "?"
 	}
-	_, err = s.db.Exec(
+	_, err = tx.Exec(
 		fmt.Sprintf("DELETE FROM messages WHERE id IN (%s)", strings.Join(placeholders, ",")),
 		ids...,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
 	}
 	return msgs, nil
 }
@@ -453,7 +487,13 @@ func (s *Store) DecayFactScores(maxAge time.Duration, decayFactor float64) error
 
 // PruneFacts deletes facts with a score below minScore and returns the deleted rows.
 func (s *Store) PruneFacts(minScore float64) ([]Fact, error) {
-	rows, err := s.db.Query(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(
 		`SELECT id, type, content, source, agent, score, created, accessed, access_count
 		 FROM facts WHERE score < ?`, minScore,
 	)
@@ -470,9 +510,12 @@ func (s *Store) PruneFacts(minScore float64) ([]Fact, error) {
 		return nil, nil
 	}
 
-	_, err = s.db.Exec(`DELETE FROM facts WHERE score < ?`, minScore)
+	_, err = tx.Exec(`DELETE FROM facts WHERE score < ?`, minScore)
 	if err != nil {
 		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
 	}
 	return facts, nil
 }
@@ -827,6 +870,9 @@ func (s *Store) RenameAgent(oldName, newName string) error {
 
 	// Tables with a simple `agent` column.
 	for _, table := range []string{"messages", "facts", "agent_state", "agent_persona", "costs"} {
+		if err := validateTable(table); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(
 			"UPDATE "+table+" SET agent = ? WHERE agent = ?",
 			newName, oldName,
@@ -886,6 +932,9 @@ func (s *Store) RenameAgent(oldName, newName string) error {
 func (s *Store) ClearAll() error {
 	tables := []string{"messages", "facts", "compactions", "costs", "scheduled_tasks"}
 	for _, t := range tables {
+		if err := validateTable(t); err != nil {
+			return err
+		}
 		if _, err := s.db.Exec("DELETE FROM " + t); err != nil {
 			return fmt.Errorf("clear %s: %w", t, err)
 		}
@@ -934,6 +983,9 @@ func (s *Store) Stats() (map[string]int, error) {
 	tables := []string{"messages", "facts", "compactions", "costs", "agent_state", "scheduled_tasks"}
 	stats := make(map[string]int, len(tables))
 	for _, t := range tables {
+		if err := validateTable(t); err != nil {
+			return nil, err
+		}
 		var count int
 		if err := s.db.QueryRow("SELECT COUNT(*) FROM " + t).Scan(&count); err != nil {
 			return nil, fmt.Errorf("count %s: %w", t, err)

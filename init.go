@@ -43,7 +43,7 @@ func runInit(args []string) {
 		filepath.Join(muxHome, "logs"),
 		filepath.Join(home, ".tmp"),
 	} {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0700); err != nil {
 			log.Fatalf("create %s: %v", dir, err)
 		}
 	}

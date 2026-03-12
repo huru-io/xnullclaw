@@ -321,10 +321,10 @@ func (s *Scheduler) maybePrune(now time.Time) {
 // Description and context are sanitized to prevent prompt injection.
 func formatScheduledTaskMessage(t memory.ScheduledTask) string {
 	desc := config.SanitizeText(t.Description, 500)
-	msg := fmt.Sprintf("[SCHEDULED TASK #%d] %s", t.ID, desc)
+	msg := fmt.Sprintf("[SCHEDULED TASK #%d]\n<task-description>%s</task-description>", t.ID, desc)
 	if t.Context != nil && *t.Context != "" {
 		ctx := config.SanitizeText(*t.Context, 500)
-		msg += fmt.Sprintf("\nContext: %s", ctx)
+		msg += fmt.Sprintf("\n<task-context>%s</task-context>", ctx)
 	}
 	return msg
 }

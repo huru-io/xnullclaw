@@ -52,7 +52,7 @@ func Setup(home, name string, opts SetupOpts) error {
 		"data/.nullclaw",
 		"data/workspace",
 	} {
-		if err := os.MkdirAll(filepath.Join(dir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0700); err != nil {
 			return fmt.Errorf("setup: create %s: %w", sub, err)
 		}
 	}

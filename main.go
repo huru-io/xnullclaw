@@ -99,7 +99,7 @@ func runMux(args []string) {
 
 		if foreground {
 			// Run in foreground — write PID file for status/stop.
-			if err := os.MkdirAll(muxHome, 0755); err != nil {
+			if err := os.MkdirAll(muxHome, 0700); err != nil {
 				log.Fatalf("create mux home: %v", err)
 			}
 			writePID(pidFile, os.Getpid())
@@ -173,11 +173,11 @@ func runMux(args []string) {
 }
 
 func muxDaemon(home, image, muxHome, logFile string) {
-	if err := os.MkdirAll(muxHome, 0755); err != nil {
+	if err := os.MkdirAll(muxHome, 0700); err != nil {
 		log.Fatalf("create mux home: %v", err)
 	}
 
-	lf, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	lf, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		log.Fatalf("open log file: %v", err)
 	}
@@ -208,6 +208,12 @@ func muxStop(pidFile string) {
 		os.Exit(1)
 	}
 
+	if !processAlive(pid) {
+		fmt.Fprintf(os.Stderr, "mux process %d is not running (stale PID file)\n", pid)
+		os.Remove(pidFile)
+		os.Exit(1)
+	}
+
 	p, err := os.FindProcess(pid)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cannot find process %d: %v\n", pid, err)
@@ -219,7 +225,22 @@ func muxStop(pidFile string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("sent SIGTERM to mux (PID %d)\n", pid)
+	fmt.Printf("sent SIGTERM to mux (PID %d), waiting...\n", pid)
+
+	// Wait up to 60s for graceful shutdown.
+	for i := 0; i < 300; i++ {
+		if !processAlive(pid) {
+			fmt.Println("mux stopped")
+			return
+		}
+		if i > 0 && i%25 == 0 {
+			fmt.Printf("  still waiting (%ds)...\n", i/5)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	fmt.Fprintln(os.Stderr, "mux did not stop within 60s — process may still be running")
+	os.Exit(1)
 }
 
 func muxStatus(pidFile string) {
@@ -292,7 +313,7 @@ func muxLogs(logFile string, follow bool) {
 // PID file helpers.
 
 func writePID(path string, pid int) {
-	if err := os.WriteFile(path, []byte(strconv.Itoa(pid)+"\n"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(strconv.Itoa(pid)+"\n"), 0600); err != nil {
 		log.Fatalf("write PID file: %v", err)
 	}
 }

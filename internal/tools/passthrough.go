@@ -14,7 +14,7 @@ func registerPassthroughTools(r *Registry, store *memory.Store) {
 	r.Register(
 		Definition{
 			Name:        "set_passthrough_rule",
-			Description: "Add a passthrough rule. Scope: agent name or 'global'.",
+			Description: "Add a persistent instruction that the mux follows on every turn. Scope: 'global' (all interactions) or a specific agent name.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

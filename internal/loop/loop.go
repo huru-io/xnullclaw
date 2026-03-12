@@ -357,27 +357,29 @@ func (m *Mux) executeToolCalls(ctx context.Context, calls []ToolCall) []toolResu
 // Helpers
 // ---------------------------------------------------------------------------
 
-// estimateCost returns a rough USD cost estimate based on model and token counts.
-// Prices are approximate and should be kept up to date.
-func estimateCost(model string, inputTokens, outputTokens int) float64 {
-	// Per-million-token pricing (approximate, as of 2025).
-	type pricing struct {
-		input  float64
-		output float64
-	}
-	prices := map[string]pricing{
-		"gpt-5-mini":    {0.15, 0.60},
-		"gpt-4o":        {2.50, 10.00},
-		"gpt-4o-mini":   {0.15, 0.60},
-		"gpt-4-turbo":   {10.00, 30.00},
-		"gpt-4":         {30.00, 60.00},
-		"gpt-3.5-turbo": {0.50, 1.50},
-	}
+// pricing holds per-million-token input/output prices for cost estimation.
+type pricing struct {
+	input  float64
+	output float64
+}
 
-	p, ok := prices[model]
+// pricingMap contains approximate per-million-token pricing (as of 2025).
+// Keep this up to date when new models are added to the config defaults.
+var pricingMap = map[string]pricing{
+	"gpt-5-mini":    {0.15, 0.60},
+	"gpt-4o":        {2.50, 10.00},
+	"gpt-4o-mini":   {0.15, 0.60},
+	"gpt-4-turbo":   {10.00, 30.00},
+	"gpt-4":         {30.00, 60.00},
+	"gpt-3.5-turbo": {0.50, 1.50},
+}
+
+// estimateCost returns a rough USD cost estimate based on model and token counts.
+func estimateCost(model string, inputTokens, outputTokens int) float64 {
+	p, ok := pricingMap[model]
 	if !ok {
 		// Default to gpt-4o pricing as a reasonable fallback.
-		p = prices["gpt-4o"]
+		p = pricingMap["gpt-4o"]
 	}
 
 	return (float64(inputTokens)*p.input + float64(outputTokens)*p.output) / 1_000_000

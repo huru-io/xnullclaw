@@ -228,6 +228,11 @@ func registerAgentTools(r *Registry, d Deps) {
 			if len(agents) == 0 {
 				return "", fmt.Errorf("agents list must not be empty")
 			}
+			for _, n := range agents {
+				if err := agent.ValidateName(n); err != nil {
+					return "", fmt.Errorf("invalid agent name %q: %w", n, err)
+				}
+			}
 			message, err := stringArg(args, "message")
 			if err != nil {
 				return "", err
@@ -294,7 +299,7 @@ func registerAgentTools(r *Registry, d Deps) {
 	r.Register(
 		Definition{
 			Name:        "start_agent",
-			Description: "Start an agent in mux mode",
+			Description: "Start a stopped agent's Docker container",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -316,7 +321,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			if err := d.Docker.StartContainer(ctx, cn, opts); err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("Agent %s started in mux mode", agentName), nil
+			return fmt.Sprintf("Agent %s started", agentName), nil
 		},
 	)
 
@@ -432,10 +437,14 @@ func registerAgentTools(r *Registry, d Deps) {
 			steps = append(steps, "Deleted agent directory")
 
 			// Clean up mux-side data.
-			if err := d.Store.DeleteAgentPersona(agentName); err == nil {
+			if err := d.Store.DeleteAgentPersona(agentName); err != nil {
+				steps = append(steps, fmt.Sprintf("Warning: persona cleanup failed: %v", err))
+			} else {
 				steps = append(steps, "Deleted persona from mux")
 			}
-			if _, err := d.Store.DeleteAgentState(agentName); err == nil {
+			if _, err := d.Store.DeleteAgentState(agentName); err != nil {
+				steps = append(steps, fmt.Sprintf("Warning: state cleanup failed: %v", err))
+			} else {
 				steps = append(steps, "Deleted state from mux")
 			}
 
@@ -447,7 +456,7 @@ func registerAgentTools(r *Registry, d Deps) {
 	r.Register(
 		Definition{
 			Name:        "clone_agent",
-			Description: "Clone an agent from another existing agent",
+			Description: "Clone an agent's config and skills from an existing agent (conversation history is not copied)",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -468,6 +477,9 @@ func registerAgentTools(r *Registry, d Deps) {
 			source, err := stringArg(args, "source")
 			if err != nil {
 				return "", err
+			}
+			if err := agent.ValidateName(source); err != nil {
+				return "", fmt.Errorf("invalid source name: %w", err)
 			}
 			if err := agent.Clone(d.Home, source, agentName, agent.CloneOpts{}); err != nil {
 				return "", err
@@ -498,6 +510,12 @@ func registerAgentTools(r *Registry, d Deps) {
 			newName, err := stringArg(args, "new_name")
 			if err != nil {
 				return "", err
+			}
+			if err := agent.ValidateName(newName); err != nil {
+				return "", fmt.Errorf("invalid new name: %w", err)
+			}
+			if agent.Exists(d.Home, newName) {
+				return "", fmt.Errorf("agent %q already exists", newName)
 			}
 			if isReservedName(d.Cfg, newName) {
 				return "", fmt.Errorf("cannot rename to %q — that is the mux bot's own name", newName)
@@ -565,7 +583,7 @@ func registerAgentTools(r *Registry, d Deps) {
 				return "", fmt.Errorf("cannot create agent named %q — that is the mux bot's own name", agentName)
 			}
 
-			variant := personaVariants[len(agentName)%len(personaVariants)]
+			variant := personaVariants[rand.Intn(len(personaVariants))]
 			var steps []string
 			steps = append(steps, fmt.Sprintf("Name: %s", agentName))
 
@@ -687,8 +705,12 @@ func registerAgentTools(r *Registry, d Deps) {
 			if err != nil {
 				return "", err
 			}
-			// Reject redacted keys (API keys, tokens) — prevent LLM from overwriting secrets.
-			if ck, ok := agent.LookupConfigKey(key); ok && ck.Redacted {
+			// Reject unknown or redacted keys.
+			ck, ok := agent.LookupConfigKey(key)
+			if !ok {
+				return "", fmt.Errorf("unknown config key %q — use 'get_agent_config' to see valid keys", key)
+			}
+			if ck.Redacted {
 				return "", fmt.Errorf("cannot set %q via tool — use xnc config instead", key)
 			}
 			value, err := stringArg(args, "value")
@@ -746,16 +768,16 @@ func registerAgentTools(r *Registry, d Deps) {
 				"properties": map[string]any{
 					"agent":          map[string]any{"type": "string", "description": "Agent name"},
 					"trait":          map[string]any{"type": "string", "description": "Short personality descriptor"},
-					"warmth":         map[string]any{"type": "number", "description": "0.0-1.0"},
-					"humor":          map[string]any{"type": "number", "description": "0.0-1.0"},
-					"verbosity":      map[string]any{"type": "number", "description": "0.0-1.0"},
-					"proactiveness":  map[string]any{"type": "number", "description": "0.0-1.0"},
-					"formality":      map[string]any{"type": "number", "description": "0.0-1.0"},
-					"empathy":        map[string]any{"type": "number", "description": "0.0-1.0"},
-					"sarcasm":        map[string]any{"type": "number", "description": "0.0-1.0"},
-					"autonomy":       map[string]any{"type": "number", "description": "0.0-1.0"},
-					"interpretation": map[string]any{"type": "number", "description": "0.0-1.0"},
-					"creativity":     map[string]any{"type": "number", "description": "0.0-1.0"},
+					"warmth":         map[string]any{"type": "number", "description": dimensionDescriptions["warmth"]},
+					"humor":          map[string]any{"type": "number", "description": dimensionDescriptions["humor"]},
+					"verbosity":      map[string]any{"type": "number", "description": dimensionDescriptions["verbosity"]},
+					"proactiveness":  map[string]any{"type": "number", "description": dimensionDescriptions["proactiveness"]},
+					"formality":      map[string]any{"type": "number", "description": dimensionDescriptions["formality"]},
+					"empathy":        map[string]any{"type": "number", "description": dimensionDescriptions["empathy"]},
+					"sarcasm":        map[string]any{"type": "number", "description": dimensionDescriptions["sarcasm"]},
+					"autonomy":       map[string]any{"type": "number", "description": dimensionDescriptions["autonomy"]},
+					"interpretation": map[string]any{"type": "number", "description": dimensionDescriptions["interpretation"]},
+					"creativity":     map[string]any{"type": "number", "description": dimensionDescriptions["creativity"]},
 				},
 				"required": []string{"agent"},
 			},

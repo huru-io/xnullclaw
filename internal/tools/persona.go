@@ -62,6 +62,8 @@ func registerPersonaTools(r *Registry, d Deps) {
 				value = config.SanitizeName(value, 64)
 			case "bio":
 				value = config.SanitizeText(value, 500)
+			case "language":
+				value = config.SanitizeText(value, 30)
 			case "extra_instructions":
 				value = config.SanitizeText(value, 1000)
 			}

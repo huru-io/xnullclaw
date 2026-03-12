@@ -216,7 +216,7 @@ func extractFileFromContainer(ctx context.Context, d Deps, containerName, srcPat
 		return fmt.Errorf("tar read: %w", err)
 	}
 
-	data, err := io.ReadAll(tr)
+	data, err := io.ReadAll(io.LimitReader(tr, maxHostFileSize))
 	if err != nil {
 		return fmt.Errorf("read file: %w", err)
 	}

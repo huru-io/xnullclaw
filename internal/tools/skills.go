@@ -71,8 +71,8 @@ func registerSkillTools(r *Registry, d Deps) {
 	r.Register(
 		Definition{
 			Name: "install_skill",
-			Description: "Install a skill from a local file path (directory, .zip, or .md file). " +
-				"Use scope 'shared' to install for all agents, or specify an agent name.",
+			Description: "Install a skill from a local file path (directory, .zip, or .md file) within the xnc home directory. " +
+				"Use scope 'shared' to install for all agents, or specify an agent name. Source path must be under XNC_HOME.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -99,11 +99,15 @@ func registerSkillTools(r *Registry, d Deps) {
 			}
 
 			// Security: restrict source to paths under xnc home.
-			absSource, err := filepath.Abs(source)
+			// Use EvalSymlinks to resolve symlinks and prevent symlink-based escapes.
+			absSource, err := filepath.EvalSymlinks(source)
 			if err != nil {
 				return "", fmt.Errorf("invalid source path: %w", err)
 			}
-			absHome, _ := filepath.Abs(d.Home)
+			absHome, err := filepath.EvalSymlinks(d.Home)
+			if err != nil {
+				return "", fmt.Errorf("invalid home path: %w", err)
+			}
 			if !strings.HasPrefix(absSource, absHome+"/") {
 				return "", fmt.Errorf("install_skill: source path must be within xnc home (%s)", d.Home)
 			}

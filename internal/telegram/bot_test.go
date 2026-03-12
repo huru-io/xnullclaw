@@ -132,32 +132,24 @@ func TestSplitMessage_ExactLimit(t *testing.T) {
 
 // --- Command Parsing Tests ---
 
-func TestParseCommand_DM(t *testing.T) {
-	cmd := ParseCommand("/dm alice Hello, how are you?")
-	if cmd == nil {
-		t.Fatal("expected command, got nil")
-	}
-	if cmd.Name != "dm" {
-		t.Errorf("expected name 'dm', got %q", cmd.Name)
-	}
-	if cmd.Agent != "alice" {
-		t.Errorf("expected agent 'alice', got %q", cmd.Agent)
-	}
-	if cmd.Args != "Hello, how are you?" {
-		t.Errorf("expected args 'Hello, how are you?', got %q", cmd.Args)
-	}
-}
-
-func TestParseCommand_DMNoMessage(t *testing.T) {
-	cmd := ParseCommand("/dm alice")
-	if cmd == nil {
-		t.Fatal("expected command, got nil")
-	}
-	if cmd.Agent != "alice" {
-		t.Errorf("expected agent 'alice', got %q", cmd.Agent)
-	}
-	if cmd.Args != "" {
-		t.Errorf("expected empty args, got %q", cmd.Args)
+func TestParseCommand_RemovedCommands(t *testing.T) {
+	// These commands were removed (no handler in mux): dm, switch, start, stop, restart, status, history, broadcast, config, budget.
+	for _, input := range []string{
+		"/dm alice hello",
+		"/switch alice",
+		"/start bob",
+		"/stop carol",
+		"/restart bob",
+		"/status alice",
+		"/history bob",
+		"/broadcast Everyone check in",
+		"/config alice model gpt-4o",
+		"/budget 100",
+	} {
+		cmd := ParseCommand(input)
+		if cmd != nil {
+			t.Errorf("ParseCommand(%q) = %+v, want nil (removed command)", input, cmd)
+		}
 	}
 }
 
@@ -171,32 +163,6 @@ func TestParseCommand_List(t *testing.T) {
 	}
 }
 
-func TestParseCommand_Status(t *testing.T) {
-	cmd := ParseCommand("/status alice")
-	if cmd == nil {
-		t.Fatal("expected command, got nil")
-	}
-	if cmd.Name != "status" {
-		t.Errorf("expected name 'status', got %q", cmd.Name)
-	}
-	if cmd.Agent != "alice" {
-		t.Errorf("expected agent 'alice', got %q", cmd.Agent)
-	}
-}
-
-func TestParseCommand_StatusNoAgent(t *testing.T) {
-	cmd := ParseCommand("/status")
-	if cmd == nil {
-		t.Fatal("expected command, got nil")
-	}
-	if cmd.Name != "status" {
-		t.Errorf("expected name 'status', got %q", cmd.Name)
-	}
-	if cmd.Agent != "" {
-		t.Errorf("expected empty agent, got %q", cmd.Agent)
-	}
-}
-
 func TestParseCommand_Mux(t *testing.T) {
 	cmd := ParseCommand("/mux")
 	if cmd == nil {
@@ -204,32 +170,6 @@ func TestParseCommand_Mux(t *testing.T) {
 	}
 	if cmd.Name != "mux" {
 		t.Errorf("expected name 'mux', got %q", cmd.Name)
-	}
-}
-
-func TestParseCommand_Start(t *testing.T) {
-	cmd := ParseCommand("/start bob")
-	if cmd == nil {
-		t.Fatal("expected command, got nil")
-	}
-	if cmd.Name != "start" {
-		t.Errorf("expected name 'start', got %q", cmd.Name)
-	}
-	if cmd.Agent != "bob" {
-		t.Errorf("expected agent 'bob', got %q", cmd.Agent)
-	}
-}
-
-func TestParseCommand_Stop(t *testing.T) {
-	cmd := ParseCommand("/stop carol")
-	if cmd == nil {
-		t.Fatal("expected command, got nil")
-	}
-	if cmd.Name != "stop" {
-		t.Errorf("expected name 'stop', got %q", cmd.Name)
-	}
-	if cmd.Agent != "carol" {
-		t.Errorf("expected agent 'carol', got %q", cmd.Agent)
 	}
 }
 
@@ -243,61 +183,6 @@ func TestParseCommand_Costs(t *testing.T) {
 	}
 	if cmd.Agent != "alice" {
 		t.Errorf("expected agent 'alice', got %q", cmd.Agent)
-	}
-}
-
-func TestParseCommand_History(t *testing.T) {
-	cmd := ParseCommand("/history bob")
-	if cmd == nil {
-		t.Fatal("expected command, got nil")
-	}
-	if cmd.Name != "history" {
-		t.Errorf("expected name 'history', got %q", cmd.Name)
-	}
-	if cmd.Agent != "bob" {
-		t.Errorf("expected agent 'bob', got %q", cmd.Agent)
-	}
-}
-
-func TestParseCommand_Broadcast(t *testing.T) {
-	cmd := ParseCommand("/broadcast Everyone check in")
-	if cmd == nil {
-		t.Fatal("expected command, got nil")
-	}
-	if cmd.Name != "broadcast" {
-		t.Errorf("expected name 'broadcast', got %q", cmd.Name)
-	}
-	if cmd.Args != "Everyone check in" {
-		t.Errorf("expected args 'Everyone check in', got %q", cmd.Args)
-	}
-}
-
-func TestParseCommand_Config(t *testing.T) {
-	cmd := ParseCommand("/config alice model gpt-4o")
-	if cmd == nil {
-		t.Fatal("expected command, got nil")
-	}
-	if cmd.Name != "config" {
-		t.Errorf("expected name 'config', got %q", cmd.Name)
-	}
-	if cmd.Agent != "alice" {
-		t.Errorf("expected agent 'alice', got %q", cmd.Agent)
-	}
-	if cmd.Args != "model gpt-4o" {
-		t.Errorf("expected args 'model gpt-4o', got %q", cmd.Args)
-	}
-}
-
-func TestParseCommand_Budget(t *testing.T) {
-	cmd := ParseCommand("/budget 100")
-	if cmd == nil {
-		t.Fatal("expected command, got nil")
-	}
-	if cmd.Name != "budget" {
-		t.Errorf("expected name 'budget', got %q", cmd.Name)
-	}
-	if cmd.Args != "100" {
-		t.Errorf("expected args '100', got %q", cmd.Args)
 	}
 }
 
@@ -336,32 +221,6 @@ func TestParseCommand_SlashOnly(t *testing.T) {
 	cmd := ParseCommand("/")
 	if cmd != nil {
 		t.Errorf("expected nil for bare slash, got %+v", cmd)
-	}
-}
-
-func TestParseCommand_Switch(t *testing.T) {
-	cmd := ParseCommand("/switch alice")
-	if cmd == nil {
-		t.Fatal("expected command, got nil")
-	}
-	if cmd.Name != "switch" {
-		t.Errorf("expected name 'switch', got %q", cmd.Name)
-	}
-	if cmd.Agent != "alice" {
-		t.Errorf("expected agent 'alice', got %q", cmd.Agent)
-	}
-}
-
-func TestParseCommand_Restart(t *testing.T) {
-	cmd := ParseCommand("/restart bob")
-	if cmd == nil {
-		t.Fatal("expected command, got nil")
-	}
-	if cmd.Name != "restart" {
-		t.Errorf("expected name 'restart', got %q", cmd.Name)
-	}
-	if cmd.Agent != "bob" {
-		t.Errorf("expected agent 'bob', got %q", cmd.Agent)
 	}
 }
 

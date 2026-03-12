@@ -40,6 +40,13 @@ func DefaultImage() string {
 // at most one hyphen or one underscore in the middle.
 var nameRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9]*([_-][a-zA-Z0-9]+)?$`)
 
+// reservedNames are CLI commands that conflict with agent names.
+var reservedNames = map[string]bool{
+	"mux": true, "help": true, "version": true, "list": true,
+	"running": true, "image": true, "config": true, "send": true,
+	"init": true, "skill": true,
+}
+
 // ValidateName checks that name is a valid, pronounceable agent name.
 func ValidateName(name string) error {
 	if name == "" {
@@ -55,13 +62,7 @@ func ValidateName(name string) error {
 	if len(CanonicalName(name)) < 3 {
 		return fmt.Errorf("agent name %q is too short (need at least 3 letters/digits)", name)
 	}
-	// Reserved names that conflict with CLI commands.
-	reserved := map[string]bool{
-		"mux": true, "help": true, "version": true, "list": true,
-		"running": true, "image": true, "config": true, "send": true,
-		"init": true, "skill": true,
-	}
-	if reserved[strings.ToLower(name)] {
+	if reservedNames[strings.ToLower(name)] {
 		return fmt.Errorf("agent name %q is reserved", name)
 	}
 	return nil
@@ -212,11 +213,14 @@ func InstanceID(home string) string {
 
 	// Generate new ID.
 	b := make([]byte, 3) // 3 bytes = 6 hex chars
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand failure indicates a broken system.
+		panic("agent: crypto/rand failed: " + err.Error())
+	}
 	id := hex.EncodeToString(b)
 
-	os.MkdirAll(home, 0755)
-	os.WriteFile(path, []byte(id+"\n"), 0644)
+	os.MkdirAll(home, 0700)
+	os.WriteFile(path, []byte(id+"\n"), 0600)
 	return id
 }
 

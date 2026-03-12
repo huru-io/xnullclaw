@@ -4,9 +4,31 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strings"
 	"time"
 )
+
+// snapNameRe validates snapshot names: lowercase alphanumeric with hyphens.
+var snapNameRe = regexp.MustCompile(`^[a-z0-9][-a-z0-9]*$`)
+
+// validateSnapshotName checks that a snapshot name is safe and resolves
+// within the snapshots directory (prevents path traversal).
+func validateSnapshotName(home, snapName string) error {
+	if snapName == "" {
+		return fmt.Errorf("snapshot name cannot be empty")
+	}
+	if !snapNameRe.MatchString(snapName) {
+		return fmt.Errorf("invalid snapshot name %q: must be lowercase alphanumeric with hyphens", snapName)
+	}
+	resolved := filepath.Clean(filepath.Join(SnapshotDir(home), snapName))
+	base := filepath.Clean(SnapshotDir(home))
+	if !strings.HasPrefix(resolved, base+string(filepath.Separator)) {
+		return fmt.Errorf("invalid snapshot name %q", snapName)
+	}
+	return nil
+}
 
 // SnapshotDir returns the base directory for snapshots under home.
 func SnapshotDir(home string) string {
@@ -72,6 +94,9 @@ func Snapshot(home, name string) (SnapshotInfo, error) {
 // Restore creates a new agent from a snapshot.
 // The target agent must NOT exist — destroy it first.
 func Restore(home, snapName, targetName string) error {
+	if err := validateSnapshotName(home, snapName); err != nil {
+		return err
+	}
 	if targetName == "" {
 		// Default: use the original agent name from the snapshot.
 		snapDir := filepath.Join(SnapshotDir(home), snapName)
@@ -152,6 +177,9 @@ func ListSnapshots(home string) ([]SnapshotInfo, error) {
 
 // DeleteSnapshot removes a snapshot from disk.
 func DeleteSnapshot(home, snapName string) error {
+	if err := validateSnapshotName(home, snapName); err != nil {
+		return err
+	}
 	dir := filepath.Join(SnapshotDir(home), snapName)
 	if _, err := os.Stat(dir); err != nil {
 		return fmt.Errorf("snapshot %q not found", snapName)

@@ -52,6 +52,9 @@ func HardenedConfig(agentDir, image string, cmd []string) (*container.Config, *c
 				Type:   mount.TypeBind,
 				Source: filepath.Join(agentDir, "data"),
 				Target: "/nullclaw-data",
+				BindOptions: &mount.BindOptions{
+					Propagation: mount.PropagationRPrivate,
+				},
 			},
 			{
 				Type:     mount.TypeBind,
@@ -130,5 +133,3 @@ func SecurityFlags() []string {
 	}
 }
 
-// Ensure nat import is used.
-var _ nat.Port

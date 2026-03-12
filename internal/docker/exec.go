@@ -82,8 +82,11 @@ func (c *Client) ExecSync(ctx context.Context, name string, cmd []string, stdin 
 	}
 
 	// Demultiplex stdout/stderr (Docker multiplexes when TTY=false).
+	// Cap at 2MB to prevent a runaway command from exhausting host memory.
+	const maxExecOutput = 2 << 20 // 2 MB
 	var stdout, stderr bytes.Buffer
-	if _, err := stdcopy.StdCopy(&stdout, &stderr, attachResp.Reader); err != nil {
+	limited := io.LimitReader(attachResp.Reader, maxExecOutput)
+	if _, err := stdcopy.StdCopy(&stdout, &stderr, limited); err != nil {
 		return "", fmt.Errorf("docker: exec read in %s: %w", name, err)
 	}
 

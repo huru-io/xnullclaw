@@ -103,24 +103,30 @@ func compoundEmoji(name string, used map[string]bool) string {
 	return candidate
 }
 
-// usedEmojis scans all agent .meta files and collects assigned emojis.
-func usedEmojis(home string) map[string]bool {
-	used := make(map[string]bool)
+// forEachAgentDir iterates over all agent directories under home,
+// calling fn with each agent's directory path. Shared by usedEmojis/usedPorts.
+func forEachAgentDir(home string, fn func(dir string)) {
 	agentsDir := AgentsDir(home)
 	entries, err := os.ReadDir(agentsDir)
 	if err != nil {
-		return used
+		return
 	}
 	for _, e := range entries {
 		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
-		dir := filepath.Join(agentsDir, e.Name())
-		emoji := ReadMetaKey(dir, "EMOJI", "")
-		if emoji != "" {
+		fn(filepath.Join(agentsDir, e.Name()))
+	}
+}
+
+// usedEmojis scans all agent .meta files and collects assigned emojis.
+func usedEmojis(home string) map[string]bool {
+	used := make(map[string]bool)
+	forEachAgentDir(home, func(dir string) {
+		if emoji := ReadMetaKey(dir, "EMOJI", ""); emoji != "" {
 			used[emoji] = true
 		}
-	}
+	})
 	return used
 }
 
@@ -140,23 +146,13 @@ func NextPort(home string) int {
 // usedPorts scans all agent .meta files and collects assigned ports.
 func usedPorts(home string) map[int]bool {
 	used := make(map[int]bool)
-	agentsDir := AgentsDir(home)
-	entries, err := os.ReadDir(agentsDir)
-	if err != nil {
-		return used
-	}
-	for _, e := range entries {
-		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
-			continue
-		}
-		dir := filepath.Join(agentsDir, e.Name())
-		portStr := ReadMetaKey(dir, "HOST_PORT", "")
-		if portStr != "" {
+	forEachAgentDir(home, func(dir string) {
+		if portStr := ReadMetaKey(dir, "HOST_PORT", ""); portStr != "" {
 			if p, err := strconv.Atoi(portStr); err == nil {
 				used[p] = true
 			}
 		}
-	}
+	})
 	return used
 }
 

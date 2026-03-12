@@ -40,7 +40,7 @@ type Config struct {
 // Run starts the mux and blocks until shutdown.
 func Run(mc Config) error {
 	muxHome := filepath.Join(mc.Home, "mux")
-	if err := os.MkdirAll(muxHome, 0755); err != nil {
+	if err := os.MkdirAll(muxHome, 0700); err != nil {
 		return fmt.Errorf("create mux home: %w", err)
 	}
 
@@ -126,7 +126,7 @@ func Run(mc Config) error {
 
 	// Observability hooks.
 	muxLoop.OnToolCall = func(name string, args map[string]any, result string, duration time.Duration, err error) {
-		logger.LogToolCall(name, args, result, duration, err)
+		logger.LogToolCall(name, redactToolArgs(name, args), result, duration, err)
 	}
 	muxLoop.OnModelCall = func(inputTokens, outputTokens int, costUSD float64) {
 		logger.LogModelCall(cfg.OpenAI.Model, inputTokens, outputTokens, costUSD, 0)
@@ -158,7 +158,7 @@ func Run(mc Config) error {
 
 	// Media temp directory.
 	mediaTmpDir := filepath.Join(muxHome, "media_tmp")
-	if err := os.MkdirAll(mediaTmpDir, 0755); err != nil {
+	if err := os.MkdirAll(mediaTmpDir, 0700); err != nil {
 		return fmt.Errorf("create media tmp: %w", err)
 	}
 
@@ -200,7 +200,7 @@ func Run(mc Config) error {
 		response, err := muxLoop.Run(ctx, userText)
 		if err != nil {
 			logger.Error("loop error", "error", err)
-			tgBot.Send(chatID, fmt.Sprintf("Error: %v", err))
+			tgBot.Send(chatID, "Something went wrong processing your message. Please try again.")
 			return ""
 		}
 
@@ -258,7 +258,7 @@ func Run(mc Config) error {
 		voicePath := filepath.Join(mediaTmpDir, fmt.Sprintf("voice_%s_%d.ogg", userID, time.Now().UnixNano()))
 		if err := tgBot.DownloadFile(fileID, voicePath); err != nil {
 			logger.Error("voice download failed", "error", err)
-			tgBot.Send(chatID, fmt.Sprintf("Failed to download voice: %v", err))
+			tgBot.Send(chatID, "Failed to download voice message. Please try again.")
 			return
 		}
 		defer os.Remove(voicePath)
@@ -267,7 +267,7 @@ func Run(mc Config) error {
 		transcript, err := voice.Transcribe(ctx, voicePath, cfg.OpenAI.APIKey, cfg.OpenAI.WhisperModel)
 		if err != nil {
 			logger.Error("transcription failed", "error", err)
-			tgBot.Send(chatID, fmt.Sprintf("Transcription failed: %v", err))
+			tgBot.Send(chatID, "Voice transcription failed. Please try again or send text instead.")
 			return
 		}
 		if strings.TrimSpace(transcript) == "" {
@@ -287,6 +287,10 @@ func Run(mc Config) error {
 		defer turnMu.Unlock()
 		atomic.StoreInt64(&lastChatID, chatID)
 		logger.LogIncoming(userID, fileID, mediaType)
+
+		// Sanitize user-supplied text to prevent prompt injection.
+		caption = config.SanitizeText(caption, 500)
+		fileName = config.SanitizeText(fileName, 100)
 
 		// Determine filename and extension.
 		var destPath string
@@ -309,7 +313,7 @@ func Run(mc Config) error {
 		}
 		if err := tgBot.DownloadFile(fileID, destPath); err != nil {
 			logger.Error("media download failed", "error", err, "type", mediaType)
-			tgBot.Send(chatID, fmt.Sprintf("Failed to download %s: %v", mediaType, err))
+			tgBot.Send(chatID, fmt.Sprintf("Failed to download %s. Please try again.", mediaType))
 			return
 		}
 
@@ -333,15 +337,19 @@ func Run(mc Config) error {
 
 		switch cmd.Name {
 		case "help":
-			tgBot.Send(chatID, `*Available commands:*
-/help — Show this help message
-/agents — List all agents with emoji + name + status
-/stats — Show memory database statistics
-/costs — Show today's cost summary
-/clear — Clear all mux memory (requires confirmation)
-/clear confirm — Confirm memory clear
+			tgBot.Send(chatID, `*Commands:*
+/help — Show this help
+/agents — List agents with status
+/stats — Memory database stats
+/costs — Today's cost summary
+/clear confirm — Clear all mux memory
 
-All other messages are handled by the mux AI.`)
+*You can also just talk to me:*
+• Ask questions — I'll answer or route to the right agent
+• "ask alice to research X" — delegate tasks to agents
+• "start/stop bob" — manage agent lifecycles
+• "what are the agents working on?" — get status updates
+• Send files, photos, or voice messages — I handle all media types`)
 
 		case "agents", "list":
 			states, _ := store.AllAgentStates()
@@ -371,7 +379,8 @@ All other messages are handled by the mux AI.`)
 		case "stats":
 			stats, err := store.Stats()
 			if err != nil {
-				tgBot.Send(chatID, fmt.Sprintf("Error: %v", err))
+				logger.Error("stats command failed", "error", err)
+				tgBot.Send(chatID, "Failed to retrieve stats.")
 				return
 			}
 			text := fmt.Sprintf("*Memory stats:*\nMessages: %d\nFacts: %d\nCompactions: %d\nCosts: %d\nAgent states: %d",
@@ -384,7 +393,8 @@ All other messages are handled by the mux AI.`)
 			startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 			summary, err := store.CostSummary(startOfDay, now)
 			if err != nil {
-				tgBot.Send(chatID, fmt.Sprintf("Error: %v", err))
+				logger.Error("costs command failed", "error", err)
+				tgBot.Send(chatID, "Failed to retrieve cost data.")
 				return
 			}
 			if len(summary) == 0 {
@@ -408,7 +418,8 @@ All other messages are handled by the mux AI.`)
 		case "clear":
 			if cmd.Args == "confirm" {
 				if err := store.ClearAll(); err != nil {
-					tgBot.Send(chatID, fmt.Sprintf("Error clearing memory: %v", err))
+					logger.Error("memory clear failed", "error", err)
+					tgBot.Send(chatID, "Failed to clear memory. Check logs for details.")
 					return
 				}
 				muxLoop.ClearHistory()
@@ -478,6 +489,7 @@ All other messages are handled by the mux AI.`)
 	// Start drain goroutine — polls agent .outbox/ directories and sends
 	// responses directly to Telegram, bypassing the LLM.
 	drainDone := make(chan struct{})
+	var drainWg sync.WaitGroup
 	drainer := &Drainer{
 		home:   mc.Home,
 		store:  store,
@@ -487,7 +499,11 @@ All other messages are handled by the mux AI.`)
 		chatID: &lastChatID,
 		turnMu: &turnMu,
 	}
-	go drainer.Run(drainInterval, drainDone)
+	drainWg.Add(1)
+	go func() {
+		defer drainWg.Done()
+		drainer.Run(drainInterval, drainDone)
+	}()
 	logger.Info("drain goroutine started", "interval", drainInterval)
 
 	// Start scheduler goroutine — checks for due tasks and fires synthetic turns.
@@ -513,22 +529,33 @@ All other messages are handled by the mux AI.`)
 	logger.Info("shutdown signal received", "signal", sig.String())
 
 	// Graceful shutdown.
-	// 1. Stop agents first — let them flush final output.
+	// 1. Stop agents in parallel (bounded concurrency) — let them flush final output.
+	const maxParallelStops = 5
+	stopSem := make(chan struct{}, maxParallelStops)
+	var stopWg sync.WaitGroup
 	for _, agentName := range cfg.Agents.MuxManaged {
-		logger.LogLifecycle("stopping", agentName, "shutdown")
-		cn := agent.ContainerName(mc.Home, agentName)
-		if err := dk.StopContainer(context.Background(), cn); err != nil {
-			logger.Error("agent stop failed", "agent", agentName, "error", err)
-		}
+		stopWg.Add(1)
+		go func(name string) {
+			defer stopWg.Done()
+			stopSem <- struct{}{}
+			defer func() { <-stopSem }()
+			logger.LogLifecycle("stopping", name, "shutdown")
+			cn := agent.ContainerName(mc.Home, name)
+			if err := dk.StopContainer(context.Background(), cn); err != nil {
+				logger.Error("agent stop failed", "agent", name, "error", err)
+			}
+		}(agentName)
 	}
+	stopWg.Wait()
 
 	// 2. Stop scheduler — no more synthetic turns after this.
 	close(schedulerDone)
 
 	// 3. Final drain pass — pick up messages written before/during agent shutdown.
 	drainer.drainAll()
-	// 4. Stop drain goroutine.
+	// 4. Stop drain goroutine and wait for it to exit.
 	close(drainDone)
+	drainWg.Wait()
 
 	// Send goodbye before stopping the bot (Stop closes the send queue).
 	if cid := atomic.LoadInt64(&lastChatID); cid != 0 {
@@ -550,6 +577,14 @@ func sendAttachment(tgBot telegram.Sender, logger *logging.Logger, chatID int64,
 	if strings.HasPrefix(att.Path, "/nullclaw-data/") {
 		logger.Error("attachment path appears to be a container path", "path", att.Path)
 		tgBot.Send(chatID, fmt.Sprintf("Could not send attachment: %s (container path — use get_agent_file first)", att.Path))
+		return
+	}
+
+	// Ensure path is absolute and clean to prevent path traversal.
+	hostPath = filepath.Clean(hostPath)
+	if !filepath.IsAbs(hostPath) {
+		logger.Error("attachment path not absolute", "path", hostPath)
+		tgBot.Send(chatID, "Could not send attachment: invalid path.")
 		return
 	}
 
@@ -595,6 +630,41 @@ func agentIdentityHeader(cfg *config.Config, name string) string {
 		}
 	}
 	return fmt.Sprintf("%s\n\n", name)
+}
+
+// redactToolArgs returns a copy of args with sensitive values masked.
+// For tools that write config values, the "value" arg is redacted if
+// the "key" arg corresponds to a secret config key.
+func redactToolArgs(toolName string, args map[string]any) map[string]any {
+	if args == nil {
+		return nil
+	}
+	switch toolName {
+	case "update_agent_config":
+	default:
+		return args
+	}
+	key, _ := args["key"].(string)
+	if key == "" {
+		return args
+	}
+	ck, ok := agent.LookupConfigKey(key)
+	if !ok || !ck.Redacted {
+		return args
+	}
+	out := make(map[string]any, len(args))
+	for k, v := range args {
+		if k == "value" {
+			if s, ok := v.(string); ok {
+				out[k] = agent.RedactKey(s)
+			} else {
+				out[k] = v
+			}
+		} else {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // truncateLog truncates a string for log output at rune boundaries.

@@ -17,10 +17,10 @@ func registerMemoryTools(r *Registry, store *memory.Store) {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"fact":       map[string]any{"type": "string", "description": "The fact to remember"},
-					"importance": map[string]any{"type": "string", "description": "Importance level", "enum": []string{"preference", "decision", "rule", "knowledge", "pattern"}},
+					"fact":     map[string]any{"type": "string", "description": "The fact to remember"},
+					"category": map[string]any{"type": "string", "description": "Fact category", "enum": []string{"preference", "decision", "rule", "knowledge", "pattern"}},
 				},
-				"required": []string{"fact", "importance"},
+				"required": []string{"fact", "category"},
 			},
 		},
 		func(ctx context.Context, args map[string]any) (string, error) {
@@ -28,7 +28,7 @@ func registerMemoryTools(r *Registry, store *memory.Store) {
 			if err != nil {
 				return "", err
 			}
-			importance, err := stringArg(args, "importance")
+			category, err := stringArg(args, "category")
 			if err != nil {
 				return "", err
 			}
@@ -36,12 +36,12 @@ func registerMemoryTools(r *Registry, store *memory.Store) {
 				"preference": true, "decision": true, "rule": true,
 				"knowledge": true, "pattern": true,
 			}
-			if !validTypes[importance] {
-				return "", fmt.Errorf("invalid importance type: %s", importance)
+			if !validTypes[category] {
+				return "", fmt.Errorf("invalid category: %s", category)
 			}
 			src := "mux-tool"
 			err = store.AddFact(memory.Fact{
-				Type:    importance,
+				Type:    category,
 				Content: fact,
 				Source:  &src,
 			})

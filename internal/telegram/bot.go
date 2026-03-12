@@ -38,8 +38,8 @@ type sendRequest struct {
 
 // Command represents a parsed Telegram /command.
 type Command struct {
-	Name    string // e.g. "dm", "list", "status"
-	Agent   string // target agent for dm/status/start/stop etc.
+	Name    string // e.g. "help", "list", "costs"
+	Agent   string // target agent (e.g. for /costs <agent>)
 	Args    string // remaining text after command + agent
 	RawText string // full original message text
 }
@@ -352,42 +352,16 @@ func ParseCommand(text string) *Command {
 	}
 
 	switch cmdName {
-	case "dm":
-		// /dm <agent> <message>
-		if len(parts) >= 3 {
-			cmd.Agent = parts[1]
-			cmd.Args = strings.Join(parts[2:], " ")
-		} else if len(parts) == 2 {
-			cmd.Agent = parts[1]
-		}
-	case "switch", "start", "stop", "restart", "status", "history", "costs":
-		// /cmd [agent]
-		if len(parts) >= 2 {
-			cmd.Agent = parts[1]
-			if len(parts) > 2 {
-				cmd.Args = strings.Join(parts[2:], " ")
-			}
-		}
-	case "broadcast":
-		// /broadcast <message>
-		if len(parts) >= 2 {
-			cmd.Args = strings.Join(parts[1:], " ")
-		}
-	case "config":
-		// /config <agent> <key> <value>
-		if len(parts) >= 2 {
-			cmd.Agent = parts[1]
-			if len(parts) > 2 {
-				cmd.Args = strings.Join(parts[2:], " ")
-			}
-		}
-	case "budget":
-		// /budget [limit]
-		if len(parts) >= 2 {
-			cmd.Args = strings.Join(parts[1:], " ")
-		}
-	case "list", "agents", "mux", "help", "stats":
+	case "help", "agents", "list", "stats", "mux":
 		// no arguments needed
+	case "costs":
+		// /costs [agent]
+		if len(parts) >= 2 {
+			cmd.Agent = parts[1]
+			if len(parts) > 2 {
+				cmd.Args = strings.Join(parts[2:], " ")
+			}
+		}
 	case "clear":
 		// /clear or /clear confirm
 		if len(parts) >= 2 {

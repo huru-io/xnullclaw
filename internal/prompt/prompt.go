@@ -223,7 +223,12 @@ func (b *Builder) buildRosterBlock(agents []memory.AgentState) string {
 	if len(b.cfg.Voice.CorrectionDict) > 0 {
 		var pairs []string
 		for word, corrections := range b.cfg.Voice.CorrectionDict {
-			pairs = append(pairs, fmt.Sprintf("%s -> %s", word, strings.Join(corrections, ", ")))
+			sanitizedWord := sanitizeEntry(word, 50)
+			var sanitizedCorrections []string
+			for _, c := range corrections {
+				sanitizedCorrections = append(sanitizedCorrections, sanitizeEntry(c, 50))
+			}
+			pairs = append(pairs, fmt.Sprintf("%s -> %s", sanitizedWord, strings.Join(sanitizedCorrections, ", ")))
 		}
 		lines = append(lines, fmt.Sprintf("Correction dictionary: %s", strings.Join(pairs, "; ")))
 	}
