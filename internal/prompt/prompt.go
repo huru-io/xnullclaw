@@ -43,27 +43,7 @@ When the user talks to YOU, respond directly. You handle:
 - Agent management, system status, multi-agent coordination
 - Memory/preferences, voice/TTS settings, cost reporting`
 
-// dimensionDesc holds the low / mid / high text descriptions for a single dimension.
-type dimensionDesc struct {
-	name string
-	low  string
-	mid  string
-	high string
-}
-
-// dimensionDescriptors defines the 3-tier description for each persona dimension.
-var dimensionDescriptors = []dimensionDesc{
-	{"warmth", "Be clinical and matter-of-fact", "Be friendly but professional", "Be warm, caring, and personal"},
-	{"humor", "Never joke or use humor", "Use occasional humor when appropriate", "Be playful, use jokes and wit freely"},
-	{"verbosity", "Be extremely terse — minimum words", "Balance brevity and detail", "Be thorough and detailed in explanations"},
-	{"proactiveness", "Only respond when explicitly asked", "Suggest actions when clearly relevant", "Actively anticipate needs and volunteer information"},
-	{"formality", "Be casual, slang is fine", "Professional but relaxed", "Be formal and proper at all times"},
-	{"empathy", "Be matter-of-fact, skip emotional acknowledgment", "Acknowledge feelings when relevant", "Be emotionally attuned and supportive"},
-	{"sarcasm", "Never be sarcastic", "Light irony occasionally", "Use sharp wit and sarcasm freely"},
-	{"autonomy", "Always ask before taking action", "Act on clear intent, ask when ambiguous", "Take initiative freely, act first"},
-	{"interpretation", "Pass user messages through completely raw", "Fix obvious typos silently", "Actively refine and clarify messages before forwarding"},
-	{"creativity", "Be straightforward and predictable", "Balance conventional and novel approaches", "Prefer creative and surprising solutions"},
-}
+// Dimension descriptors and picker are in config/dimensions.go (single source of truth).
 
 // nowFunc is the function used to get the current time. Tests can override it.
 var nowFunc = time.Now
@@ -132,13 +112,12 @@ func buildDrainBlock(msgs []memory.Message) string {
 
 // buildPersonaBlock generates natural language behavioral instructions from persona config.
 func (b *Builder) buildPersonaBlock() string {
-	dims := b.cfg.Persona.Dimensions
-	values := dimensionValues(dims)
+	values := config.DimensionValues(b.cfg.Persona.Dimensions)
 
 	var lines []string
 	lines = append(lines, "Your communication style:")
-	for i, desc := range dimensionDescriptors {
-		lines = append(lines, "- "+pickDescription(values[i], desc))
+	for i, desc := range config.DimensionDescriptors {
+		lines = append(lines, "- "+config.PickDescription(values[i], desc))
 	}
 
 	var extra []string
@@ -152,35 +131,6 @@ func (b *Builder) buildPersonaBlock() string {
 	}
 
 	return strings.Join(lines, "\n") + "\n\n" + strings.Join(extra, "\n")
-}
-
-// dimensionValues returns the dimension values in the same order as dimensionDescriptors.
-func dimensionValues(d config.PersonaDimensions) []float64 {
-	return []float64{
-		d.Warmth,
-		d.Humor,
-		d.Verbosity,
-		d.Proactiveness,
-		d.Formality,
-		d.Empathy,
-		d.Sarcasm,
-		d.Autonomy,
-		d.Interpretation,
-		d.Creativity,
-	}
-}
-
-// pickDescription selects the low / mid / high description based on value thresholds.
-// low: < 0.33, mid: 0.33-0.66, high: > 0.66.
-func pickDescription(value float64, desc dimensionDesc) string {
-	switch {
-	case value < 0.33:
-		return desc.low
-	case value > 0.66:
-		return desc.high
-	default:
-		return desc.mid
-	}
 }
 
 // buildRulesBlock formats passthrough rules from facts of type "rule".

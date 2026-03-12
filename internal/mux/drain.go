@@ -198,23 +198,26 @@ func (d *Drainer) drainAgent(name string) {
 		}
 
 		// Send text with identity header.
-		sendOK := true
+		allOK := true
 		if cleanText != "" {
 			if err := d.bot.Send(chatID, header+cleanText); err != nil {
 				d.logger.Error("drain: telegram send", "agent", name, "error", err)
-				sendOK = false
+				allOK = false
 			}
 		}
 
 		// Send safe attachments with agent identity as caption.
-		caption := strings.TrimSpace(header)
-		for _, att := range safeAttachments {
-			sendAttachment(d.bot, d.logger, chatID, att, caption)
+		// Only attempt attachments if text succeeded — prevents duplicates on retry.
+		if allOK {
+			caption := strings.TrimSpace(header)
+			for _, att := range safeAttachments {
+				sendAttachment(d.bot, d.logger, chatID, att, caption)
+			}
 		}
 
 		// Only remove the file after successful send — prevents message loss.
 		// Trade-off: crash after send but before delete = duplicate on restart (at-least-once).
-		if sendOK {
+		if allOK {
 			os.Remove(fpath)
 		} else {
 			d.logger.Error("drain: keeping file for retry", "agent", name, "file", fname)
@@ -229,7 +232,7 @@ func (d *Drainer) drainAgent(name string) {
 			return r
 		}, truncateLog(raw, 300))
 		agentName := name
-		if sendOK {
+		if allOK {
 			d.store.AddMessage(memory.Message{
 				Role:    "assistant",
 				Content: fmt.Sprintf("[%s]: %s", name, sanitized),

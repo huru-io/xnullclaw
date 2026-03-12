@@ -754,6 +754,23 @@ func (s *Store) ClearMessages() error {
 	return err
 }
 
+// LastUserMessageTime returns the timestamp of the most recent user message,
+// or nil if there are no user messages.
+func (s *Store) LastUserMessageTime() (*time.Time, error) {
+	var ts time.Time
+	err := s.db.QueryRow(
+		`SELECT timestamp FROM messages WHERE role = 'user'
+		 ORDER BY id DESC LIMIT 1`,
+	).Scan(&ts)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &ts, nil
+}
+
 // PruneOldMessages deletes messages in the given stream older than maxAge.
 func (s *Store) PruneOldMessages(stream string, maxAge time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-maxAge)

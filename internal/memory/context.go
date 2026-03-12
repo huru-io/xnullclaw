@@ -115,7 +115,7 @@ func (a *Assembler) Assemble(query string) (*ContextData, error) {
 	cd.DrainMsgs = drainMsgs
 
 	// 5. Get the last user message timestamp.
-	lastMsg, err := a.lastUserMessageTime()
+	lastMsg, err := a.store.LastUserMessageTime()
 	if err != nil {
 		return nil, fmt.Errorf("context: last user message: %w", err)
 	}
@@ -132,23 +132,6 @@ func (a *Assembler) Assemble(query string) (*ContextData, error) {
 	}
 
 	return cd, nil
-}
-
-// lastUserMessageTime returns the timestamp of the most recent user message,
-// or nil if there are no user messages.
-func (a *Assembler) lastUserMessageTime() (*time.Time, error) {
-	var ts time.Time
-	err := a.store.db.QueryRow(
-		`SELECT timestamp FROM messages WHERE role = 'user'
-		 ORDER BY id DESC LIMIT 1`,
-	).Scan(&ts)
-	if err != nil {
-		if err.Error() == "sql: no rows in result set" {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &ts, nil
 }
 
 // stopWords is the set of common words filtered out during keyword extraction.

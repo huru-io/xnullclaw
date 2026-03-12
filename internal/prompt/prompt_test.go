@@ -22,38 +22,38 @@ func defaultTestConfig() *config.Config {
 // ---------- Persona dimension tests ----------
 
 func TestPickDescription_Low(t *testing.T) {
-	desc := dimensionDesc{name: "warmth", low: "cold", mid: "friendly", high: "warm"}
-	if got := pickDescription(0.0, desc); got != "cold" {
-		t.Errorf("pickDescription(0.0) = %q, want %q", got, "cold")
+	desc := config.DimensionDesc{Name: "warmth", Low: "cold", Mid: "friendly", High: "warm"}
+	if got := config.PickDescription(0.0, desc); got != "cold" {
+		t.Errorf("PickDescription(0.0) = %q, want %q", got, "cold")
 	}
-	if got := pickDescription(0.1, desc); got != "cold" {
-		t.Errorf("pickDescription(0.1) = %q, want %q", got, "cold")
+	if got := config.PickDescription(0.1, desc); got != "cold" {
+		t.Errorf("PickDescription(0.1) = %q, want %q", got, "cold")
 	}
-	if got := pickDescription(0.32, desc); got != "cold" {
-		t.Errorf("pickDescription(0.32) = %q, want %q", got, "cold")
+	if got := config.PickDescription(0.32, desc); got != "cold" {
+		t.Errorf("PickDescription(0.32) = %q, want %q", got, "cold")
 	}
 }
 
 func TestPickDescription_Mid(t *testing.T) {
-	desc := dimensionDesc{name: "warmth", low: "cold", mid: "friendly", high: "warm"}
-	if got := pickDescription(0.33, desc); got != "friendly" {
-		t.Errorf("pickDescription(0.33) = %q, want %q", got, "friendly")
+	desc := config.DimensionDesc{Name: "warmth", Low: "cold", Mid: "friendly", High: "warm"}
+	if got := config.PickDescription(0.33, desc); got != "friendly" {
+		t.Errorf("PickDescription(0.33) = %q, want %q", got, "friendly")
 	}
-	if got := pickDescription(0.5, desc); got != "friendly" {
-		t.Errorf("pickDescription(0.5) = %q, want %q", got, "friendly")
+	if got := config.PickDescription(0.5, desc); got != "friendly" {
+		t.Errorf("PickDescription(0.5) = %q, want %q", got, "friendly")
 	}
-	if got := pickDescription(0.66, desc); got != "friendly" {
-		t.Errorf("pickDescription(0.66) = %q, want %q", got, "friendly")
+	if got := config.PickDescription(0.66, desc); got != "friendly" {
+		t.Errorf("PickDescription(0.66) = %q, want %q", got, "friendly")
 	}
 }
 
 func TestPickDescription_High(t *testing.T) {
-	desc := dimensionDesc{name: "warmth", low: "cold", mid: "friendly", high: "warm"}
-	if got := pickDescription(0.67, desc); got != "warm" {
-		t.Errorf("pickDescription(0.67) = %q, want %q", got, "warm")
+	desc := config.DimensionDesc{Name: "warmth", Low: "cold", Mid: "friendly", High: "warm"}
+	if got := config.PickDescription(0.67, desc); got != "warm" {
+		t.Errorf("PickDescription(0.67) = %q, want %q", got, "warm")
 	}
-	if got := pickDescription(1.0, desc); got != "warm" {
-		t.Errorf("pickDescription(1.0) = %q, want %q", got, "warm")
+	if got := config.PickDescription(1.0, desc); got != "warm" {
+		t.Errorf("PickDescription(1.0) = %q, want %q", got, "warm")
 	}
 }
 

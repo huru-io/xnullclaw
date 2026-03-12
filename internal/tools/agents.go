@@ -78,26 +78,6 @@ var personaVariants = []personaVariant{
 	{"direct and efficient", 0.3, 0.2, 0.2, 0.5, 0.5, 0.3, 0.1, 0.5, 0.1, 0.3},
 }
 
-type dimensionLabel struct {
-	name string
-	low  string
-	mid  string
-	high string
-}
-
-var agentDimensionLabels = []dimensionLabel{
-	{"warmth", "Be clinical and matter-of-fact", "Be friendly but professional", "Be warm, caring, and personal"},
-	{"humor", "Never joke or use humor", "Use occasional humor when appropriate", "Be playful, use jokes and wit freely"},
-	{"verbosity", "Be extremely terse — minimum words", "Balance brevity and detail", "Be thorough and detailed in explanations"},
-	{"proactiveness", "Only respond when explicitly asked", "Suggest actions when clearly relevant", "Actively anticipate needs and volunteer information"},
-	{"formality", "Be casual, slang is fine", "Professional but relaxed", "Be formal and proper at all times"},
-	{"empathy", "Be matter-of-fact, skip emotional acknowledgment", "Acknowledge feelings when relevant", "Be emotionally attuned and supportive"},
-	{"sarcasm", "Never be sarcastic", "Light irony occasionally", "Use sharp wit and sarcasm freely"},
-	{"autonomy", "Always ask before taking action", "Act on clear intent, ask when ambiguous", "Take initiative freely, act first"},
-	{"interpretation", "Take messages literally", "Fix obvious typos silently", "Actively refine and clarify messages"},
-	{"creativity", "Be straightforward and predictable", "Balance conventional and novel approaches", "Prefer creative and surprising solutions"},
-}
-
 func buildAgentSystemPrompt(name string, v personaVariant) string {
 	values := []float64{
 		v.Warmth, v.Humor, v.Verbosity, v.Proactiveness, v.Formality,
@@ -109,18 +89,8 @@ func buildAgentSystemPrompt(name string, v personaVariant) string {
 	lines = append(lines, fmt.Sprintf("Your personality: %s.", v.Trait))
 	lines = append(lines, "")
 	lines = append(lines, "Communication style:")
-	for i, label := range agentDimensionLabels {
-		val := values[i]
-		var desc string
-		switch {
-		case val < 0.33:
-			desc = label.low
-		case val > 0.66:
-			desc = label.high
-		default:
-			desc = label.mid
-		}
-		lines = append(lines, "- "+desc)
+	for i, desc := range config.DimensionDescriptors {
+		lines = append(lines, "- "+config.PickDescription(values[i], desc))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -388,7 +358,11 @@ func registerAgentTools(r *Registry, d Deps) {
 				return "", fmt.Errorf("agent %q has no API key configured", agentName)
 			}
 			cn := agent.ContainerName(d.Home, agentName)
-			d.Docker.StopContainer(ctx, cn)
+			// Best-effort stop — container may already be stopped or not exist.
+			if stopErr := d.Docker.StopContainer(ctx, cn); stopErr != nil {
+				// Force-remove in case stop failed but container still exists.
+				d.Docker.RemoveContainer(ctx, cn, true)
+			}
 			opts := startOpts(d, agentName, 0)
 			if err := d.Docker.StartContainer(ctx, cn, opts); err != nil {
 				return "", err

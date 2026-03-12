@@ -5,10 +5,16 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/pkg/stdcopy"
 )
+
+// execFireWriteTimeout caps how long the stdin pipe goroutine can block.
+// Messages are small, so 30s is generous — prevents leaked goroutines
+// if a container's stdin buffer is full or the connection is dead.
+const execFireWriteTimeout = 30 * time.Second
 
 // ExecFire runs a command inside a container, delivers stdin, and returns
 // immediately without waiting for the command to finish or reading its output.
@@ -33,6 +39,7 @@ func (c *Client) ExecFire(ctx context.Context, name string, cmd []string, stdin 
 
 	if stdin != nil {
 		go func() {
+			attachResp.Conn.SetWriteDeadline(time.Now().Add(execFireWriteTimeout))
 			io.Copy(attachResp.Conn, stdin)
 			attachResp.CloseWrite()
 			attachResp.Close()
