@@ -557,8 +557,8 @@ func (b *Bot) waitForToken() {
 	}
 }
 
-// doSend performs the actual Telegram API call, handling 429 retries.
-// When topicID > 0, injects message_thread_id into the request.
+// doSend performs the actual Telegram API call, handling 429 retries
+// and Markdown parse fallback. When topicID > 0, injects message_thread_id.
 func (b *Bot) doSend(c tgbotapi.Chattable) error {
 	for attempts := 0; attempts < 5; attempts++ {
 		var err error
@@ -569,6 +569,15 @@ func (b *Bot) doSend(c tgbotapi.Chattable) error {
 		}
 		if err == nil {
 			return nil
+		}
+
+		// Markdown parse error — retry as plain text.
+		if apiErr, ok := err.(*tgbotapi.Error); ok && apiErr.Code == 400 {
+			if msg, ok := c.(tgbotapi.MessageConfig); ok && msg.ParseMode != "" {
+				msg.ParseMode = ""
+				c = msg
+				continue
+			}
 		}
 
 		// Check for rate limit (429).
