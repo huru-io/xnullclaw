@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 // --- Message Splitting Tests ---
@@ -466,6 +468,320 @@ func TestTokenBucket_MaxCap(t *testing.T) {
 		t.Errorf("expected max 3 tokens, got %f", b.bucketTokens)
 	}
 	b.bucketMu.Unlock()
+}
+
+// --- handleUpdate Tests (private mode) ---
+
+func newTestBot(groupID int64, topicID int, allowFrom map[string]bool) *Bot {
+	return &Bot{
+		groupID:   groupID,
+		topicID:   topicID,
+		allowFrom: allowFrom,
+		stopCh:    make(chan struct{}),
+	}
+}
+
+func makeUpdate(chatID int64, chatType string, userID int64, text string) tgbotapi.Update {
+	return tgbotapi.Update{
+		Message: &tgbotapi.Message{
+			Chat: &tgbotapi.Chat{ID: chatID, Type: chatType},
+			From: &tgbotapi.User{ID: userID},
+			Text: text,
+		},
+	}
+}
+
+func TestHandleUpdate_PrivateMode_AcceptsPrivateChat(t *testing.T) {
+	b := newTestBot(0, 0, nil)
+	var got string
+	b.onMessage = func(chatID int64, userID string, text string) {
+		got = text
+	}
+
+	b.handleUpdate(makeUpdate(12345, "private", 99, "hello"), 0)
+
+	if got != "hello" {
+		t.Errorf("expected onMessage with 'hello', got %q", got)
+	}
+}
+
+func TestHandleUpdate_PrivateMode_RejectsGroupChat(t *testing.T) {
+	b := newTestBot(0, 0, nil)
+	called := false
+	b.onMessage = func(chatID int64, userID string, text string) {
+		called = true
+	}
+
+	b.handleUpdate(makeUpdate(-100999, "group", 99, "hello"), 0)
+
+	if called {
+		t.Error("onMessage should not fire for group messages in private mode")
+	}
+}
+
+func TestHandleUpdate_PrivateMode_RejectsSupergroup(t *testing.T) {
+	b := newTestBot(0, 0, nil)
+	called := false
+	b.onMessage = func(chatID int64, userID string, text string) {
+		called = true
+	}
+
+	b.handleUpdate(makeUpdate(-100999, "supergroup", 99, "hello"), 0)
+
+	if called {
+		t.Error("onMessage should not fire for supergroup messages in private mode")
+	}
+}
+
+func TestHandleUpdate_PrivateMode_AllowFromFilters(t *testing.T) {
+	b := newTestBot(0, 0, map[string]bool{"99": true})
+	var got string
+	b.onMessage = func(chatID int64, userID string, text string) {
+		got = text
+	}
+
+	// Allowed user.
+	b.handleUpdate(makeUpdate(12345, "private", 99, "allowed"), 0)
+	if got != "allowed" {
+		t.Errorf("expected 'allowed', got %q", got)
+	}
+
+	// Disallowed user.
+	got = ""
+	b.handleUpdate(makeUpdate(12345, "private", 777, "blocked"), 0)
+	if got != "" {
+		t.Errorf("expected empty (blocked), got %q", got)
+	}
+}
+
+func TestHandleUpdate_PrivateMode_EmptyAllowFromAcceptsAll(t *testing.T) {
+	b := newTestBot(0, 0, map[string]bool{})
+	var got string
+	b.onMessage = func(chatID int64, userID string, text string) {
+		got = text
+	}
+
+	b.handleUpdate(makeUpdate(12345, "private", 999, "anyone"), 0)
+
+	if got != "anyone" {
+		t.Errorf("expected 'anyone', got %q", got)
+	}
+}
+
+func TestHandleUpdate_PrivateMode_VoiceCallback(t *testing.T) {
+	b := newTestBot(0, 0, nil)
+	var gotFileID string
+	b.onVoice = func(chatID int64, userID string, fileID string) {
+		gotFileID = fileID
+	}
+
+	update := tgbotapi.Update{
+		Message: &tgbotapi.Message{
+			Chat:  &tgbotapi.Chat{ID: 12345, Type: "private"},
+			From:  &tgbotapi.User{ID: 99},
+			Voice: &tgbotapi.Voice{FileID: "voice123"},
+		},
+	}
+	b.handleUpdate(update, 0)
+
+	if gotFileID != "voice123" {
+		t.Errorf("expected voice fileID 'voice123', got %q", gotFileID)
+	}
+}
+
+func TestHandleUpdate_PrivateMode_CommandCallback(t *testing.T) {
+	b := newTestBot(0, 0, nil)
+	var gotCmd string
+	b.onCommand = func(chatID int64, userID string, cmd Command) {
+		gotCmd = cmd.Name
+	}
+
+	b.handleUpdate(makeUpdate(12345, "private", 99, "/help"), 0)
+
+	if gotCmd != "help" {
+		t.Errorf("expected command 'help', got %q", gotCmd)
+	}
+}
+
+func TestHandleUpdate_PrivateMode_ChatIDPassedThrough(t *testing.T) {
+	b := newTestBot(0, 0, nil)
+	var gotChatID int64
+	b.onMessage = func(chatID int64, userID string, text string) {
+		gotChatID = chatID
+	}
+
+	b.handleUpdate(makeUpdate(12345, "private", 99, "hi"), 0)
+
+	if gotChatID != 12345 {
+		t.Errorf("expected chatID 12345, got %d", gotChatID)
+	}
+}
+
+func TestHandleUpdate_PrivateMode_NilMessage(t *testing.T) {
+	b := newTestBot(0, 0, nil)
+	called := false
+	b.onMessage = func(chatID int64, userID string, text string) {
+		called = true
+	}
+
+	// Nil message (e.g. callback query, edited message).
+	b.handleUpdate(tgbotapi.Update{Message: nil}, 0)
+
+	if called {
+		t.Error("should not call onMessage for nil message")
+	}
+}
+
+func TestHandleUpdate_PrivateMode_EmptyText(t *testing.T) {
+	b := newTestBot(0, 0, nil)
+	called := false
+	b.onMessage = func(chatID int64, userID string, text string) {
+		called = true
+	}
+
+	b.handleUpdate(makeUpdate(12345, "private", 99, "   "), 0)
+
+	if called {
+		t.Error("should not call onMessage for whitespace-only text")
+	}
+}
+
+// --- handleUpdate Tests (group mode) ---
+
+func TestHandleUpdate_GroupMode_AcceptsConfiguredGroup(t *testing.T) {
+	b := newTestBot(-100999, 0, nil)
+	var got string
+	b.onMessage = func(chatID int64, userID string, text string) {
+		got = text
+	}
+
+	b.handleUpdate(makeUpdate(-100999, "supergroup", 99, "group msg"), 0)
+
+	if got != "group msg" {
+		t.Errorf("expected 'group msg', got %q", got)
+	}
+}
+
+func TestHandleUpdate_GroupMode_RejectsOtherGroup(t *testing.T) {
+	b := newTestBot(-100999, 0, nil)
+	called := false
+	b.onMessage = func(chatID int64, userID string, text string) {
+		called = true
+	}
+
+	b.handleUpdate(makeUpdate(-100888, "supergroup", 99, "other group"), 0)
+
+	if called {
+		t.Error("should reject messages from non-configured group")
+	}
+}
+
+func TestHandleUpdate_GroupMode_RejectsPrivateChat(t *testing.T) {
+	b := newTestBot(-100999, 0, nil)
+	called := false
+	b.onMessage = func(chatID int64, userID string, text string) {
+		called = true
+	}
+
+	b.handleUpdate(makeUpdate(12345, "private", 99, "dm"), 0)
+
+	if called {
+		t.Error("should reject DMs when group mode is configured")
+	}
+}
+
+func TestHandleUpdate_GroupMode_TopicFiltering(t *testing.T) {
+	b := newTestBot(-100999, 42, nil)
+	var got string
+	b.onMessage = func(chatID int64, userID string, text string) {
+		got = text
+	}
+
+	// Correct topic.
+	b.handleUpdate(makeUpdate(-100999, "supergroup", 99, "on topic"), 42)
+	if got != "on topic" {
+		t.Errorf("expected 'on topic', got %q", got)
+	}
+
+	// Wrong topic.
+	got = ""
+	b.handleUpdate(makeUpdate(-100999, "supergroup", 99, "off topic"), 7)
+	if got != "" {
+		t.Errorf("expected empty (wrong topic), got %q", got)
+	}
+
+	// No topic (threadID 0).
+	got = ""
+	b.handleUpdate(makeUpdate(-100999, "supergroup", 99, "no thread"), 0)
+	if got != "" {
+		t.Errorf("expected empty (no thread), got %q", got)
+	}
+}
+
+func TestHandleUpdate_GroupMode_DiscoveryMode(t *testing.T) {
+	b := newTestBot(-100999, -1, nil)
+	msgCalled := false
+	b.onMessage = func(chatID int64, userID string, text string) {
+		msgCalled = true
+	}
+	var discoveredThread int
+	b.onDiscovery = func(chatID int64, userID string, threadID int, text string) {
+		discoveredThread = threadID
+	}
+
+	b.handleUpdate(makeUpdate(-100999, "supergroup", 99, "test"), 42)
+
+	if msgCalled {
+		t.Error("should not process messages in discovery mode")
+	}
+	if discoveredThread != 42 {
+		t.Errorf("expected discovered threadID 42, got %d", discoveredThread)
+	}
+}
+
+func TestHandleUpdate_GroupMode_TopicZeroAcceptsAll(t *testing.T) {
+	b := newTestBot(-100999, 0, nil)
+	var calls []int
+	b.onMessage = func(chatID int64, userID string, text string) {
+		calls = append(calls, 1)
+	}
+
+	b.handleUpdate(makeUpdate(-100999, "supergroup", 99, "thread 0"), 0)
+	b.handleUpdate(makeUpdate(-100999, "supergroup", 99, "thread 5"), 5)
+	b.handleUpdate(makeUpdate(-100999, "supergroup", 99, "thread 99"), 99)
+
+	if len(calls) != 3 {
+		t.Errorf("topicID=0 should accept all threads, got %d calls", len(calls))
+	}
+}
+
+// --- truncateLog Tests ---
+
+func TestTruncateLog_Short(t *testing.T) {
+	if got := truncateLog("hello", 10); got != "hello" {
+		t.Errorf("expected 'hello', got %q", got)
+	}
+}
+
+func TestTruncateLog_Exact(t *testing.T) {
+	if got := truncateLog("hello", 5); got != "hello" {
+		t.Errorf("expected 'hello', got %q", got)
+	}
+}
+
+func TestTruncateLog_Truncated(t *testing.T) {
+	if got := truncateLog("hello world", 5); got != "hello..." {
+		t.Errorf("expected 'hello...', got %q", got)
+	}
+}
+
+func TestTruncateLog_Unicode(t *testing.T) {
+	// 5 runes, each 3 bytes in UTF-8.
+	s := "привет"
+	got := truncateLog(s, 3)
+	if got != "при..." {
+		t.Errorf("expected 'при...', got %q", got)
+	}
 }
 
 // --- Helpers ---

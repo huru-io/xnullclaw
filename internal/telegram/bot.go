@@ -3,11 +3,13 @@ package telegram
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -43,16 +45,28 @@ type Command struct {
 }
 
 // Bot handles Telegram communication.
+//
+// Group mode (GroupID != 0):
+//
+//	TopicID = -1  discovery mode: log incoming thread IDs, don't process
+//	TopicID =  0  no topic filtering, no message_thread_id in sends (non-forum groups)
+//	TopicID =  1  General topic in forum groups (filter + send to thread 1)
+//	TopicID >  1  specific topic (filter + send to that thread)
+//
+// Private mode (GroupID == 0): only accept private chats.
 type Bot struct {
 	api       *tgbotapi.BotAPI
 	allowFrom map[string]bool // allowed user IDs (string)
+	groupID   int64           // configured group chat ID (0 = private mode)
+	topicID   int             // configured forum topic ID (-1 = discover, 0 = all, >0 = specific)
 	sendQueue chan sendRequest // rate-limited send queue
-	onMessage func(userID string, text string)
-	onVoice   func(userID string, fileID string)
-	onMedia   func(userID string, fileID string, mediaType string, caption string, fileName string)
-	onCommand func(userID string, cmd Command)
-	stopCh    chan struct{}
-	stopOnce  sync.Once
+	onMessage   func(chatID int64, userID string, text string)
+	onVoice     func(chatID int64, userID string, fileID string)
+	onMedia     func(chatID int64, userID string, fileID string, mediaType string, caption string, fileName string)
+	onCommand   func(chatID int64, userID string, cmd Command)
+	onDiscovery func(chatID int64, userID string, threadID int, text string)
+	stopCh      chan struct{}
+	stopOnce    sync.Once
 
 	// Token bucket for rate limiting.
 	bucketMu     sync.Mutex
@@ -81,6 +95,8 @@ func New(cfg *config.TelegramConfig) (*Bot, error) {
 	b := &Bot{
 		api:          api,
 		allowFrom:    allow,
+		groupID:      cfg.GroupID,
+		topicID:      cfg.TopicID,
 		sendQueue:    make(chan sendRequest, 256),
 		stopCh:       make(chan struct{}),
 		bucketTokens: 3, // start with full burst
@@ -92,49 +108,77 @@ func New(cfg *config.TelegramConfig) (*Bot, error) {
 }
 
 // SetOnMessage sets the callback for incoming text messages.
-func (b *Bot) SetOnMessage(fn func(userID string, text string)) {
+func (b *Bot) SetOnMessage(fn func(chatID int64, userID string, text string)) {
 	b.onMessage = fn
 }
 
 // SetOnVoice sets the callback for incoming voice messages.
-func (b *Bot) SetOnVoice(fn func(userID string, fileID string)) {
+func (b *Bot) SetOnVoice(fn func(chatID int64, userID string, fileID string)) {
 	b.onVoice = fn
 }
 
 // SetOnMedia sets the callback for incoming media (photos, documents).
-func (b *Bot) SetOnMedia(fn func(userID string, fileID string, mediaType string, caption string, fileName string)) {
+func (b *Bot) SetOnMedia(fn func(chatID int64, userID string, fileID string, mediaType string, caption string, fileName string)) {
 	b.onMedia = fn
 }
 
 // SetOnCommand sets the callback for parsed /commands.
-func (b *Bot) SetOnCommand(fn func(userID string, cmd Command)) {
+func (b *Bot) SetOnCommand(fn func(chatID int64, userID string, cmd Command)) {
 	b.onCommand = fn
 }
 
+// SetOnDiscovery sets the callback for topic discovery mode messages.
+func (b *Bot) SetOnDiscovery(fn func(chatID int64, userID string, threadID int, text string)) {
+	b.onDiscovery = fn
+}
+
 // Start begins long-polling for messages. It blocks until ctx is cancelled
-// or Stop is called. Run in a goroutine.
+// or Stop is called. Uses manual getUpdates to extract message_thread_id
+// which is not exposed by the library (predates Telegram forum support).
 func (b *Bot) Start(ctx context.Context) error {
 	// Start the send queue processor.
 	go b.processSendQueue(ctx)
 
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
-
-	updates := b.api.GetUpdatesChan(u)
-
+	offset := 0
 	for {
 		select {
 		case <-ctx.Done():
-			b.api.StopReceivingUpdates()
 			return ctx.Err()
 		case <-b.stopCh:
-			b.api.StopReceivingUpdates()
 			return nil
-		case update, ok := <-updates:
-			if !ok {
-				return nil
+		default:
+		}
+
+		params := tgbotapi.Params{}
+		params.AddNonZero("offset", offset)
+		params.AddNonZero("timeout", 60)
+
+		resp, err := b.api.MakeRequest("getUpdates", params)
+		if err != nil {
+			time.Sleep(time.Second)
+			continue
+		}
+
+		var rawUpdates []json.RawMessage
+		if err := json.Unmarshal(resp.Result, &rawUpdates); err != nil {
+			time.Sleep(time.Second)
+			continue
+		}
+
+		for _, raw := range rawUpdates {
+			var update tgbotapi.Update
+			if err := json.Unmarshal(raw, &update); err != nil {
+				continue
 			}
-			b.handleUpdate(update)
+
+			// Extract message_thread_id (not in library v5.5.1).
+			threadID := extractThreadID(raw)
+
+			if update.UpdateID >= offset {
+				offset = update.UpdateID + 1
+			}
+
+			b.handleUpdate(update, threadID)
 		}
 	}
 }
@@ -146,24 +190,71 @@ func (b *Bot) Stop() {
 	})
 }
 
+// rawThreadInfo extracts message_thread_id from raw update JSON.
+type rawThreadInfo struct {
+	Message *struct {
+		MessageThreadID int `json:"message_thread_id"`
+	} `json:"message"`
+}
+
+func extractThreadID(raw json.RawMessage) int {
+	var info rawThreadInfo
+	if err := json.Unmarshal(raw, &info); err != nil || info.Message == nil {
+		return 0
+	}
+	return info.Message.MessageThreadID
+}
+
 // handleUpdate processes a single incoming update.
-func (b *Bot) handleUpdate(update tgbotapi.Update) {
+func (b *Bot) handleUpdate(update tgbotapi.Update, threadID int) {
 	if update.Message == nil {
 		return
 	}
 
 	msg := update.Message
-	userID := fmt.Sprintf("%d", msg.From.ID)
+	chatID := msg.Chat.ID
+	userID := ""
+	if msg.From != nil {
+		userID = fmt.Sprintf("%d", msg.From.ID)
+	}
 
-	// Auth: only process messages from allowed users.
+	// Chat filtering.
+	if b.groupID != 0 {
+		// Group mode: only accept messages from the configured group.
+		if chatID != b.groupID {
+			return
+		}
+
+		// Discovery mode (topic_id = -1): notify via callback, don't process.
+		if b.topicID == -1 {
+			if b.onDiscovery != nil {
+				b.onDiscovery(chatID, userID, threadID, msg.Text)
+			}
+			return
+		}
+
+		// Specific topic mode (topic_id > 0): only accept that thread.
+		if b.topicID > 0 && threadID != b.topicID {
+			return
+		}
+
+		// topic_id == 0: accept all topics (no filtering).
+	} else {
+		// Private mode: only accept private chats.
+		if msg.Chat.Type != "private" {
+			return
+		}
+	}
+
+	// User filtering (works in both modes).
 	if len(b.allowFrom) > 0 && !b.allowFrom[userID] {
-		return // silently ignore
+		return
 	}
 
 	// Voice message.
 	if msg.Voice != nil {
 		if b.onVoice != nil {
-			b.onVoice(userID, msg.Voice.FileID)
+			b.onVoice(chatID, userID, msg.Voice.FileID)
 		}
 		return
 	}
@@ -173,7 +264,7 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 		// Use the largest photo (last in the slice).
 		largest := msg.Photo[len(msg.Photo)-1]
 		if b.onMedia != nil {
-			b.onMedia(userID, largest.FileID, "photo", msg.Caption, "")
+			b.onMedia(chatID, userID, largest.FileID, "photo", msg.Caption, "")
 		}
 		return
 	}
@@ -181,7 +272,7 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 	// Document message.
 	if msg.Document != nil {
 		if b.onMedia != nil {
-			b.onMedia(userID, msg.Document.FileID, "document", msg.Caption, msg.Document.FileName)
+			b.onMedia(chatID, userID, msg.Document.FileID, "document", msg.Caption, msg.Document.FileName)
 		}
 		return
 	}
@@ -197,7 +288,7 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 		cmd := ParseCommand(text)
 		if cmd != nil {
 			if b.onCommand != nil {
-				b.onCommand(userID, *cmd)
+				b.onCommand(chatID, userID, *cmd)
 			}
 			return
 		}
@@ -205,7 +296,7 @@ func (b *Bot) handleUpdate(update tgbotapi.Update) {
 
 	// Plain text message.
 	if b.onMessage != nil {
-		b.onMessage(userID, text)
+		b.onMessage(chatID, userID, text)
 	}
 }
 
@@ -466,9 +557,15 @@ func (b *Bot) waitForToken() {
 }
 
 // doSend performs the actual Telegram API call, handling 429 retries.
+// When topicID > 0, injects message_thread_id into the request.
 func (b *Bot) doSend(c tgbotapi.Chattable) error {
 	for attempts := 0; attempts < 5; attempts++ {
-		_, err := b.api.Request(c)
+		var err error
+		if b.topicID > 0 {
+			_, err = b.sendWithTopic(c)
+		} else {
+			_, err = b.api.Request(c)
+		}
 		if err == nil {
 			return nil
 		}
@@ -487,6 +584,97 @@ func (b *Bot) doSend(c tgbotapi.Chattable) error {
 		return fmt.Errorf("bot: send failed: %w", err)
 	}
 	return fmt.Errorf("bot: send failed after retries")
+}
+
+// sendWithTopic sends a message with message_thread_id injected.
+// The go-telegram-bot-api v5.5.1 predates Telegram forum support,
+// so we build params manually and call MakeRequest/UploadFiles directly.
+func (b *Bot) sendWithTopic(c tgbotapi.Chattable) (*tgbotapi.APIResponse, error) {
+	threadStr := strconv.Itoa(b.topicID)
+
+	switch v := c.(type) {
+	case tgbotapi.MessageConfig:
+		p := tgbotapi.Params{}
+		p.AddFirstValid("chat_id", v.BaseChat.ChatID, v.BaseChat.ChannelUsername)
+		p.AddNonEmpty("text", v.Text)
+		p.AddNonEmpty("parse_mode", v.ParseMode)
+		p.AddBool("disable_web_page_preview", v.DisableWebPagePreview)
+		p["message_thread_id"] = threadStr
+		return b.api.MakeRequest("sendMessage", p)
+
+	case tgbotapi.ChatActionConfig:
+		p := tgbotapi.Params{}
+		p.AddFirstValid("chat_id", v.BaseChat.ChatID, v.BaseChat.ChannelUsername)
+		p["action"] = string(v.Action)
+		p["message_thread_id"] = threadStr
+		return b.api.MakeRequest("sendChatAction", p)
+
+	case tgbotapi.PhotoConfig:
+		p := tgbotapi.Params{}
+		p.AddFirstValid("chat_id", v.BaseChat.ChatID, v.BaseChat.ChannelUsername)
+		p.AddNonEmpty("caption", v.Caption)
+		p.AddNonEmpty("parse_mode", v.ParseMode)
+		p["message_thread_id"] = threadStr
+		return b.api.UploadFiles("sendPhoto", p, []tgbotapi.RequestFile{{
+			Name: "photo",
+			Data: v.File,
+		}})
+
+	case tgbotapi.DocumentConfig:
+		p := tgbotapi.Params{}
+		p.AddFirstValid("chat_id", v.BaseChat.ChatID, v.BaseChat.ChannelUsername)
+		p.AddNonEmpty("caption", v.Caption)
+		p.AddNonEmpty("parse_mode", v.ParseMode)
+		p["message_thread_id"] = threadStr
+		return b.api.UploadFiles("sendDocument", p, []tgbotapi.RequestFile{{
+			Name: "document",
+			Data: v.File,
+		}})
+
+	case tgbotapi.VoiceConfig:
+		p := tgbotapi.Params{}
+		p.AddFirstValid("chat_id", v.BaseChat.ChatID, v.BaseChat.ChannelUsername)
+		p.AddNonEmpty("caption", v.Caption)
+		p["message_thread_id"] = threadStr
+		return b.api.UploadFiles("sendVoice", p, []tgbotapi.RequestFile{{
+			Name: "voice",
+			Data: v.File,
+		}})
+
+	case tgbotapi.AudioConfig:
+		p := tgbotapi.Params{}
+		p.AddFirstValid("chat_id", v.BaseChat.ChatID, v.BaseChat.ChannelUsername)
+		p.AddNonEmpty("caption", v.Caption)
+		p.AddNonEmpty("parse_mode", v.ParseMode)
+		p["message_thread_id"] = threadStr
+		return b.api.UploadFiles("sendAudio", p, []tgbotapi.RequestFile{{
+			Name: "audio",
+			Data: v.File,
+		}})
+
+	case tgbotapi.VideoConfig:
+		p := tgbotapi.Params{}
+		p.AddFirstValid("chat_id", v.BaseChat.ChatID, v.BaseChat.ChannelUsername)
+		p.AddNonEmpty("caption", v.Caption)
+		p.AddNonEmpty("parse_mode", v.ParseMode)
+		p["message_thread_id"] = threadStr
+		return b.api.UploadFiles("sendVideo", p, []tgbotapi.RequestFile{{
+			Name: "video",
+			Data: v.File,
+		}})
+
+	default:
+		return nil, fmt.Errorf("bot: sendWithTopic: unhandled Chattable type %T", c)
+	}
+}
+
+// truncateLog truncates a string for log output at rune boundaries.
+func truncateLog(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "..."
 }
 
 // SplitMessage splits a long message into parts that fit within maxLen,

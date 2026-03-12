@@ -62,6 +62,8 @@ func (PersonaDimensions) Defaults() PersonaDimensions {
 type TelegramConfig struct {
 	BotToken  string   `json:"bot_token"`
 	AllowFrom []string `json:"allow_from"`
+	GroupID   int64    `json:"group_id,omitempty"`  // 0 = private chat mode (default)
+	TopicID   int      `json:"topic_id,omitempty"`  // -1 = discover, 0 = no topic, 1 = General, N = specific
 }
 
 // OpenAIConfig holds OpenAI-compatible API settings.

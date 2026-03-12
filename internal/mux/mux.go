@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -61,6 +60,16 @@ func Run(mc Config) error {
 		logger.SetMirror(os.Stderr)
 	}
 	logger.Info("mux starting", "version", mc.Version)
+
+	// Log chat mode.
+	if cfg.Telegram.GroupID != 0 {
+		logger.Info("group mode", "group_id", cfg.Telegram.GroupID, "topic_id", cfg.Telegram.TopicID)
+		if cfg.Telegram.TopicID == -1 {
+			logger.Info("topic discovery mode: logging thread IDs, not processing messages")
+		}
+	} else {
+		logger.Info("private chat mode")
+	}
 
 	// SQLite memory store.
 	dbPath := cfg.Memory.DBPath
@@ -206,20 +215,18 @@ func Run(mc Config) error {
 	}
 
 	// Text messages.
-	tgBot.SetOnMessage(func(userID string, text string) {
+	tgBot.SetOnMessage(func(chatID int64, userID string, text string) {
 		turnMu.Lock()
 		defer turnMu.Unlock()
-		chatID, _ := strconv.ParseInt(userID, 10, 64)
 		lastChatID = chatID
 		logger.LogIncoming(userID, text, "text")
 		runTurn(chatID, text)
 	})
 
 	// Voice messages.
-	tgBot.SetOnVoice(func(userID string, fileID string) {
+	tgBot.SetOnVoice(func(chatID int64, userID string, fileID string) {
 		turnMu.Lock()
 		defer turnMu.Unlock()
-		chatID, _ := strconv.ParseInt(userID, 10, 64)
 		lastChatID = chatID
 		logger.LogIncoming(userID, fileID, "voice")
 
@@ -255,10 +262,9 @@ func Run(mc Config) error {
 	})
 
 	// Media messages (photos, documents).
-	tgBot.SetOnMedia(func(userID string, fileID string, mediaType string, caption string, fileName string) {
+	tgBot.SetOnMedia(func(chatID int64, userID string, fileID string, mediaType string, caption string, fileName string) {
 		turnMu.Lock()
 		defer turnMu.Unlock()
-		chatID, _ := strconv.ParseInt(userID, 10, 64)
 		lastChatID = chatID
 		logger.LogIncoming(userID, fileID, mediaType)
 
@@ -302,8 +308,7 @@ func Run(mc Config) error {
 	})
 
 	// Commands.
-	tgBot.SetOnCommand(func(userID string, cmd telegram.Command) {
-		chatID, _ := strconv.ParseInt(userID, 10, 64)
+	tgBot.SetOnCommand(func(chatID int64, userID string, cmd telegram.Command) {
 		logger.Info("command received", "user", userID, "command", cmd.Name, "agent", cmd.Agent)
 
 		switch cmd.Name {
@@ -398,6 +403,11 @@ All other messages are handled by the mux AI.`)
 		}
 	})
 
+	// Topic discovery callback — logs via structured logger so it shows in mux.log.
+	tgBot.SetOnDiscovery(func(chatID int64, userID string, threadID int, text string) {
+		logger.Info("topic discovery", "chat_id", chatID, "user_id", userID, "thread_id", threadID, "text", truncateLog(text, 80))
+	})
+
 	// Start Telegram polling.
 	go func() {
 		logger.Info("telegram polling started")
@@ -446,8 +456,6 @@ All other messages are handled by the mux AI.`)
 	logger.Info("shutdown signal received", "signal", sig.String())
 
 	// Graceful shutdown.
-	tgBot.Stop()
-
 	// Stop mux-managed agents.
 	for _, agentName := range cfg.Agents.MuxManaged {
 		logger.LogLifecycle("stopping", agentName, "shutdown")
@@ -457,9 +465,12 @@ All other messages are handled by the mux AI.`)
 		}
 	}
 
+	// Send goodbye before stopping the bot (Stop closes the send queue).
 	if lastChatID != 0 {
 		tgBot.Send(lastChatID, "Mux going offline. Agents stopped.")
 	}
+
+	tgBot.Stop()
 
 	cancel()
 	logger.Info("mux shutdown complete")
@@ -506,4 +517,13 @@ func sendAttachment(tgBot *telegram.Bot, logger *logging.Logger, chatID int64, a
 		logger.Error("send attachment failed", "type", att.Type, "path", hostPath, "error", err)
 		tgBot.Send(chatID, fmt.Sprintf("Failed to send %s: %v", att.Type, err))
 	}
+}
+
+// truncateLog truncates a string for log output at rune boundaries.
+func truncateLog(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "..."
 }
