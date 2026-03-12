@@ -6,7 +6,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jotavich/xnullclaw/internal/config"
 	"github.com/jotavich/xnullclaw/internal/memory"
+)
+
+// Tool-side scheduling limits (mirrors mux/scheduler.go constants).
+const (
+	toolMaxPendingTasks  = 50
+	toolMaxTriggerHorizon = 30 * 24 * time.Hour // 30 days
 )
 
 func registerSchedulerTools(r *Registry, store *memory.Store) {
@@ -47,16 +54,34 @@ func registerSchedulerTools(r *Registry, store *memory.Store) {
 			if err != nil {
 				return "", fmt.Errorf("invalid trigger_at format (use ISO 8601): %w", err)
 			}
-			if triggerAt.Before(time.Now()) {
+			now := time.Now()
+			if triggerAt.Before(now) {
 				return "", fmt.Errorf("trigger_at must be in the future")
 			}
+			// H5: prevent scheduling too far ahead.
+			if triggerAt.Sub(now) > toolMaxTriggerHorizon {
+				return "", fmt.Errorf("trigger_at cannot be more than 30 days in the future")
+			}
+
+			// H5: prevent unbounded task accumulation.
+			pending, err := store.ListScheduledTasks("pending")
+			if err != nil {
+				return "", fmt.Errorf("failed to check pending tasks: %w", err)
+			}
+			if len(pending) >= toolMaxPendingTasks {
+				return "", fmt.Errorf("too many pending tasks (%d); cancel some before scheduling more", len(pending))
+			}
+
+			// Sanitize description and context.
+			desc = config.SanitizeText(desc, 500)
 
 			task := memory.ScheduledTask{
 				Description: desc,
 				TriggerAt:   triggerAt,
 			}
 			if ctxStr := optionalStringArg(args, "context", ""); ctxStr != "" {
-				task.Context = &ctxStr
+				sanitized := config.SanitizeText(ctxStr, 500)
+				task.Context = &sanitized
 			}
 
 			id, err := store.AddScheduledTask(task)
@@ -128,7 +153,7 @@ func registerSchedulerTools(r *Registry, store *memory.Store) {
 				"type": "object",
 				"properties": map[string]any{
 					"task_id": map[string]any{
-						"type":        "number",
+						"type":        "integer",
 						"description": "The task ID to cancel",
 					},
 				},

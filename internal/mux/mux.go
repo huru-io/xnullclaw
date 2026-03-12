@@ -168,13 +168,17 @@ func Run(mc Config) error {
 		lastChatID int64
 	)
 
-	runTurn := func(chatID int64, userText string) {
+	// runTurn executes one agentic loop turn. The stream parameter controls
+	// where messages are stored ("conversation" for user/task turns,
+	// "scheduler" for heartbeats to avoid polluting conversation context).
+	// Returns the LLM response text (empty on error).
+	runTurn := func(chatID int64, userText, stream string) string {
 
 		ctxData, err := assembler.Assemble(userText)
 		if err != nil {
 			logger.Error("context assembly failed", "error", err)
 			tgBot.Send(chatID, "Internal error assembling context.")
-			return
+			return ""
 		}
 
 		systemPrompt := promptBuilder.Build(ctxData.Agents, ctxData.Facts, ctxData.Compactions, ctxData.Rules, ctxData.DrainMsgs)
@@ -183,32 +187,35 @@ func Run(mc Config) error {
 		if err := store.AddMessage(memory.Message{
 			Role:    "user",
 			Content: userText,
-			Stream:  "conversation",
+			Stream:  stream,
 		}); err != nil {
 			logger.Error("failed to store user message", "error", err)
 		}
 
-		tgBot.SendTyping(chatID)
+		// Only show typing for user-facing turns.
+		if stream == "conversation" {
+			tgBot.SendTyping(chatID)
+		}
 
 		response, err := muxLoop.Run(ctx, userText)
 		if err != nil {
 			logger.Error("loop error", "error", err)
 			tgBot.Send(chatID, fmt.Sprintf("Error: %v", err))
-			return
+			return ""
+		}
+
+		// Suppress HEARTBEAT_OK responses — don't store or forward.
+		if IsHeartbeatOK(response) {
+			logger.Info("turn complete (heartbeat ack suppressed)", "input_len", len(userText))
+			return response
 		}
 
 		if err := store.AddMessage(memory.Message{
 			Role:    "assistant",
 			Content: response,
-			Stream:  "conversation",
+			Stream:  stream,
 		}); err != nil {
 			logger.Error("failed to store assistant message", "error", err)
-		}
-
-		// Suppress HEARTBEAT_OK responses — don't forward to Telegram.
-		if IsHeartbeatOK(response) {
-			logger.Info("turn complete (heartbeat ack suppressed)", "input_len", len(userText))
-			return
 		}
 
 		cleanText, attachments := media.Parse(response)
@@ -224,6 +231,7 @@ func Run(mc Config) error {
 		}
 
 		logger.Info("turn complete", "input_len", len(userText), "output_len", len(response), "attachments", len(attachments))
+		return response
 	}
 
 	// Text messages.
@@ -232,7 +240,7 @@ func Run(mc Config) error {
 		defer turnMu.Unlock()
 		atomic.StoreInt64(&lastChatID, chatID)
 		logger.LogIncoming(userID, text, "text")
-		runTurn(chatID, text)
+		runTurn(chatID, text, "conversation")
 	})
 
 	// Voice messages.
@@ -270,7 +278,7 @@ func Run(mc Config) error {
 			tgBot.Send(chatID, fmt.Sprintf("_Heard:_ %s", transcript))
 		}
 		logger.Info("voice transcribed", "text", transcript)
-		runTurn(chatID, transcript)
+		runTurn(chatID, transcript, "conversation")
 	})
 
 	// Media messages (photos, documents).
@@ -316,7 +324,7 @@ func Run(mc Config) error {
 			userText = fmt.Sprintf("[User sent a %s%s]\nThe file has been saved to: %s", mediaType, nameInfo, destPath)
 		}
 		logger.Info("media received", "type", mediaType, "path", destPath, "caption", caption, "filename", fileName)
-		runTurn(chatID, userText)
+		runTurn(chatID, userText, "conversation")
 	})
 
 	// Commands.
@@ -485,12 +493,13 @@ All other messages are handled by the mux AI.`)
 	// Start scheduler goroutine — checks for due tasks and fires synthetic turns.
 	schedulerDone := make(chan struct{})
 	scheduler := &Scheduler{
-		store:   store,
-		cfg:     cfg,
-		logger:  logger,
-		chatID:  &lastChatID,
-		turnMu:  &turnMu,
-		runTurn: runTurn,
+		store:         store,
+		cfg:           cfg,
+		logger:        logger,
+		chatID:        &lastChatID,
+		turnMu:        &turnMu,
+		runTurn:       runTurn,
+		lastHeartbeat: time.Now(), // avoid stale drain scan on first tick (M8)
 	}
 	go scheduler.Run(schedulerInterval, schedulerDone)
 	logger.Info("scheduler goroutine started", "interval", schedulerInterval)

@@ -805,7 +805,7 @@ func (s *Store) PruneOldScheduledTasks(ttl time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-ttl)
 	result, err := s.db.Exec(
 		`DELETE FROM scheduled_tasks
-		 WHERE status IN ('fired', 'cancelled') AND created < ?`,
+		 WHERE status IN ('fired', 'cancelled') AND COALESCE(fired_at, created) < ?`,
 		cutoff,
 	)
 	if err != nil {
@@ -884,7 +884,7 @@ func (s *Store) RenameAgent(oldName, newName string) error {
 // ClearAll deletes all data from messages, facts, compactions, and costs.
 // Agent state is preserved (agents are still running).
 func (s *Store) ClearAll() error {
-	tables := []string{"messages", "facts", "compactions", "costs"}
+	tables := []string{"messages", "facts", "compactions", "costs", "scheduled_tasks"}
 	for _, t := range tables {
 		if _, err := s.db.Exec("DELETE FROM " + t); err != nil {
 			return fmt.Errorf("clear %s: %w", t, err)

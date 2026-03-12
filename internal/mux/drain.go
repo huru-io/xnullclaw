@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -128,8 +127,8 @@ func (d *Drainer) drainAgent(name string) {
 	// Sort by filename (timestamp-based, natural order).
 	sort.Strings(msgFiles)
 
-	// Determine target chat.
-	chatID := d.targetChatID()
+	// Determine target chat (shared helper with scheduler).
+	chatID := muxTargetChatID(d.cfg, d.chatID)
 	if chatID == 0 {
 		return // no chat available yet — files preserved for next tick
 	}
@@ -243,16 +242,6 @@ func (d *Drainer) drainAgent(name string) {
 
 	// Clean up stale .pending files (older than stalePendingCutoff = likely crashed agent).
 	d.cleanStalePending(outboxDir)
-}
-
-// targetChatID returns the chat ID to send drain messages to.
-func (d *Drainer) targetChatID() int64 {
-	// Prefer configured group ID.
-	if d.cfg.Telegram.GroupID != 0 {
-		return d.cfg.Telegram.GroupID
-	}
-	// Fall back to last known chat (private mode).
-	return atomic.LoadInt64(d.chatID)
 }
 
 // cleanStalePending removes .pending files older than stalePendingCutoff.

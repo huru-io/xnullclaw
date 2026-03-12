@@ -2,16 +2,18 @@
 // synthetic turns so the LLM can act on them (reminders, check-ins, etc.).
 //
 // Also implements a two-tier heartbeat (informed by OpenClaw patterns):
-//   Tier 1: Rule-based pre-check (zero tokens) — skips LLM if nothing changed
-//   Tier 2: LLM triage with compact prompt — only when Tier 1 flags activity
+//
+//	Tier 1: Rule-based pre-check (zero tokens) — skips LLM if nothing changed
+//	Tier 2: LLM triage with compact prompt — only when Tier 1 flags activity
 //
 // The LLM can respond with HEARTBEAT_OK to signal "nothing to report",
-// which is silently dropped (not forwarded to Telegram).
+// which is silently dropped (not forwarded to Telegram or stored).
 // Consecutive no-ops trigger exponential backoff to save tokens.
 package mux
 
 import (
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,29 +30,42 @@ const (
 	schedulerPruneTTL  = 24 * time.Hour
 	schedulerPruneFreq = 10 * time.Minute
 
+	// staleAgentThreshold is how long a running agent can be silent before
+	// the heartbeat flags it for the LLM to investigate.
+	staleAgentThreshold = 2 * time.Hour
+
 	// heartbeatMaxBackoff caps the backoff multiplier for consecutive no-ops.
+	// With maxBackoff=4 and base=30m, max effective interval = 30m * 2^4 = 480m.
 	heartbeatMaxBackoff = 4
-	// heartbeatNoopThreshold is the number of consecutive HEARTBEAT_OK
-	// responses before the interval starts doubling.
+	// heartbeatNoopThreshold is the number of consecutive no-op results
+	// before the interval starts doubling.
 	heartbeatNoopThreshold = 3
+
+	// maxPendingTasks prevents unbounded task accumulation (DoS guard).
+	maxPendingTasks = 50
+	// maxTasksPerTick prevents a single tick from holding the turn lock too long.
+	maxTasksPerTick = 3
+	// maxTriggerHorizon is the furthest in the future a task can be scheduled.
+	maxTriggerHorizon = 30 * 24 * time.Hour // 30 days
+	// minHeartbeatMinutes prevents misconfiguration from burning tokens.
+	minHeartbeatMinutes = 5
 )
 
 // HeartbeatOK is the sentinel value the LLM returns when nothing needs
-// attention. Responses starting with this token are silently dropped.
+// attention. Responses matching exactly are silently dropped.
 const HeartbeatOK = "HEARTBEAT_OK"
 
 // Scheduler periodically checks for due scheduled tasks and fires synthetic
-// turns via the mux loop so the LLM can act on them. It also fires periodic
-// heartbeat turns so the mux can autonomously check on agents and take
-// proactive actions.
+// turns via the mux loop. It also fires periodic heartbeat turns so the mux
+// can autonomously check on agents and take proactive actions.
 type Scheduler struct {
 	store  *memory.Store
 	cfg    *config.Config
 	logger *logging.Logger
 
-	// runTurn fires a synthetic turn. The scheduler passes a system-generated
-	// message describing the task so the LLM can decide what to do.
-	runTurn func(chatID int64, userText string)
+	// runTurn fires a synthetic turn. Returns the LLM response text.
+	// stream controls where messages are stored ("conversation" or "scheduler").
+	runTurn func(chatID int64, userText, stream string) string
 
 	// chatID points to the mux's lastChatID (atomic).
 	chatID *int64
@@ -61,8 +76,9 @@ type Scheduler struct {
 	lastPrune     time.Time
 	lastHeartbeat time.Time
 
-	// consecutiveNoops tracks how many heartbeats returned HEARTBEAT_OK
-	// in a row, for exponential backoff.
+	// consecutiveNoops tracks how many heartbeats found nothing to do
+	// (either Tier 1 clear or Tier 2 HEARTBEAT_OK), for exponential backoff.
+	// Only accessed from the scheduler goroutine — no synchronization needed.
 	consecutiveNoops int
 }
 
@@ -84,7 +100,8 @@ func (s *Scheduler) Run(interval time.Duration, done <-chan struct{}) {
 func (s *Scheduler) safeTick() {
 	defer func() {
 		if r := recover(); r != nil {
-			s.logger.Error("scheduler: panic recovered", "panic", fmt.Sprint(r))
+			s.logger.Error("scheduler: panic recovered", "panic", fmt.Sprint(r),
+				"stack", string(debug.Stack()))
 		}
 	}()
 	s.tick()
@@ -102,36 +119,44 @@ func (s *Scheduler) tick() {
 	}
 
 	// Determine target chat (needed for both tasks and heartbeat).
-	chatID := s.targetChatID()
+	chatID := muxTargetChatID(s.cfg, s.chatID)
 
-	// Fire due tasks.
+	// Fire due tasks (up to maxTasksPerTick to avoid holding lock too long).
 	firedTasks := false
 	if len(tasks) > 0 && chatID != 0 {
-		if s.turnMu.TryLock() {
-			for _, t := range tasks {
-				msg := formatScheduledTaskMessage(t)
-				s.logger.Info("scheduler: firing task", "id", t.ID, "description", t.Description)
-
-				// Mark as fired BEFORE running the turn to prevent re-firing
-				// if the turn takes longer than the scheduler interval.
-				if err := s.store.MarkTaskFired(t.ID); err != nil {
-					s.logger.Error("scheduler: mark task fired", "id", t.ID, "error", err)
-					continue
-				}
-				s.runTurn(chatID, msg)
-				firedTasks = true
+		limit := maxTasksPerTick
+		if len(tasks) < limit {
+			limit = len(tasks)
+		}
+		for i := 0; i < limit; i++ {
+			t := tasks[i]
+			// Acquire lock per task so user messages aren't blocked for the full batch.
+			if !s.turnMu.TryLock() {
+				break // try remaining tasks next tick
 			}
+
+			s.logger.Info("scheduler: firing task", "id", t.ID, "description", t.Description)
+
+			// Mark as fired BEFORE running the turn to prevent re-firing.
+			if err := s.store.MarkTaskFired(t.ID); err != nil {
+				s.logger.Error("scheduler: mark task fired", "id", t.ID, "error", err)
+				s.turnMu.Unlock()
+				continue
+			}
+			msg := formatScheduledTaskMessage(t)
+			s.runTurn(chatID, msg, "conversation") // tasks are user-requested → conversation stream
 			s.turnMu.Unlock()
-			// Real activity resets backoff.
+			firedTasks = true
+		}
+		// Real activity resets backoff.
+		if firedTasks {
 			s.consecutiveNoops = 0
 		}
-		// If we couldn't get the lock, tasks stay pending for next tick.
 	} else if len(tasks) > 0 && chatID == 0 {
 		s.logger.Error("scheduler: no chat ID available, tasks deferred")
 	}
 
-	// Heartbeat — only if we didn't already fire tasks this tick (avoid
-	// double wake-ups) and the mux has been idle long enough.
+	// Heartbeat — only if we didn't already fire tasks this tick.
 	if !firedTasks {
 		s.maybeHeartbeat(now, chatID)
 	}
@@ -145,13 +170,17 @@ func (s *Scheduler) tick() {
 // tasks via direct DB queries. If nothing changed, skips the LLM entirely.
 //
 // Tier 2 (LLM triage): injects a compact heartbeat prompt with only the
-// signals that Tier 1 detected, not the full conversation history.
+// signals that Tier 1 detected. Response stored in "scheduler" stream.
 func (s *Scheduler) maybeHeartbeat(now time.Time, chatID int64) {
 	hbMinutes := s.cfg.Scheduler.HeartbeatMinutes
 	if hbMinutes <= 0 || chatID == 0 {
 		return // heartbeat disabled or no chat available
 	}
-	hbInterval := s.effectiveHeartbeatInterval()
+	// Enforce minimum to prevent misconfiguration.
+	if hbMinutes < minHeartbeatMinutes {
+		hbMinutes = minHeartbeatMinutes
+	}
+	hbInterval := s.effectiveHeartbeatInterval(hbMinutes)
 
 	// Don't fire heartbeat more frequently than the (possibly backed-off) interval.
 	if now.Sub(s.lastHeartbeat) < hbInterval {
@@ -181,13 +210,13 @@ func (s *Scheduler) maybeHeartbeat(now time.Time, chatID int64) {
 		s.consecutiveNoops++
 		s.logger.Info("scheduler: heartbeat skipped (tier-1 clear)",
 			"consecutive_noops", s.consecutiveNoops,
-			"next_interval", s.effectiveHeartbeatInterval())
+			"next_interval", s.effectiveHeartbeatInterval(hbMinutes))
 		return
 	}
 
 	// ── Tier 2: LLM triage with compact prompt ──
 	if !s.turnMu.TryLock() {
-		return
+		return // signals will be re-detected next tick
 	}
 	defer s.turnMu.Unlock()
 
@@ -195,7 +224,17 @@ func (s *Scheduler) maybeHeartbeat(now time.Time, chatID int64) {
 	s.lastHeartbeat = now
 
 	msg := formatHeartbeatMessage(signals)
-	s.runTurn(chatID, msg)
+	response := s.runTurn(chatID, msg, "scheduler") // heartbeat → scheduler stream
+
+	// Track noop for backoff: HEARTBEAT_OK means the LLM found nothing to do.
+	if IsHeartbeatOK(response) {
+		s.consecutiveNoops++
+		s.logger.Info("scheduler: heartbeat noop (tier-2 ack)",
+			"consecutive_noops", s.consecutiveNoops,
+			"next_interval", s.effectiveHeartbeatInterval(hbMinutes))
+	} else {
+		s.consecutiveNoops = 0
+	}
 }
 
 // preCheck performs lightweight rule-based checks (Tier 1) and returns a
@@ -209,7 +248,7 @@ func (s *Scheduler) preCheck(now time.Time) []string {
 		agents := make(map[string]int)
 		for _, m := range drainMsgs {
 			if m.Agent != nil {
-				agents[*m.Agent]++
+				agents[config.SanitizeName(*m.Agent, 30)]++
 			}
 		}
 		for agent, count := range agents {
@@ -217,21 +256,14 @@ func (s *Scheduler) preCheck(now time.Time) []string {
 		}
 	}
 
-	// 2. Check for pending scheduled tasks (upcoming in next heartbeat interval).
-	hbInterval := time.Duration(s.cfg.Scheduler.HeartbeatMinutes) * time.Minute
-	upcoming, err := s.store.DueScheduledTasks(now.Add(hbInterval))
-	if err == nil && len(upcoming) > 0 {
-		signals = append(signals, fmt.Sprintf("%d scheduled task(s) due soon", len(upcoming)))
-	}
-
-	// 3. Check if any agent hasn't been heard from in a long time (stale agents).
-	agents, err := s.store.AllAgentStates()
+	// 2. Check if any agent hasn't been heard from in a long time (stale agents).
+	agentStates, err := s.store.AllAgentStates()
 	if err == nil {
-		for _, a := range agents {
+		for _, a := range agentStates {
 			if a.Status != nil && *a.Status == "running" && a.LastInteraction != nil {
 				silence := now.Sub(*a.LastInteraction)
-				if silence > 2*time.Hour {
-					name := a.Agent
+				if silence > staleAgentThreshold {
+					name := config.SanitizeName(a.Agent, 30)
 					signals = append(signals, fmt.Sprintf("Agent %q running but silent for %s", name, silence.Truncate(time.Minute)))
 				}
 			}
@@ -242,9 +274,9 @@ func (s *Scheduler) preCheck(now time.Time) []string {
 }
 
 // effectiveHeartbeatInterval returns the heartbeat interval adjusted for
-// exponential backoff based on consecutive no-op heartbeats.
-func (s *Scheduler) effectiveHeartbeatInterval() time.Duration {
-	base := time.Duration(s.cfg.Scheduler.HeartbeatMinutes) * time.Minute
+// exponential backoff based on consecutive no-op results.
+func (s *Scheduler) effectiveHeartbeatInterval(hbMinutes int) time.Duration {
+	base := time.Duration(hbMinutes) * time.Minute
 	if s.consecutiveNoops < heartbeatNoopThreshold {
 		return base
 	}
@@ -257,32 +289,19 @@ func (s *Scheduler) effectiveHeartbeatInterval() time.Duration {
 }
 
 // IsHeartbeatOK checks if a response from the LLM is the sentinel "nothing
-// to report" token. Callers should suppress forwarding such responses to
-// Telegram. The check is case-insensitive and trims whitespace.
+// to report" token. Uses exact match (after trimming) so that responses
+// like "HEARTBEAT_OK but I noticed..." are NOT suppressed.
 func IsHeartbeatOK(response string) bool {
-	trimmed := strings.TrimSpace(response)
-	return strings.HasPrefix(strings.ToUpper(trimmed), HeartbeatOK)
+	return strings.EqualFold(strings.TrimSpace(response), HeartbeatOK)
 }
 
-// RecordHeartbeatResult should be called by the mux after a heartbeat turn
-// completes. It updates the backoff counter based on the LLM's response.
-func (s *Scheduler) RecordHeartbeatResult(wasNoop bool) {
-	if wasNoop {
-		s.consecutiveNoops++
-		s.logger.Info("scheduler: heartbeat noop",
-			"consecutive", s.consecutiveNoops,
-			"next_interval", s.effectiveHeartbeatInterval())
-	} else {
-		s.consecutiveNoops = 0
+// muxTargetChatID returns the chat to send scheduler/drain messages to.
+// Shared by Scheduler and Drainer.
+func muxTargetChatID(cfg *config.Config, lastChatID *int64) int64 {
+	if cfg.Telegram.GroupID != 0 {
+		return cfg.Telegram.GroupID
 	}
-}
-
-// targetChatID returns the chat to send scheduler messages to.
-func (s *Scheduler) targetChatID() int64 {
-	if s.cfg.Telegram.GroupID != 0 {
-		return s.cfg.Telegram.GroupID
-	}
-	return atomic.LoadInt64(s.chatID)
+	return atomic.LoadInt64(lastChatID)
 }
 
 // maybePrune periodically cleans up old fired/cancelled tasks.
@@ -299,10 +318,13 @@ func (s *Scheduler) maybePrune(now time.Time) {
 }
 
 // formatScheduledTaskMessage builds the synthetic user message for a fired task.
+// Description and context are sanitized to prevent prompt injection.
 func formatScheduledTaskMessage(t memory.ScheduledTask) string {
-	msg := fmt.Sprintf("[SCHEDULED TASK #%d] %s", t.ID, t.Description)
+	desc := config.SanitizeText(t.Description, 500)
+	msg := fmt.Sprintf("[SCHEDULED TASK #%d] %s", t.ID, desc)
 	if t.Context != nil && *t.Context != "" {
-		msg += fmt.Sprintf("\nContext: %s", *t.Context)
+		ctx := config.SanitizeText(*t.Context, 500)
+		msg += fmt.Sprintf("\nContext: %s", ctx)
 	}
 	return msg
 }

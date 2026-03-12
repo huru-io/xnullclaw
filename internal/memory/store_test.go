@@ -812,13 +812,16 @@ func TestPruneOldScheduledTasks(t *testing.T) {
 	s := newTestStore(t)
 
 	now := time.Now()
-	// Add a fired task with old created time.
+	// Add a fired task with old created and fired_at times.
 	id, _ := s.AddScheduledTask(ScheduledTask{
 		Description: "old fired",
 		TriggerAt:   now.Add(-48 * time.Hour),
 		Created:     now.Add(-48 * time.Hour),
 	})
 	s.MarkTaskFired(int(id))
+	// Backdate fired_at so COALESCE(fired_at, created) is old enough to prune.
+	s.db.Exec("UPDATE scheduled_tasks SET fired_at = ? WHERE id = ?",
+		now.Add(-48*time.Hour), id)
 
 	// Add a pending task (should NOT be pruned).
 	s.AddScheduledTask(ScheduledTask{
