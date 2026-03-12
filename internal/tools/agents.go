@@ -125,6 +125,24 @@ func buildAgentSystemPrompt(name string, v personaVariant) string {
 	return strings.Join(lines, "\n")
 }
 
+// agentEmoji returns the emoji for an agent from the mux config identities.
+func agentEmoji(d Deps, name string) string {
+	if d.Cfg != nil && d.Cfg.Agents.Identities != nil {
+		if id, ok := d.Cfg.Agents.Identities[name]; ok && id.Emoji != "" {
+			return id.Emoji
+		}
+	}
+	return ""
+}
+
+// agentHeader returns "emoji name\n\n" for prefixing agent responses.
+func agentHeader(d Deps, name string) string {
+	if e := agentEmoji(d, name); e != "" {
+		return fmt.Sprintf("%s %s\n\n", e, name)
+	}
+	return fmt.Sprintf("%s\n\n", name)
+}
+
 // sendToAgent sends a message to a running agent container via docker exec.
 // Uses flock inside the container to serialize concurrent sends.
 func sendToAgent(ctx context.Context, d Deps, agentName, message string) (string, error) {
@@ -164,7 +182,11 @@ func registerAgentTools(r *Registry, d Deps) {
 			if err != nil {
 				return "", err
 			}
-			return sendToAgent(ctx, d, agentName, message)
+			resp, err := sendToAgent(ctx, d, agentName, message)
+			if err != nil {
+				return "", err
+			}
+			return agentHeader(d, agentName) + resp, nil
 		},
 	)
 
@@ -825,6 +847,7 @@ func registerAgentTools(r *Registry, d Deps) {
 func sendToMultiple(ctx context.Context, d Deps, names []string, message string) (string, error) {
 	type result struct {
 		Agent    string `json:"agent"`
+		Emoji    string `json:"emoji,omitempty"`
 		Response string `json:"response"`
 		Error    string `json:"error,omitempty"`
 	}
@@ -837,10 +860,11 @@ func sendToMultiple(ctx context.Context, d Deps, names []string, message string)
 		go func(idx int, name string) {
 			defer wg.Done()
 			resp, err := sendToAgent(ctx, d, name, message)
+			e := agentEmoji(d, name)
 			if err != nil {
-				results[idx] = result{Agent: name, Error: err.Error()}
+				results[idx] = result{Agent: name, Emoji: e, Error: err.Error()}
 			} else {
-				results[idx] = result{Agent: name, Response: resp}
+				results[idx] = result{Agent: name, Emoji: e, Response: resp}
 			}
 		}(i, n)
 	}
