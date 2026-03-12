@@ -41,13 +41,27 @@ func (c *Client) StartContainer(ctx context.Context, name string, opts Container
 		WithEnv(cfg, opts.Env)
 	}
 
-	// Remove any existing stopped container with this name.
-	// This ensures we always create fresh from the current image/config.
+	// Remove any existing non-running container with this name.
+	// Retries if the container is still transitioning (e.g. stopping).
 	if info, err := c.InspectContainer(ctx, name); err == nil && info.State != "running" {
 		_ = c.cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: true})
 	}
 
-	resp, err := c.cli.ContainerCreate(ctx, cfg, hostCfg, &network.NetworkingConfig{}, nil, name)
+	var resp container.CreateResponse
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		resp, err = c.cli.ContainerCreate(ctx, cfg, hostCfg, &network.NetworkingConfig{}, nil, name)
+		if err == nil {
+			break
+		}
+		// "name already in use" means the old container is still being removed.
+		if strings.Contains(err.Error(), "already in use") {
+			_ = c.cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: true})
+			time.Sleep(time.Duration(attempt+1) * time.Second)
+			continue
+		}
+		return fmt.Errorf("docker: create container %s: %w", name, err)
+	}
 	if err != nil {
 		return fmt.Errorf("docker: create container %s: %w", name, err)
 	}
@@ -61,7 +75,8 @@ func (c *Client) StartContainer(ctx context.Context, name string, opts Container
 	return nil
 }
 
-// StopContainer stops a running container with a 10-second timeout.
+// StopContainer stops a running container with a 10-second timeout
+// and waits for it to fully exit before returning.
 func (c *Client) StopContainer(ctx context.Context, name string) error {
 	timeout := 10
 	err := c.cli.ContainerStop(ctx, name, container.StopOptions{Timeout: &timeout})
@@ -70,6 +85,21 @@ func (c *Client) StopContainer(ctx context.Context, name string) error {
 			return nil // already gone
 		}
 		return fmt.Errorf("docker: stop container %s: %w", name, err)
+	}
+
+	// Wait for the container to fully exit (up to 15s beyond the stop timeout).
+	waitCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	statusCh, errCh := c.cli.ContainerWait(waitCtx, name, container.WaitConditionNotRunning)
+	select {
+	case <-statusCh:
+	case err := <-errCh:
+		if err != nil && !isNotFound(err) {
+			return fmt.Errorf("docker: wait for stop %s: %w", name, err)
+		}
+	case <-waitCtx.Done():
+		// Timed out waiting — force kill.
+		_ = c.cli.ContainerKill(ctx, name, "KILL")
 	}
 	return nil
 }
