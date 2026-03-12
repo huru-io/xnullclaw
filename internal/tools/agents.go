@@ -127,12 +127,29 @@ func buildAgentSystemPrompt(name string, v personaVariant) string {
 
 // sendToAgent sends a message to a running agent container via docker exec.
 // Uses flock inside the container to serialize concurrent sends.
+// sendToAgent sends a message to an agent asynchronously (fire-and-forget).
+// The agent's response is written to its .outbox/ directory and picked up
+// by the drain goroutine, which sends it directly to Telegram.
 func sendToAgent(ctx context.Context, d Deps, agentName, message string) (string, error) {
 	cn := agent.ContainerName(d.Home, agentName)
-	return d.Docker.ExecSync(ctx, cn,
-		[]string{"flock", "/tmp/.send.lock", "nullclaw", "agent", "-s", "mux"},
-		strings.NewReader(message),
-	)
+	// The shell command:
+	// 1. Acquires the send lock (serializes concurrent sends)
+	// 2. Creates the .outbox directory if needed
+	// 3. Writes the agent response to a .pending file
+	// 4. Renames to .msg atomically (only complete responses are drained)
+	cmd := []string{
+		"sh", "-c",
+		`flock /tmp/.send.lock sh -c '
+			mkdir -p /nullclaw-data/.outbox
+			f=/nullclaw-data/.outbox/$(date +%s)_$$_${RANDOM:-0}.pending
+			nullclaw agent -s mux > "$f" 2>&1
+			mv "$f" "${f%.pending}.msg"
+		'`,
+	}
+	if err := d.Docker.ExecFire(ctx, cn, cmd, strings.NewReader(message)); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Message delivered to %s. Response will appear shortly.", agentName), nil
 }
 
 // startOpts returns ContainerOpts for starting an agent.
@@ -145,7 +162,7 @@ func registerAgentTools(r *Registry, d Deps) {
 	r.Register(
 		Definition{
 			Name:        "send_to_agent",
-			Description: "Send a message to a specific agent and return its response",
+			Description: "Send a message to a specific agent (async — response is delivered to Telegram automatically)",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -172,7 +189,7 @@ func registerAgentTools(r *Registry, d Deps) {
 	r.Register(
 		Definition{
 			Name:        "send_to_all",
-			Description: "Send a message to ALL running agents in parallel and return all responses",
+			Description: "Send a message to ALL running agents in parallel (async — responses delivered to Telegram automatically)",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -213,7 +230,7 @@ func registerAgentTools(r *Registry, d Deps) {
 	r.Register(
 		Definition{
 			Name:        "send_to_some",
-			Description: "Send a message to a named subset of agents in parallel",
+			Description: "Send a message to a named subset of agents in parallel (async — responses delivered to Telegram automatically)",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -531,8 +548,10 @@ func registerAgentTools(r *Registry, d Deps) {
 				} else {
 					steps = append(steps, "Started with new name")
 					msg := agent.IdentityChangeMessage(oldName, newName)
-					if resp, err := sendToAgent(ctx, d, newName, msg); err == nil {
-						steps = append(steps, fmt.Sprintf("%s says: %s", newName, strings.TrimSpace(resp)))
+					if _, err := sendToAgent(ctx, d, newName, msg); err != nil {
+						steps = append(steps, fmt.Sprintf("Warning: identity message failed: %v", err))
+					} else {
+						steps = append(steps, "Identity update sent — response will appear shortly")
 					}
 				}
 			}
@@ -545,7 +564,7 @@ func registerAgentTools(r *Registry, d Deps) {
 	r.Register(
 		Definition{
 			Name:        "provision_agent",
-			Description: "Create a new agent, auto-configure it, assign a personality, start it, and say hello. Returns the agent's first response.",
+			Description: "Create a new agent, auto-configure it, assign a personality, start it, and send a greeting. The agent's response will appear in Telegram shortly.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -607,7 +626,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			}
 			steps = append(steps, "Started in mux mode")
 
-			// 5. Hello.
+			// 5. Hello (async — response will be drained to Telegram).
 			ownerName := d.Cfg.Persona.OwnerName
 			if ownerName == "" {
 				ownerName = "Controller"
@@ -617,11 +636,10 @@ func registerAgentTools(r *Registry, d Deps) {
 					"The human controller is named %s. You will address the human directly, not me. "+
 					"Say hello back briefly, in character.",
 				agentName, d.Cfg.Persona.Name, ownerName)
-			hello, err := sendToAgent(ctx, d, agentName, greeting)
-			if err != nil {
+			if _, err := sendToAgent(ctx, d, agentName, greeting); err != nil {
 				steps = append(steps, fmt.Sprintf("Warning: hello failed: %v", err))
 			} else {
-				steps = append(steps, fmt.Sprintf("%s says: %s", agentName, strings.TrimSpace(hello)))
+				steps = append(steps, "Greeting sent — response will appear shortly")
 			}
 
 			return strings.Join(steps, "\n"), nil
@@ -821,12 +839,12 @@ func registerAgentTools(r *Registry, d Deps) {
 	)
 }
 
-// sendToMultiple sends a message to multiple agents in parallel.
+// sendToMultiple sends a message to multiple agents in parallel (fire-and-forget).
 func sendToMultiple(ctx context.Context, d Deps, names []string, message string) (string, error) {
 	type result struct {
-		Agent    string `json:"agent"`
-		Response string `json:"response"`
-		Error    string `json:"error,omitempty"`
+		Agent  string `json:"agent"`
+		Status string `json:"status"`
+		Error  string `json:"error,omitempty"`
 	}
 
 	results := make([]result, len(names))
@@ -836,11 +854,11 @@ func sendToMultiple(ctx context.Context, d Deps, names []string, message string)
 		wg.Add(1)
 		go func(idx int, name string) {
 			defer wg.Done()
-			resp, err := sendToAgent(ctx, d, name, message)
+			_, err := sendToAgent(ctx, d, name, message)
 			if err != nil {
-				results[idx] = result{Agent: name, Error: err.Error()}
+				results[idx] = result{Agent: name, Status: "error", Error: err.Error()}
 			} else {
-				results[idx] = result{Agent: name, Response: resp}
+				results[idx] = result{Agent: name, Status: "delivered"}
 			}
 		}(i, n)
 	}

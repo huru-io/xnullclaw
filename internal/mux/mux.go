@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -163,28 +164,7 @@ func Run(mc Config) error {
 		lastChatID int64
 	)
 
-	// Track which agent(s) were called via send_to_agent during a turn,
-	// along with their response text, so we can prepend the identity header
-	// only when the LLM is relaying an agent's response (not composing its own).
-	type agentResult struct {
-		name     string
-		response string
-	}
-	var turnResults []agentResult
-	origOnToolCall := muxLoop.OnToolCall
-	muxLoop.OnToolCall = func(name string, args map[string]any, result string, duration time.Duration, err error) {
-		if name == "send_to_agent" && err == nil {
-			if a, ok := args["agent"].(string); ok {
-				turnResults = append(turnResults, agentResult{name: a, response: strings.TrimSpace(result)})
-			}
-		}
-		if origOnToolCall != nil {
-			origOnToolCall(name, args, result, duration, err)
-		}
-	}
-
 	runTurn := func(chatID int64, userText string) {
-		turnResults = nil // reset for this turn
 
 		ctxData, err := assembler.Assemble(userText)
 		if err != nil {
@@ -193,7 +173,7 @@ func Run(mc Config) error {
 			return
 		}
 
-		systemPrompt := promptBuilder.Build(ctxData.Agents, ctxData.Facts, ctxData.Compactions, ctxData.Rules)
+		systemPrompt := promptBuilder.Build(ctxData.Agents, ctxData.Facts, ctxData.Compactions, ctxData.Rules, ctxData.DrainMsgs)
 		muxLoop.SetSystemPrompt(systemPrompt)
 
 		if err := store.AddMessage(memory.Message{
@@ -224,18 +204,13 @@ func Run(mc Config) error {
 		cleanText, attachments := media.Parse(response)
 
 		if cleanText != "" {
-			// If exactly one agent was called and the LLM is relaying
-			// the agent's response (not composing its own), prepend header.
-			if len(turnResults) == 1 && isAgentRelay(cleanText, turnResults[0].response) {
-				cleanText = agentIdentityHeader(cfg, turnResults[0].name) + cleanText
-			}
 			if err := tgBot.Send(chatID, cleanText); err != nil {
 				logger.Error("telegram send failed", "error", err)
 			}
 		}
 
 		for _, att := range attachments {
-			sendAttachment(tgBot, logger, chatID, att)
+			sendAttachment(tgBot, logger, chatID, att, "")
 		}
 
 		logger.Info("turn complete", "input_len", len(userText), "output_len", len(response), "attachments", len(attachments))
@@ -245,7 +220,7 @@ func Run(mc Config) error {
 	tgBot.SetOnMessage(func(chatID int64, userID string, text string) {
 		turnMu.Lock()
 		defer turnMu.Unlock()
-		lastChatID = chatID
+		atomic.StoreInt64(&lastChatID, chatID)
 		logger.LogIncoming(userID, text, "text")
 		runTurn(chatID, text)
 	})
@@ -254,7 +229,7 @@ func Run(mc Config) error {
 	tgBot.SetOnVoice(func(chatID int64, userID string, fileID string) {
 		turnMu.Lock()
 		defer turnMu.Unlock()
-		lastChatID = chatID
+		atomic.StoreInt64(&lastChatID, chatID)
 		logger.LogIncoming(userID, fileID, "voice")
 
 		if !cfg.Voice.Enabled {
@@ -292,7 +267,7 @@ func Run(mc Config) error {
 	tgBot.SetOnMedia(func(chatID int64, userID string, fileID string, mediaType string, caption string, fileName string) {
 		turnMu.Lock()
 		defer turnMu.Unlock()
-		lastChatID = chatID
+		atomic.StoreInt64(&lastChatID, chatID)
 		logger.LogIncoming(userID, fileID, mediaType)
 
 		// Determine filename and extension.
@@ -482,6 +457,21 @@ All other messages are handled by the mux AI.`)
 		}
 	}()
 
+	// Start drain goroutine — polls agent .outbox/ directories and sends
+	// responses directly to Telegram, bypassing the LLM.
+	drainDone := make(chan struct{})
+	drainer := &Drainer{
+		home:   mc.Home,
+		store:  store,
+		bot:    tgBot,
+		cfg:    cfg,
+		logger: logger,
+		chatID: &lastChatID,
+		turnMu: &turnMu,
+	}
+	go drainer.Run(5*time.Second, drainDone)
+	logger.Info("drain goroutine started", "interval", "5s")
+
 	logger.Info("mux online")
 
 	// Wait for shutdown signal.
@@ -491,6 +481,11 @@ All other messages are handled by the mux AI.`)
 	logger.Info("shutdown signal received", "signal", sig.String())
 
 	// Graceful shutdown.
+	// Final drain pass — pick up any messages written since last tick.
+	drainer.drainAll()
+	// Stop drain goroutine.
+	close(drainDone)
+
 	// Stop mux-managed agents.
 	for _, agentName := range cfg.Agents.MuxManaged {
 		logger.LogLifecycle("stopping", agentName, "shutdown")
@@ -501,8 +496,8 @@ All other messages are handled by the mux AI.`)
 	}
 
 	// Send goodbye before stopping the bot (Stop closes the send queue).
-	if lastChatID != 0 {
-		tgBot.Send(lastChatID, "Mux going offline. Agents stopped.")
+	if cid := atomic.LoadInt64(&lastChatID); cid != 0 {
+		tgBot.Send(cid, "Mux going offline. Agents stopped.")
 	}
 
 	tgBot.Stop()
@@ -513,7 +508,8 @@ All other messages are handled by the mux AI.`)
 }
 
 // sendAttachment sends a media attachment via Telegram.
-func sendAttachment(tgBot *telegram.Bot, logger *logging.Logger, chatID int64, att media.Attachment) {
+// caption is used for photo/video/audio/document types (e.g. agent identity).
+func sendAttachment(tgBot *telegram.Bot, logger *logging.Logger, chatID int64, att media.Attachment, caption string) {
 	hostPath := att.Path
 
 	if strings.HasPrefix(att.Path, "/nullclaw-data/") {
@@ -533,19 +529,19 @@ func sendAttachment(tgBot *telegram.Bot, logger *logging.Logger, chatID int64, a
 	var err error
 	switch att.Type {
 	case media.TypeImage:
-		err = tgBot.SendPhoto(chatID, hostPath, "")
+		err = tgBot.SendPhoto(chatID, hostPath, caption)
 	case media.TypeVideo:
-		err = tgBot.SendVideo(chatID, hostPath, "")
+		err = tgBot.SendVideo(chatID, hostPath, caption)
 	case media.TypeVoice:
 		if ext == ".ogg" || ext == ".oga" || ext == ".opus" {
 			err = tgBot.SendVoice(chatID, hostPath)
 		} else {
-			err = tgBot.SendAudio(chatID, hostPath, "")
+			err = tgBot.SendAudio(chatID, hostPath, caption)
 		}
 	case media.TypeAudio:
-		err = tgBot.SendAudio(chatID, hostPath, "")
+		err = tgBot.SendAudio(chatID, hostPath, caption)
 	default:
-		err = tgBot.SendDocument(chatID, hostPath, "")
+		err = tgBot.SendDocument(chatID, hostPath, caption)
 	}
 
 	if err != nil {
@@ -554,25 +550,6 @@ func sendAttachment(tgBot *telegram.Bot, logger *logging.Logger, chatID int64, a
 	}
 }
 
-
-// isAgentRelay checks whether the LLM's output is essentially relaying
-// the agent's response (vs. composing its own message). We check if the
-// agent response appears as a substantial substring of the LLM output.
-func isAgentRelay(llmText, agentResponse string) bool {
-	if agentResponse == "" {
-		return false
-	}
-	trimmed := strings.TrimSpace(llmText)
-	// Exact match or LLM output contains the agent response.
-	if trimmed == agentResponse || strings.Contains(trimmed, agentResponse) {
-		return true
-	}
-	// Agent response contains the LLM output (LLM trimmed it).
-	if strings.Contains(agentResponse, trimmed) {
-		return true
-	}
-	return false
-}
 
 // agentIdentityHeader returns "emoji name\n\n" for a given agent,
 // using the mux config identities map.

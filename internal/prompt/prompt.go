@@ -25,14 +25,19 @@ Your job:
   - Use provision_agent (preferred) to create + configure + start a new agent in one step
   - Use start_agent/stop_agent/restart_agent for lifecycle management
   - Use update_agent_config to change agent settings
-- Synthesize multi-agent responses when useful
 - Maintain situational awareness of all agents
 - Remember user preferences and apply them consistently
-- Be transparent: when relaying agent responses, output them as-is without adding headers
 - NEVER create an agent with your own name (%s) — reject such requests
 
-When the user addresses an agent, be a transparent pipe — forward the message
-with minimal intervention unless passthrough rules say otherwise.
+IMPORTANT: Agent communication is ASYNCHRONOUS. When you send a message to an
+agent via send_to_agent, the message is delivered but the response comes later.
+Agent responses are delivered directly to the user via Telegram — you do NOT
+need to relay them. Do NOT tell the user what the agent said; they will see it
+directly. You can see recent agent activity in the "Recent agent activity"
+section of this prompt for context awareness.
+
+When the user addresses an agent, forward their message and briefly confirm
+delivery. Do NOT wait for or fabricate the agent's response.
 
 When the user talks to YOU, respond directly. You handle:
 - Agent management, system status, multi-agent coordination
@@ -74,7 +79,7 @@ func New(cfg *config.Config) *Builder {
 }
 
 // Build assembles the full system prompt from all dynamic sources.
-func (b *Builder) Build(agents []memory.AgentState, facts []memory.Fact, compactions []memory.Compaction, rules []memory.Fact) string {
+func (b *Builder) Build(agents []memory.AgentState, facts []memory.Fact, compactions []memory.Compaction, rules []memory.Fact, drainMsgs []memory.Message) string {
 	var sections []string
 
 	// 1. Core role (with bot name injected)
@@ -101,7 +106,27 @@ func (b *Builder) Build(agents []memory.AgentState, facts []memory.Fact, compact
 		sections = append(sections, block)
 	}
 
+	// 7. Recent agent activity (from drain)
+	if block := buildDrainBlock(drainMsgs); block != "" {
+		sections = append(sections, block)
+	}
+
 	return strings.Join(sections, "\n\n")
+}
+
+// buildDrainBlock formats recent agent drain output for the system prompt,
+// so the LLM knows what agents have been saying without being in the relay path.
+func buildDrainBlock(msgs []memory.Message) string {
+	if len(msgs) == 0 {
+		return ""
+	}
+	var lines []string
+	lines = append(lines, "Recent agent activity (already delivered to user):")
+	for _, m := range msgs {
+		ago := time.Since(m.Timestamp).Truncate(time.Second)
+		lines = append(lines, fmt.Sprintf("- [%s ago] %s", ago, m.Content))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // buildPersonaBlock generates natural language behavioral instructions from persona config.

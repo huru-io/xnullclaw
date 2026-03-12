@@ -17,6 +17,7 @@ type MockOps struct {
 	ListContainersFn     func(ctx context.Context, prefix string) ([]ContainerInfo, error)
 	ContainerLogsFn      func(ctx context.Context, name string, opts LogOpts) (io.ReadCloser, error)
 	ExecSyncFn           func(ctx context.Context, name string, cmd []string, stdin io.Reader) (string, error)
+	ExecFireFn           func(ctx context.Context, name string, cmd []string, stdin io.Reader) error
 	AttachInteractiveFn  func(ctx context.Context, name string, cmd []string) error
 	CopyToContainerFn    func(ctx context.Context, name, destPath string, content io.Reader) error
 	CopyFromContainerFn  func(ctx context.Context, name, srcPath string) (io.ReadCloser, error)
@@ -84,6 +85,13 @@ func (m *MockOps) ExecSync(ctx context.Context, name string, cmd []string, stdin
 		return m.ExecSyncFn(ctx, name, cmd, stdin)
 	}
 	return "", nil
+}
+
+func (m *MockOps) ExecFire(ctx context.Context, name string, cmd []string, stdin io.Reader) error {
+	if m.ExecFireFn != nil {
+		return m.ExecFireFn(ctx, name, cmd, stdin)
+	}
+	return nil
 }
 
 func (m *MockOps) AttachInteractive(ctx context.Context, name string, cmd []string) error {

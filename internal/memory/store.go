@@ -754,6 +754,19 @@ func (s *Store) ClearMessages() error {
 	return err
 }
 
+// PruneOldMessages deletes messages in the given stream older than maxAge.
+func (s *Store) PruneOldMessages(stream string, maxAge time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-maxAge)
+	result, err := s.db.Exec(
+		"DELETE FROM messages WHERE stream = ? AND timestamp < ?",
+		stream, cutoff,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 // Stats returns row counts for all tables.
 func (s *Store) Stats() (map[string]int, error) {
 	tables := []string{"messages", "facts", "compactions", "costs", "agent_state"}

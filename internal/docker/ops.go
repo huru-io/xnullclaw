@@ -22,6 +22,7 @@ type Ops interface {
 	// Container interaction
 	ContainerLogs(ctx context.Context, name string, opts LogOpts) (io.ReadCloser, error)
 	ExecSync(ctx context.Context, name string, cmd []string, stdin io.Reader) (string, error)
+	ExecFire(ctx context.Context, name string, cmd []string, stdin io.Reader) error
 	AttachInteractive(ctx context.Context, name string, cmd []string) error
 
 	// File transfer

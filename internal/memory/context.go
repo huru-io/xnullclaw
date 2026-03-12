@@ -13,7 +13,8 @@ type ContextData struct {
 	Agents      []AgentState
 	Facts       []Fact
 	Compactions []Compaction
-	Rules       []Fact // facts where type='rule'
+	Rules       []Fact    // facts where type='rule'
+	DrainMsgs   []Message // recent agent drain output
 
 	// Time-aware metadata
 	LastUserMessage *time.Time               // when the user last sent a message
@@ -106,7 +107,14 @@ func (a *Assembler) Assemble(query string) (*ContextData, error) {
 	}
 	cd.Compactions = compactions
 
-	// 4. Get the last user message timestamp.
+	// 4. Load recent drain messages (agent output already sent to Telegram).
+	drainMsgs, err := a.store.RecentMessages("drain", 10)
+	if err != nil {
+		return nil, fmt.Errorf("context: load drain messages: %w", err)
+	}
+	cd.DrainMsgs = drainMsgs
+
+	// 5. Get the last user message timestamp.
 	lastMsg, err := a.lastUserMessageTime()
 	if err != nil {
 		return nil, fmt.Errorf("context: last user message: %w", err)

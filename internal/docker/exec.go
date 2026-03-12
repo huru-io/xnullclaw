@@ -10,6 +10,40 @@ import (
 	"github.com/docker/docker/pkg/stdcopy"
 )
 
+// ExecFire runs a command inside a container, delivers stdin, and returns
+// immediately without waiting for the command to finish or reading its output.
+// The command continues running inside the container after this returns.
+func (c *Client) ExecFire(ctx context.Context, name string, cmd []string, stdin io.Reader) error {
+	execCfg := container.ExecOptions{
+		Cmd:          cmd,
+		AttachStdin:  stdin != nil,
+		AttachStdout: false,
+		AttachStderr: false,
+	}
+
+	execResp, err := c.cli.ContainerExecCreate(ctx, name, execCfg)
+	if err != nil {
+		return fmt.Errorf("docker: exec fire in %s: %w", name, err)
+	}
+
+	attachResp, err := c.cli.ContainerExecAttach(ctx, execResp.ID, container.ExecAttachOptions{})
+	if err != nil {
+		return fmt.Errorf("docker: exec fire attach in %s: %w", name, err)
+	}
+
+	if stdin != nil {
+		go func() {
+			io.Copy(attachResp.Conn, stdin)
+			attachResp.CloseWrite()
+			attachResp.Close()
+		}()
+	} else {
+		attachResp.Close()
+	}
+
+	return nil
+}
+
 // ExecSync runs a command inside a container and returns stdout+stderr.
 // If stdin is non-nil, it is piped to the command's stdin.
 func (c *Client) ExecSync(ctx context.Context, name string, cmd []string, stdin io.Reader) (string, error) {

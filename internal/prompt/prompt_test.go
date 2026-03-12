@@ -245,7 +245,7 @@ func TestBuildCompactionsBlock_WithEntries(t *testing.T) {
 func TestBuild_ContainsCoreRole(t *testing.T) {
 	cfg := defaultTestConfig()
 	b := New(cfg)
-	got := b.Build(nil, nil, nil, nil)
+	got := b.Build(nil, nil, nil, nil, nil)
 	if !strings.Contains(got, "a personal AI orchestrator") {
 		t.Errorf("Build output missing core role")
 	}
@@ -259,7 +259,7 @@ func TestBuild_ContainsCurrentTime(t *testing.T) {
 
 	cfg := defaultTestConfig()
 	b := New(cfg)
-	got := b.Build(nil, nil, nil, nil)
+	got := b.Build(nil, nil, nil, nil, nil)
 	if !strings.Contains(got, "2025-06-15T14:30:00Z") {
 		t.Errorf("Build output missing current time, got:\n%s", got)
 	}
@@ -288,7 +288,7 @@ func TestBuild_WithAgents(t *testing.T) {
 		},
 	}
 
-	got := b.Build(agents, nil, nil, nil)
+	got := b.Build(agents, nil, nil, nil, nil)
 	if !strings.Contains(got, "Active agents:") {
 		t.Errorf("missing Active agents section")
 	}
@@ -309,7 +309,7 @@ func TestBuild_WithAgents(t *testing.T) {
 func TestBuild_EmptyInputs(t *testing.T) {
 	cfg := defaultTestConfig()
 	b := New(cfg)
-	got := b.Build(nil, nil, nil, nil)
+	got := b.Build(nil, nil, nil, nil, nil)
 
 	// Should still have core role and persona
 	if !strings.Contains(got, "a personal AI orchestrator") {
@@ -367,7 +367,7 @@ func TestBuild_AllSections(t *testing.T) {
 		{Content: "always add context to code requests", Agent: strPtr("bob")},
 	}
 
-	got := b.Build(agents, facts, compactions, rules)
+	got := b.Build(agents, facts, compactions, rules, nil)
 
 	// All 6 sections should be present
 	checks := []string{
@@ -426,7 +426,7 @@ func TestBuild_CorrectionDictionary(t *testing.T) {
 		"kubernetes": {"k8s", "kube"},
 	}
 	b := New(cfg)
-	got := b.Build(nil, nil, nil, nil)
+	got := b.Build(nil, nil, nil, nil, nil)
 	if !strings.Contains(got, "Correction dictionary:") {
 		t.Errorf("missing correction dictionary, got:\n%s", got)
 	}
