@@ -705,11 +705,12 @@ func (s *Store) RenameAgent(oldName, newName string) error {
 
 	// Compactions store agents as comma-separated in a text field.
 	// Replace occurrences of the old name.
-	rows, err := tx.Query("SELECT id, agents FROM compactions WHERE agents LIKE ?",
-		"%"+oldName+"%")
+	rows, err := tx.Query(`SELECT id, agents FROM compactions WHERE agents LIKE ? ESCAPE '\'`,
+		"%"+escapeLike(oldName)+"%")
 	if err != nil {
 		return fmt.Errorf("query compactions: %w", err)
 	}
+	defer rows.Close()
 	var updates []struct {
 		id     int64
 		agents string
@@ -718,7 +719,6 @@ func (s *Store) RenameAgent(oldName, newName string) error {
 		var id int64
 		var agents string
 		if err := rows.Scan(&id, &agents); err != nil {
-			rows.Close()
 			return err
 		}
 		// Replace the agent name in the comma-separated list.
@@ -733,7 +733,9 @@ func (s *Store) RenameAgent(oldName, newName string) error {
 			agents string
 		}{id, strings.Join(parts, ",")})
 	}
-	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate compactions: %w", err)
+	}
 
 	for _, u := range updates {
 		if _, err := tx.Exec("UPDATE compactions SET agents = ? WHERE id = ?",

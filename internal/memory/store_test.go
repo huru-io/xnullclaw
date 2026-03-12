@@ -561,6 +561,95 @@ func TestAgentCostSummary(t *testing.T) {
 
 // ==================== Schema creation idempotency ====================
 
+// ==================== RenameAgent ====================
+
+func TestRenameAgent_BasicTables(t *testing.T) {
+	s := newTestStore(t)
+	_ = s.AddMessage(Message{Role: "user", Content: "hi", Agent: strPtr("alice"), Stream: "conversation"})
+	_ = s.AddFact(Fact{Content: "alice likes tea", Agent: strPtr("alice"), Source: strPtr("test"), Type: "fact"})
+
+	if err := s.RenameAgent("alice", "bob"); err != nil {
+		t.Fatalf("RenameAgent: %v", err)
+	}
+
+	// Messages should now be under "bob".
+	msgs, _ := s.RecentMessages("conversation", 10)
+	found := false
+	for _, m := range msgs {
+		if m.Agent != nil && *m.Agent == "bob" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected message agent renamed to bob")
+	}
+}
+
+func TestRenameAgent_CompactionExactMatch(t *testing.T) {
+	s := newTestStore(t)
+	// Add a compaction with agents "alice,bob".
+	_ = s.AddCompaction(Compaction{
+		PeriodStart: time.Now().Add(-time.Hour),
+		PeriodEnd:   time.Now(),
+		Summary:     "test",
+		Agents:      "alice,bob",
+	})
+
+	// Rename "al" should NOT affect "alice".
+	if err := s.RenameAgent("al", "albert"); err != nil {
+		t.Fatalf("RenameAgent: %v", err)
+	}
+	comps, _ := s.RecentCompactions(10)
+	if len(comps) != 1 {
+		t.Fatalf("expected 1 compaction, got %d", len(comps))
+	}
+	if comps[0].Agents != "alice,bob" {
+		t.Errorf("should not rename partial match: got %q", comps[0].Agents)
+	}
+
+	// Rename "alice" should work.
+	if err := s.RenameAgent("alice", "carol"); err != nil {
+		t.Fatalf("RenameAgent: %v", err)
+	}
+	comps, _ = s.RecentCompactions(10)
+	if comps[0].Agents != "carol,bob" {
+		t.Errorf("expected carol,bob, got %q", comps[0].Agents)
+	}
+}
+
+func TestRenameAgent_WildcardInName(t *testing.T) {
+	s := newTestStore(t)
+	// Agent name with LIKE wildcards should not match other rows.
+	_ = s.AddCompaction(Compaction{
+		PeriodStart: time.Now().Add(-time.Hour),
+		PeriodEnd:   time.Now(),
+		Summary:     "test1",
+		Agents:      "a%b",
+	})
+	_ = s.AddCompaction(Compaction{
+		PeriodStart: time.Now().Add(-2 * time.Hour),
+		PeriodEnd:   time.Now().Add(-time.Hour),
+		Summary:     "test2",
+		Agents:      "axb,other",
+	})
+
+	// Rename "a%b" → "fixed". Should only affect the first compaction.
+	if err := s.RenameAgent("a%b", "fixed"); err != nil {
+		t.Fatalf("RenameAgent: %v", err)
+	}
+	comps, _ := s.RecentCompactions(10)
+	agentsMap := make(map[string]string)
+	for _, c := range comps {
+		agentsMap[c.Summary] = c.Agents
+	}
+	if agentsMap["test1"] != "fixed" {
+		t.Errorf("test1 agents: got %q, want %q", agentsMap["test1"], "fixed")
+	}
+	if agentsMap["test2"] != "axb,other" {
+		t.Errorf("test2 should be unchanged: got %q", agentsMap["test2"])
+	}
+}
+
 func TestNewIdempotent(t *testing.T) {
 	// Opening the same in-memory DB twice shouldn't fail.
 	s := newTestStore(t)

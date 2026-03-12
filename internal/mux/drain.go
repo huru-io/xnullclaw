@@ -36,7 +36,7 @@ const (
 type Drainer struct {
 	home   string
 	store  *memory.Store
-	bot    *telegram.Bot
+	bot    telegram.Sender
 	cfg    *config.Config
 	logger *logging.Logger
 
@@ -224,13 +224,8 @@ func (d *Drainer) drainAgent(name string) {
 		}
 
 		// Store in memory so the LLM has context awareness of agent activity.
-		// Sanitize: collapse newlines to prevent prompt section injection.
-		sanitized := strings.Map(func(r rune) rune {
-			if r == '\n' || r == '\r' {
-				return ' '
-			}
-			return r
-		}, truncateLog(raw, 300))
+		// Sanitize: collapse newlines + control chars to prevent prompt injection.
+		sanitized := config.SanitizeText(raw, 300)
 		agentName := name
 		if allOK {
 			if err := d.store.AddMessage(memory.Message{

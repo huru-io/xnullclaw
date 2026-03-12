@@ -541,6 +541,93 @@ func TestMarshalUnmarshalToolCalls(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// trimMessages tests
+// ---------------------------------------------------------------------------
+
+func TestTrimMessages_UnderLimit(t *testing.T) {
+	m := New(testConfig(), &mockClient{})
+	m.maxMessages = 10
+	m.messages = []Message{
+		{Role: "user", Content: "a"},
+		{Role: "assistant", Content: "b"},
+	}
+	m.trimMessages()
+	if len(m.messages) != 2 {
+		t.Errorf("should not trim under limit, got %d messages", len(m.messages))
+	}
+}
+
+func TestTrimMessages_TrimsAtUserBoundary(t *testing.T) {
+	m := New(testConfig(), &mockClient{})
+	m.maxMessages = 4
+	m.messages = []Message{
+		{Role: "user", Content: "old1"},
+		{Role: "assistant", Content: "old2"},
+		{Role: "user", Content: "old3"},
+		{Role: "assistant", Content: "old4"},
+		{Role: "user", Content: "new1"},
+		{Role: "assistant", Content: "new2"},
+	}
+	m.trimMessages()
+	// 6 - 4 = 2 excess. Scan from index 2 → messages[2] is "user" → cut there.
+	if len(m.messages) != 4 {
+		t.Fatalf("expected 4, got %d", len(m.messages))
+	}
+	if m.messages[0].Content != "old3" {
+		t.Errorf("first message should be old3, got %q", m.messages[0].Content)
+	}
+}
+
+func TestTrimMessages_SkipsToolPairs(t *testing.T) {
+	m := New(testConfig(), &mockClient{})
+	m.maxMessages = 3
+	m.messages = []Message{
+		{Role: "user", Content: "q1"},
+		{Role: "assistant", Content: "tc", ToolCalls: []ToolCall{{ID: "1", Name: "x"}}},
+		{Role: "tool", Content: "result", ToolCallID: "1"},
+		{Role: "assistant", Content: "answer"},
+		{Role: "user", Content: "q2"},
+		{Role: "assistant", Content: "a2"},
+	}
+	m.trimMessages()
+	// 6 - 3 = 3 excess. Scan from index 3 → "assistant", index 4 → "user" → cut at 4.
+	if len(m.messages) != 2 {
+		t.Fatalf("expected 2, got %d", len(m.messages))
+	}
+	if m.messages[0].Content != "q2" {
+		t.Errorf("first should be q2, got %q", m.messages[0].Content)
+	}
+}
+
+func TestTrimMessages_HardFallbackWhenNoUser(t *testing.T) {
+	m := New(testConfig(), &mockClient{})
+	m.maxMessages = 2
+	m.messages = []Message{
+		{Role: "assistant", Content: "a1"},
+		{Role: "tool", Content: "t1"},
+		{Role: "assistant", Content: "a2"},
+		{Role: "tool", Content: "t2"},
+	}
+	m.trimMessages()
+	// 4 - 2 = 2 excess. No "user" found → hard cut at index 2.
+	if len(m.messages) != 2 {
+		t.Fatalf("expected 2 after hard fallback, got %d", len(m.messages))
+	}
+	if m.messages[0].Content != "a2" {
+		t.Errorf("first should be a2, got %q", m.messages[0].Content)
+	}
+}
+
+func TestTrimMessages_MinMaxMessages(t *testing.T) {
+	cfg := testConfig()
+	cfg.Memory.SummaryIntervalMessages = 1 // would give maxMsgs=2 without floor
+	m := New(cfg, &mockClient{})
+	if m.maxMessages < MinMaxMessages {
+		t.Errorf("maxMessages %d should be >= MinMaxMessages %d", m.maxMessages, MinMaxMessages)
+	}
+}
+
 func TestMultiStepToolChain(t *testing.T) {
 	// Simulate a multi-step scenario: model calls tool A, sees result,
 	// calls tool B, sees result, then produces text.

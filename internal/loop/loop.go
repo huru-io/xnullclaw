@@ -94,6 +94,20 @@ const DefaultMaxIter = 20
 // DefaultToolTimeout is the per-tool-call execution timeout.
 const DefaultToolTimeout = 60 * time.Second
 
+// DefaultMaxMessages is the rolling window size for conversation history.
+// When exceeded, the oldest messages are trimmed to keep the window bounded.
+const DefaultMaxMessages = 100
+
+// MinMaxMessages is the minimum rolling window size. Even with a very low
+// SummaryIntervalMessages config, we need room for at least one full
+// tool-calling turn (user + multiple assistant/tool rounds).
+const MinMaxMessages = 20
+
+// rollingWindowMultiplier keeps 2× the compaction interval in context so the
+// LLM always has at least one full compaction period of history even right
+// after a compaction trims the oldest messages.
+const rollingWindowMultiplier = 2
+
 // Mux is the agentic loop orchestrator. It drives a multi-step conversation
 // with the LLM, executing tool calls between iterations until the model
 // produces a final text response.
@@ -105,6 +119,7 @@ type Mux struct {
 	messages      []Message
 	systemPrompt  string
 	maxIter       int
+	maxMessages   int
 	toolTimeout   time.Duration
 
 	// Observability hooks (optional).
@@ -114,6 +129,10 @@ type Mux struct {
 
 // New creates a new Mux with the given config and LLM client.
 func New(cfg *config.Config, client ChatClient) *Mux {
+	maxMsgs := cfg.Memory.SummaryIntervalMessages * rollingWindowMultiplier
+	if maxMsgs < MinMaxMessages {
+		maxMsgs = DefaultMaxMessages
+	}
 	return &Mux{
 		client:        client,
 		cfg:           cfg,
@@ -121,6 +140,7 @@ func New(cfg *config.Config, client ChatClient) *Mux {
 		toolExecutors: make(map[string]ToolExecutor),
 		messages:      nil,
 		maxIter:       DefaultMaxIter,
+		maxMessages:   maxMsgs,
 		toolTimeout:   DefaultToolTimeout,
 	}
 }
@@ -153,6 +173,39 @@ func (m *Mux) SetToolTimeout(d time.Duration) {
 	}
 }
 
+// SetMaxMessages overrides the rolling window size.
+func (m *Mux) SetMaxMessages(n int) {
+	if n > 0 {
+		m.maxMessages = n
+	}
+}
+
+// trimMessages drops the oldest messages when the window exceeds maxMessages.
+// It tries to find the first "user" message boundary after the cut point to
+// avoid splitting a tool-call / tool-result pair. If no user boundary exists,
+// it falls back to a hard cut at the excess point to guarantee the window
+// remains bounded.
+func (m *Mux) trimMessages() {
+	if m.maxMessages <= 0 || len(m.messages) <= m.maxMessages {
+		return
+	}
+	excess := len(m.messages) - m.maxMessages
+	// Find the next "user" message at or after `excess` to get a clean boundary.
+	cutAt := excess
+	for cutAt < len(m.messages) {
+		if m.messages[cutAt].Role == "user" {
+			break
+		}
+		cutAt++
+	}
+	if cutAt >= len(m.messages) {
+		// No user boundary found — hard cut at excess to keep window bounded.
+		// This may orphan tool results, but the model will recover on next turn.
+		cutAt = excess
+	}
+	m.messages = m.messages[cutAt:]
+}
+
 // Messages returns the current conversation history (for persistence).
 func (m *Mux) Messages() []Message {
 	out := make([]Message, len(m.messages))
@@ -180,6 +233,9 @@ func (m *Mux) ClearHistory() {
 // iteration calls the LLM, checks for tool calls, executes them in parallel,
 // appends results, and loops until the model produces a text-only response.
 func (m *Mux) Run(ctx context.Context, userMessage string) (string, error) {
+	// 0. Trim conversation window to prevent unbounded growth.
+	m.trimMessages()
+
 	// 1. Append the user message.
 	m.messages = append(m.messages, Message{
 		Role:      "user",

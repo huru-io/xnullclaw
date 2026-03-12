@@ -513,7 +513,7 @@ All other messages are handled by the mux AI.`)
 
 // sendAttachment sends a media attachment via Telegram.
 // caption is used for photo/video/audio/document types (e.g. agent identity).
-func sendAttachment(tgBot *telegram.Bot, logger *logging.Logger, chatID int64, att media.Attachment, caption string) {
+func sendAttachment(tgBot telegram.Sender, logger *logging.Logger, chatID int64, att media.Attachment, caption string) {
 	hostPath := att.Path
 
 	if strings.HasPrefix(att.Path, "/nullclaw-data/") {

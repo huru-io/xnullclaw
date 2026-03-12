@@ -45,6 +45,38 @@ When the user talks to YOU, respond directly. You handle:
 
 // Dimension descriptors and picker are in config/dimensions.go (single source of truth).
 
+// Content limits for dynamic sections injected into the system prompt.
+// These prevent prompt bloat and limit the surface area for injection.
+const (
+	maxFactLen      = 500  // max runes per fact/rule entry
+	maxDrainMsgLen  = 400  // max runes per drain message
+	maxCompactionLen = 800 // max runes per compaction summary
+)
+
+// sanitizeEntry strips control characters (including newlines) and truncates
+// to maxRunes. Newlines are collapsed to spaces to prevent injected closing
+// tags (e.g. "</facts>") from breaking out of XML-delimited prompt sections.
+func sanitizeEntry(s string, maxRunes int) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == '\n' || r == '\r' || r == '\t' {
+			b.WriteRune(' ')
+		} else if r < 32 {
+			continue // strip other control characters
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	cleaned := b.String()
+
+	runes := []rune(cleaned)
+	if len(runes) > maxRunes {
+		return string(runes[:maxRunes-1]) + "…"
+	}
+	return cleaned
+}
+
 // nowFunc is the function used to get the current time. Tests can override it.
 var nowFunc = time.Now
 
@@ -96,17 +128,20 @@ func (b *Builder) Build(agents []memory.AgentState, facts []memory.Fact, compact
 
 // buildDrainBlock formats recent agent drain output for the system prompt,
 // so the LLM knows what agents have been saying without being in the relay path.
+// Content is wrapped in XML delimiters and sanitized to limit injection surface.
 func buildDrainBlock(msgs []memory.Message) string {
 	if len(msgs) == 0 {
 		return ""
 	}
 	now := nowFunc()
 	var lines []string
+	lines = append(lines, "<agent-activity>")
 	lines = append(lines, "Recent agent activity (already delivered to user — do NOT repeat or relay these):")
 	for _, m := range msgs {
 		ago := now.Sub(m.Timestamp).Truncate(time.Second)
-		lines = append(lines, fmt.Sprintf("- [%s ago] %s", ago, m.Content))
+		lines = append(lines, fmt.Sprintf("- [%s ago] %s", ago, sanitizeEntry(m.Content, maxDrainMsgLen)))
 	}
+	lines = append(lines, "</agent-activity>")
 	return strings.Join(lines, "\n")
 }
 
@@ -121,32 +156,35 @@ func (b *Builder) buildPersonaBlock() string {
 	}
 
 	var extra []string
-	extra = append(extra, fmt.Sprintf("Your name is %s.", b.cfg.Persona.Name))
+	extra = append(extra, fmt.Sprintf("Your name is %s.", sanitizeEntry(b.cfg.Persona.Name, 50)))
 	if b.cfg.Persona.Bio != "" {
-		extra = append(extra, b.cfg.Persona.Bio)
+		extra = append(extra, sanitizeEntry(b.cfg.Persona.Bio, 500))
 	}
-	extra = append(extra, fmt.Sprintf("Respond in %s.", b.cfg.Persona.Language))
+	extra = append(extra, fmt.Sprintf("Respond in %s.", sanitizeEntry(b.cfg.Persona.Language, 30)))
 	if b.cfg.Persona.ExtraInstructions != "" {
-		extra = append(extra, b.cfg.Persona.ExtraInstructions)
+		extra = append(extra, sanitizeEntry(b.cfg.Persona.ExtraInstructions, 1000))
 	}
 
 	return strings.Join(lines, "\n") + "\n\n" + strings.Join(extra, "\n")
 }
 
 // buildRulesBlock formats passthrough rules from facts of type "rule".
+// Content is wrapped in XML delimiters and sanitized to limit injection surface.
 func buildRulesBlock(rules []memory.Fact) string {
 	if len(rules) == 0 {
 		return ""
 	}
 	var lines []string
+	lines = append(lines, "<rules>")
 	lines = append(lines, "Active passthrough rules:")
 	for _, r := range rules {
 		scope := "global"
 		if r.Agent != nil && *r.Agent != "" {
 			scope = *r.Agent
 		}
-		lines = append(lines, fmt.Sprintf("- %s: %s", scope, r.Content))
+		lines = append(lines, fmt.Sprintf("- %s: %s", scope, sanitizeEntry(r.Content, maxFactLen)))
 	}
+	lines = append(lines, "</rules>")
 	return strings.Join(lines, "\n")
 }
 
@@ -160,10 +198,10 @@ func (b *Builder) buildRosterBlock(agents []memory.AgentState) string {
 		lines = append(lines, "")
 		lines = append(lines, "Active agents:")
 		for _, a := range agents {
-			emoji := derefOr(a.Emoji, "?")
-			role := derefOr(a.Role, "unknown role")
-			status := derefOr(a.Status, "unknown")
-			model := derefOr(a.Model, "unknown")
+			emoji := sanitizeEntry(derefOr(a.Emoji, "?"), 4)
+			role := sanitizeEntry(derefOr(a.Role, "unknown role"), 100)
+			status := sanitizeEntry(derefOr(a.Status, "unknown"), 20)
+			model := sanitizeEntry(derefOr(a.Model, "unknown"), 50)
 
 			uptime := "unknown"
 			lastMsg := "never"
@@ -194,35 +232,41 @@ func (b *Builder) buildRosterBlock(agents []memory.AgentState) string {
 }
 
 // buildFactsBlock formats long-term facts for the system prompt.
+// Content is wrapped in XML delimiters and sanitized to limit injection surface.
 func buildFactsBlock(facts []memory.Fact) string {
 	if len(facts) == 0 {
 		return ""
 	}
 	var lines []string
+	lines = append(lines, "<facts>")
 	lines = append(lines, "Known facts:")
 	for _, f := range facts {
 		source := "unknown"
 		if f.Source != nil && *f.Source != "" {
 			source = *f.Source
 		}
-		lines = append(lines, fmt.Sprintf("- %s (source: %s, relevance: %.2f)", f.Content, source, f.Score))
+		lines = append(lines, fmt.Sprintf("- %s (source: %s, relevance: %.2f)", sanitizeEntry(f.Content, maxFactLen), source, f.Score))
 	}
+	lines = append(lines, "</facts>")
 	return strings.Join(lines, "\n")
 }
 
 // buildCompactionsBlock formats recent compaction summaries.
+// Content is wrapped in XML delimiters and sanitized to limit injection surface.
 func buildCompactionsBlock(compactions []memory.Compaction) string {
 	if len(compactions) == 0 {
 		return ""
 	}
 	var lines []string
+	lines = append(lines, "<history>")
 	lines = append(lines, "Recent history:")
 	for _, c := range compactions {
 		lines = append(lines, fmt.Sprintf("[%s to %s] %s",
 			c.PeriodStart.Format(time.RFC3339),
 			c.PeriodEnd.Format(time.RFC3339),
-			c.Summary))
+			sanitizeEntry(c.Summary, maxCompactionLen)))
 	}
+	lines = append(lines, "</history>")
 	return strings.Join(lines, "\n")
 }
 

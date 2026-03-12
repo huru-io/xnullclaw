@@ -44,6 +44,22 @@ type Command struct {
 	RawText string // full original message text
 }
 
+// Sender is the subset of Bot methods used for sending messages and media.
+// Consumers that only need to send (e.g. Drainer, sendAttachment) should
+// accept this interface so they can be tested with a mock.
+type Sender interface {
+	Send(chatID int64, text string) error
+	SendTyping(chatID int64) error
+	SendPhoto(chatID int64, filePath string, caption string) error
+	SendDocument(chatID int64, filePath string, caption string) error
+	SendVoice(chatID int64, filePath string) error
+	SendAudio(chatID int64, filePath string, caption string) error
+	SendVideo(chatID int64, filePath string, caption string) error
+}
+
+// Compile-time check that *Bot implements Sender.
+var _ Sender = (*Bot)(nil)
+
 // Bot handles Telegram communication.
 //
 // Group mode (GroupID != 0):
