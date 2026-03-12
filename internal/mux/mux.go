@@ -205,6 +205,12 @@ func Run(mc Config) error {
 			logger.Error("failed to store assistant message", "error", err)
 		}
 
+		// Suppress HEARTBEAT_OK responses — don't forward to Telegram.
+		if IsHeartbeatOK(response) {
+			logger.Info("turn complete (heartbeat ack suppressed)", "input_len", len(userText))
+			return
+		}
+
 		cleanText, attachments := media.Parse(response)
 
 		if cleanText != "" {
@@ -476,6 +482,19 @@ All other messages are handled by the mux AI.`)
 	go drainer.Run(drainInterval, drainDone)
 	logger.Info("drain goroutine started", "interval", drainInterval)
 
+	// Start scheduler goroutine — checks for due tasks and fires synthetic turns.
+	schedulerDone := make(chan struct{})
+	scheduler := &Scheduler{
+		store:   store,
+		cfg:     cfg,
+		logger:  logger,
+		chatID:  &lastChatID,
+		turnMu:  &turnMu,
+		runTurn: runTurn,
+	}
+	go scheduler.Run(schedulerInterval, schedulerDone)
+	logger.Info("scheduler goroutine started", "interval", schedulerInterval)
+
 	logger.Info("mux online")
 
 	// Wait for shutdown signal.
@@ -494,9 +513,12 @@ All other messages are handled by the mux AI.`)
 		}
 	}
 
-	// 2. Final drain pass — pick up messages written before/during agent shutdown.
+	// 2. Stop scheduler — no more synthetic turns after this.
+	close(schedulerDone)
+
+	// 3. Final drain pass — pick up messages written before/during agent shutdown.
 	drainer.drainAll()
-	// 3. Stop drain goroutine.
+	// 4. Stop drain goroutine.
 	close(drainDone)
 
 	// Send goodbye before stopping the bot (Stop closes the send queue).

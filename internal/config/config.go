@@ -8,14 +8,20 @@ import (
 
 // Config is the top-level configuration matching PRD 5.3.
 type Config struct {
-	Telegram TelegramConfig `json:"telegram"`
-	OpenAI   OpenAIConfig   `json:"openai"`
-	Agents   AgentsConfig   `json:"agents"`
-	Voice    VoiceConfig    `json:"voice"`
-	Memory   MemoryConfig   `json:"memory"`
-	Costs    CostsConfig    `json:"costs"`
-	Logging  LoggingConfig  `json:"logging"`
-	Persona  PersonaConfig  `json:"persona"`
+	Telegram  TelegramConfig  `json:"telegram"`
+	OpenAI    OpenAIConfig    `json:"openai"`
+	Agents    AgentsConfig    `json:"agents"`
+	Voice     VoiceConfig     `json:"voice"`
+	Memory    MemoryConfig    `json:"memory"`
+	Costs     CostsConfig     `json:"costs"`
+	Logging   LoggingConfig   `json:"logging"`
+	Persona   PersonaConfig   `json:"persona"`
+	Scheduler SchedulerConfig `json:"scheduler"`
+}
+
+// SchedulerConfig holds settings for the mux's task scheduler and heartbeat.
+type SchedulerConfig struct {
+	HeartbeatMinutes int `json:"heartbeat_minutes"` // 0 = disabled, default 30
 }
 
 // PersonaConfig defines the bot's personality.
@@ -199,6 +205,9 @@ func DefaultConfig() *Config {
 			Bio:               "",
 			ExtraInstructions: "",
 			Dimensions:        dims,
+		},
+		Scheduler: SchedulerConfig{
+			HeartbeatMinutes: 30,
 		},
 	}
 }

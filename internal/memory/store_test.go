@@ -650,6 +650,201 @@ func TestRenameAgent_WildcardInName(t *testing.T) {
 	}
 }
 
+// ==================== Scheduled Tasks ====================
+
+func TestAddAndListScheduledTasks(t *testing.T) {
+	s := newTestStore(t)
+
+	now := time.Now()
+	id1, err := s.AddScheduledTask(ScheduledTask{
+		Description: "check on alice",
+		TriggerAt:   now.Add(10 * time.Minute),
+		Context:     strPtr(`{"agent":"alice"}`),
+	})
+	if err != nil {
+		t.Fatalf("AddScheduledTask: %v", err)
+	}
+	if id1 <= 0 {
+		t.Fatalf("expected positive ID, got %d", id1)
+	}
+
+	id2, err := s.AddScheduledTask(ScheduledTask{
+		Description: "send report",
+		TriggerAt:   now.Add(30 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("AddScheduledTask 2: %v", err)
+	}
+
+	// List pending tasks.
+	tasks, err := s.ListScheduledTasks("pending")
+	if err != nil {
+		t.Fatalf("ListScheduledTasks: %v", err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("expected 2 tasks, got %d", len(tasks))
+	}
+	if tasks[0].Description != "check on alice" {
+		t.Errorf("expected first task 'check on alice', got %q", tasks[0].Description)
+	}
+	if tasks[0].Context == nil || *tasks[0].Context != `{"agent":"alice"}` {
+		t.Errorf("expected context, got %v", tasks[0].Context)
+	}
+	_ = id2
+}
+
+func TestDueScheduledTasks(t *testing.T) {
+	s := newTestStore(t)
+
+	now := time.Now()
+	// Task 1: due 5 minutes ago (should be returned).
+	s.AddScheduledTask(ScheduledTask{
+		Description: "overdue",
+		TriggerAt:   now.Add(-5 * time.Minute),
+	})
+	// Task 2: due in 1 hour (should NOT be returned).
+	s.AddScheduledTask(ScheduledTask{
+		Description: "future",
+		TriggerAt:   now.Add(1 * time.Hour),
+	})
+
+	due, err := s.DueScheduledTasks(now)
+	if err != nil {
+		t.Fatalf("DueScheduledTasks: %v", err)
+	}
+	if len(due) != 1 {
+		t.Fatalf("expected 1 due task, got %d", len(due))
+	}
+	if due[0].Description != "overdue" {
+		t.Errorf("expected 'overdue', got %q", due[0].Description)
+	}
+	if due[0].Status != "pending" {
+		t.Errorf("expected status 'pending', got %q", due[0].Status)
+	}
+}
+
+func TestMarkTaskFired(t *testing.T) {
+	s := newTestStore(t)
+
+	id, _ := s.AddScheduledTask(ScheduledTask{
+		Description: "fire me",
+		TriggerAt:   time.Now(),
+	})
+
+	if err := s.MarkTaskFired(int(id)); err != nil {
+		t.Fatalf("MarkTaskFired: %v", err)
+	}
+
+	// Should no longer appear as pending.
+	tasks, _ := s.ListScheduledTasks("pending")
+	if len(tasks) != 0 {
+		t.Errorf("expected 0 pending tasks, got %d", len(tasks))
+	}
+
+	// Should appear as fired.
+	fired, _ := s.ListScheduledTasks("fired")
+	if len(fired) != 1 {
+		t.Fatalf("expected 1 fired task, got %d", len(fired))
+	}
+	if fired[0].FiredAt == nil {
+		t.Error("expected fired_at to be set")
+	}
+
+	// Firing again should fail (not pending anymore).
+	if err := s.MarkTaskFired(int(id)); err == nil {
+		t.Error("expected error when firing already-fired task")
+	}
+}
+
+func TestCancelScheduledTask(t *testing.T) {
+	s := newTestStore(t)
+
+	id, _ := s.AddScheduledTask(ScheduledTask{
+		Description: "cancel me",
+		TriggerAt:   time.Now().Add(time.Hour),
+	})
+
+	if err := s.CancelScheduledTask(int(id)); err != nil {
+		t.Fatalf("CancelScheduledTask: %v", err)
+	}
+
+	// Should not be pending.
+	tasks, _ := s.ListScheduledTasks("pending")
+	if len(tasks) != 0 {
+		t.Errorf("expected 0 pending, got %d", len(tasks))
+	}
+
+	// Should appear as cancelled.
+	cancelled, _ := s.ListScheduledTasks("cancelled")
+	if len(cancelled) != 1 {
+		t.Fatalf("expected 1 cancelled task, got %d", len(cancelled))
+	}
+
+	// Cancelling again should fail.
+	if err := s.CancelScheduledTask(int(id)); err == nil {
+		t.Error("expected error when cancelling already-cancelled task")
+	}
+}
+
+func TestListScheduledTasks_AllStatuses(t *testing.T) {
+	s := newTestStore(t)
+
+	now := time.Now()
+	s.AddScheduledTask(ScheduledTask{Description: "a", TriggerAt: now.Add(time.Minute)})
+	id2, _ := s.AddScheduledTask(ScheduledTask{Description: "b", TriggerAt: now.Add(2 * time.Minute)})
+	id3, _ := s.AddScheduledTask(ScheduledTask{Description: "c", TriggerAt: now.Add(3 * time.Minute)})
+
+	s.CancelScheduledTask(int(id2))
+	// To fire id3, set its trigger to past first — but MarkTaskFired doesn't check trigger_at.
+	s.MarkTaskFired(int(id3))
+
+	// List all (empty status).
+	all, err := s.ListScheduledTasks("")
+	if err != nil {
+		t.Fatalf("ListScheduledTasks all: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("expected 3 tasks, got %d", len(all))
+	}
+}
+
+func TestPruneOldScheduledTasks(t *testing.T) {
+	s := newTestStore(t)
+
+	now := time.Now()
+	// Add a fired task with old created time.
+	id, _ := s.AddScheduledTask(ScheduledTask{
+		Description: "old fired",
+		TriggerAt:   now.Add(-48 * time.Hour),
+		Created:     now.Add(-48 * time.Hour),
+	})
+	s.MarkTaskFired(int(id))
+
+	// Add a pending task (should NOT be pruned).
+	s.AddScheduledTask(ScheduledTask{
+		Description: "still pending",
+		TriggerAt:   now.Add(time.Hour),
+	})
+
+	// Prune tasks older than 24h.
+	n, err := s.PruneOldScheduledTasks(24 * time.Hour)
+	if err != nil {
+		t.Fatalf("PruneOldScheduledTasks: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 pruned, got %d", n)
+	}
+
+	// Only the pending task should remain.
+	all, _ := s.ListScheduledTasks("")
+	if len(all) != 1 {
+		t.Fatalf("expected 1 remaining task, got %d", len(all))
+	}
+	if all[0].Description != "still pending" {
+		t.Errorf("expected 'still pending', got %q", all[0].Description)
+	}
+}
+
 func TestNewIdempotent(t *testing.T) {
 	// Opening the same in-memory DB twice shouldn't fail.
 	s := newTestStore(t)

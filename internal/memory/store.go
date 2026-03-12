@@ -80,6 +80,17 @@ type Compaction struct {
 	Created     time.Time
 }
 
+// ScheduledTask represents a mux-level scheduled task (reminders, check-ins, etc.).
+type ScheduledTask struct {
+	ID          int
+	Description string
+	TriggerAt   time.Time
+	Status      string     // "pending", "fired", "cancelled"
+	Created     time.Time
+	FiredAt     *time.Time
+	Context     *string // optional JSON metadata (e.g. agent name, instructions)
+}
+
 // Cost represents a single cost tracking entry.
 type Cost struct {
 	ID           int
@@ -168,6 +179,18 @@ CREATE TABLE IF NOT EXISTS agent_persona (
     interpretation REAL NOT NULL DEFAULT 0.5,
     creativity     REAL NOT NULL DEFAULT 0.5
 );
+
+CREATE TABLE IF NOT EXISTS scheduled_tasks (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    description TEXT NOT NULL,
+    trigger_at  DATETIME NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'pending',
+    created     DATETIME DEFAULT CURRENT_TIMESTAMP,
+    fired_at    DATETIME,
+    context     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_status_trigger
+    ON scheduled_tasks(status, trigger_at);
 `
 
 // ---------- Store ----------
@@ -682,6 +705,115 @@ func (s *Store) DeleteAgentState(agent string) (bool, error) {
 	return n > 0, nil
 }
 
+// ==================== Scheduled Tasks ====================
+
+// AddScheduledTask inserts a new scheduled task and returns its ID.
+func (s *Store) AddScheduledTask(task ScheduledTask) (int64, error) {
+	result, err := s.db.Exec(
+		`INSERT INTO scheduled_tasks (description, trigger_at, status, created, context)
+		 VALUES (?, ?, ?, ?, ?)`,
+		task.Description, task.TriggerAt, "pending",
+		timeOrNow(task.Created), task.Context,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
+// DueScheduledTasks returns all pending tasks whose trigger_at <= now.
+func (s *Store) DueScheduledTasks(now time.Time) ([]ScheduledTask, error) {
+	rows, err := s.db.Query(
+		`SELECT id, description, trigger_at, status, created, fired_at, context
+		 FROM scheduled_tasks
+		 WHERE status = 'pending' AND trigger_at <= ?
+		 ORDER BY trigger_at ASC`, now,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanScheduledTasks(rows)
+}
+
+// MarkTaskFired sets a task's status to "fired" and records the fired_at timestamp.
+func (s *Store) MarkTaskFired(id int) error {
+	result, err := s.db.Exec(
+		`UPDATE scheduled_tasks SET status = 'fired', fired_at = ?
+		 WHERE id = ? AND status = 'pending'`,
+		time.Now(), id,
+	)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("scheduled task %d not found or not pending", id)
+	}
+	return nil
+}
+
+// CancelScheduledTask sets a task's status to "cancelled".
+func (s *Store) CancelScheduledTask(id int) error {
+	result, err := s.db.Exec(
+		`UPDATE scheduled_tasks SET status = 'cancelled'
+		 WHERE id = ? AND status = 'pending'`,
+		id,
+	)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("scheduled task %d not found or not pending", id)
+	}
+	return nil
+}
+
+// ListScheduledTasks returns tasks filtered by status. Pass "" to list all.
+func (s *Store) ListScheduledTasks(status string) ([]ScheduledTask, error) {
+	var rows *sql.Rows
+	var err error
+	if status != "" {
+		rows, err = s.db.Query(
+			`SELECT id, description, trigger_at, status, created, fired_at, context
+			 FROM scheduled_tasks WHERE status = ?
+			 ORDER BY trigger_at ASC`, status,
+		)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT id, description, trigger_at, status, created, fired_at, context
+			 FROM scheduled_tasks
+			 ORDER BY trigger_at ASC`,
+		)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanScheduledTasks(rows)
+}
+
+// PruneOldScheduledTasks deletes fired/cancelled tasks older than ttl.
+func (s *Store) PruneOldScheduledTasks(ttl time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-ttl)
+	result, err := s.db.Exec(
+		`DELETE FROM scheduled_tasks
+		 WHERE status IN ('fired', 'cancelled') AND created < ?`,
+		cutoff,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 // ==================== Rename ====================
 
 // RenameAgent updates all references to an agent across all tables.
@@ -799,7 +931,7 @@ func (s *Store) PruneOldMessages(stream string, maxAge time.Duration) (int64, er
 
 // Stats returns row counts for all tables.
 func (s *Store) Stats() (map[string]int, error) {
-	tables := []string{"messages", "facts", "compactions", "costs", "agent_state"}
+	tables := []string{"messages", "facts", "compactions", "costs", "agent_state", "scheduled_tasks"}
 	stats := make(map[string]int, len(tables))
 	for _, t := range tables {
 		var count int
@@ -896,6 +1028,21 @@ func scanCompactions(rows *sql.Rows) ([]Compaction, error) {
 		cs = append(cs, c)
 	}
 	return cs, rows.Err()
+}
+
+func scanScheduledTasks(rows *sql.Rows) ([]ScheduledTask, error) {
+	var tasks []ScheduledTask
+	for rows.Next() {
+		var t ScheduledTask
+		if err := rows.Scan(
+			&t.ID, &t.Description, &t.TriggerAt, &t.Status,
+			&t.Created, &t.FiredAt, &t.Context,
+		); err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, rows.Err()
 }
 
 func scanCosts(rows *sql.Rows) ([]Cost, error) {
