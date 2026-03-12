@@ -32,6 +32,8 @@ var muxConfigKeys = []muxConfigKey{
 	{"openai.base_url", "string", "OpenAI-compatible API base URL", false},
 	{"costs.daily_budget_usd", "float", "Daily budget in USD", false},
 	{"costs.monthly_budget_usd", "float", "Monthly budget in USD", false},
+	{"persona.name", "string", "Mux bot name", false},
+	{"persona.owner_name", "string", "Owner name (how agents address you)", false},
 	{"logging.level", "string", "Log level (debug/info/warn/error)", false},
 }
 
@@ -228,6 +230,16 @@ func muxConfigSet(cfgPath string, key string, value string) {
 			log.Fatalf("invalid float for %s: %s", key, value)
 		}
 		cfg.Costs.MonthlyBudgetUSD = v
+	case "persona.name":
+		if strings.TrimSpace(value) == "" {
+			log.Fatalf("persona name cannot be empty")
+		}
+		cfg.Persona.Name = value
+	case "persona.owner_name":
+		if strings.TrimSpace(value) == "" {
+			log.Fatalf("owner name cannot be empty")
+		}
+		cfg.Persona.OwnerName = value
 	case "logging.level":
 		value = strings.ToLower(value)
 		switch value {

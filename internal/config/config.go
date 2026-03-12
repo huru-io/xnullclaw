@@ -193,7 +193,7 @@ func DefaultConfig() *Config {
 			RotateDays: 7,
 		},
 		Persona: PersonaConfig{
-			Name:              "mux",
+			Name:              "Mux",
 			OwnerName:         "Controller",
 			Language:          "en",
 			Bio:               "",

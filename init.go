@@ -419,11 +419,21 @@ func runInit(args []string) {
 			cfg.Telegram.AllowFrom = []string{telegramUser}
 		}
 
+		// Mux persona name.
+		if opts.muxName != "" {
+			cfg.Persona.Name = opts.muxName
+		} else if interactive {
+			name := promptInput(fmt.Sprintf("Mux bot name [%s]: ", cfg.Persona.Name))
+			if name != "" {
+				cfg.Persona.Name = name
+			}
+		}
+
 		// Owner name.
 		if opts.ownerName != "" {
 			cfg.Persona.OwnerName = opts.ownerName
 		} else if interactive {
-			name := promptInput(fmt.Sprintf("Your name (mux persona) [%s]: ", cfg.Persona.OwnerName))
+			name := promptInput(fmt.Sprintf("Your name (how agents address you) [%s]: ", cfg.Persona.OwnerName))
 			if name != "" {
 				cfg.Persona.OwnerName = name
 			}
@@ -560,6 +570,11 @@ func runInit(args []string) {
 			cfg.Agents.Identities = map[string]config.AgentIdentity{}
 		}
 		for _, name := range allAgentNames {
+			// Only set identity from meta if not already configured —
+			// preserve manually-set emoji and aliases.
+			if _, exists := cfg.Agents.Identities[name]; exists {
+				continue
+			}
 			dir := agent.Dir(home, name)
 			meta, _ := agent.ReadMeta(dir)
 			if meta["EMOJI"] != "" {
@@ -685,6 +700,7 @@ type initOpts struct {
 	agentCount    int
 	agentNames    []string
 	ownerName     string
+	muxName       string
 	groupID       string
 	topicID       string
 	setupMux      bool
@@ -810,6 +826,12 @@ func parseInitFlags(args []string) initOpts {
 		case "--owner":
 			if i+1 < len(args) {
 				opts.ownerName = args[i+1]
+				opts.setupMux = true
+				i++
+			}
+		case "--mux-name":
+			if i+1 < len(args) {
+				opts.muxName = args[i+1]
 				opts.setupMux = true
 				i++
 			}
@@ -951,7 +973,8 @@ TELEGRAM MUX (optional):
   --mux                   Enable mux setup
   --telegram-token TOKEN  Telegram bot token (also reads TELEGRAM_BOT_TOKEN env)
   --telegram-user ID      Allowed Telegram user ID
-  --owner NAME            Owner name for mux persona
+  --mux-name NAME         Mux bot name (default: Mux)
+  --owner NAME            Your name (how agents address you)
   --group-id ID           Telegram group chat ID (0 = private mode)
   --topic-id ID           Forum topic ID (-1 = discover, 0 = all, N = specific)
 

@@ -133,16 +133,23 @@ func runMux(args []string) {
 				os.Exit(1)
 			}
 			fmt.Printf("sent SIGTERM to mux (PID %d), waiting...\n", pid)
-			// Wait for process to exit (up to 10s).
-			for i := 0; i < 50; i++ {
+			// Wait for process to exit (up to 60s).
+			stopped := false
+			for i := 0; i < 300; i++ {
 				if !processAlive(pid) {
+					stopped = true
 					break
 				}
 				time.Sleep(200 * time.Millisecond)
 			}
-			if processAlive(pid) {
-				fmt.Fprintln(os.Stderr, "mux did not stop in time")
-				os.Exit(1)
+			if !stopped {
+				// Force kill.
+				fmt.Fprintln(os.Stderr, "mux did not stop gracefully, sending SIGKILL...")
+				if kp, err := os.FindProcess(pid); err == nil {
+					kp.Signal(syscall.SIGKILL)
+				}
+				time.Sleep(500 * time.Millisecond)
+				os.Remove(filepath.Join(muxHome, "mux.pid"))
 			}
 		}
 		muxDaemon(home, image, muxHome, logFile)
@@ -445,6 +452,8 @@ BOOTSTRAP:
     -n N, --agents N                        Number of agents to create
     --name NAME                             Agent name (repeatable)
     --mux                                   Enable Telegram bot setup
+    --mux-name NAME                         Mux bot name (default: Mux)
+    --owner NAME                            Your name (how agents address you)
     --group-id ID                           Telegram group chat ID
     --topic-id ID                           Forum topic ID (-1/0/1/N)
     --yes, -y                               Non-interactive mode

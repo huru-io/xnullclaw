@@ -164,13 +164,18 @@ func Run(mc Config) error {
 	)
 
 	// Track which agent(s) were called via send_to_agent during a turn,
-	// so we can prepend the identity header when sending to Telegram.
-	var turnAgents []string
+	// along with their response text, so we can prepend the identity header
+	// only when the LLM is relaying an agent's response (not composing its own).
+	type agentResult struct {
+		name     string
+		response string
+	}
+	var turnResults []agentResult
 	origOnToolCall := muxLoop.OnToolCall
 	muxLoop.OnToolCall = func(name string, args map[string]any, result string, duration time.Duration, err error) {
-		if name == "send_to_agent" {
+		if name == "send_to_agent" && err == nil {
 			if a, ok := args["agent"].(string); ok {
-				turnAgents = append(turnAgents, a)
+				turnResults = append(turnResults, agentResult{name: a, response: strings.TrimSpace(result)})
 			}
 		}
 		if origOnToolCall != nil {
@@ -179,7 +184,7 @@ func Run(mc Config) error {
 	}
 
 	runTurn := func(chatID int64, userText string) {
-		turnAgents = nil // reset for this turn
+		turnResults = nil // reset for this turn
 
 		ctxData, err := assembler.Assemble(userText)
 		if err != nil {
@@ -219,9 +224,10 @@ func Run(mc Config) error {
 		cleanText, attachments := media.Parse(response)
 
 		if cleanText != "" {
-			// If exactly one agent was called, prepend its identity header.
-			if len(turnAgents) == 1 {
-				cleanText = agentIdentityHeader(cfg, turnAgents[0]) + cleanText
+			// If exactly one agent was called and the LLM is relaying
+			// the agent's response (not composing its own), prepend header.
+			if len(turnResults) == 1 && isAgentRelay(cleanText, turnResults[0].response) {
+				cleanText = agentIdentityHeader(cfg, turnResults[0].name) + cleanText
 			}
 			if err := tgBot.Send(chatID, cleanText); err != nil {
 				logger.Error("telegram send failed", "error", err)
@@ -548,6 +554,25 @@ func sendAttachment(tgBot *telegram.Bot, logger *logging.Logger, chatID int64, a
 	}
 }
 
+
+// isAgentRelay checks whether the LLM's output is essentially relaying
+// the agent's response (vs. composing its own message). We check if the
+// agent response appears as a substantial substring of the LLM output.
+func isAgentRelay(llmText, agentResponse string) bool {
+	if agentResponse == "" {
+		return false
+	}
+	trimmed := strings.TrimSpace(llmText)
+	// Exact match or LLM output contains the agent response.
+	if trimmed == agentResponse || strings.Contains(trimmed, agentResponse) {
+		return true
+	}
+	// Agent response contains the LLM output (LLM trimmed it).
+	if strings.Contains(agentResponse, trimmed) {
+		return true
+	}
+	return false
+}
 
 // agentIdentityHeader returns "emoji name\n\n" for a given agent,
 // using the mux config identities map.
