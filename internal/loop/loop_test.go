@@ -386,7 +386,7 @@ func TestObservabilityHooks(t *testing.T) {
 	var modelCalls int
 	var totalCost float64
 
-	m.OnToolCall = func(name string, args map[string]any, duration time.Duration) {
+	m.OnToolCall = func(name string, args map[string]any, result string, duration time.Duration, err error) {
 		toolCalls = append(toolCalls, name)
 	}
 	m.OnModelCall = func(inputTokens, outputTokens int, costUSD float64) {

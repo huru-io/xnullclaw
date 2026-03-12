@@ -120,8 +120,8 @@ func Run(mc Config) error {
 	}
 
 	// Observability hooks.
-	muxLoop.OnToolCall = func(name string, args map[string]any, duration time.Duration) {
-		logger.LogToolCall(name, args, "", duration, nil)
+	muxLoop.OnToolCall = func(name string, args map[string]any, result string, duration time.Duration, err error) {
+		logger.LogToolCall(name, args, result, duration, err)
 	}
 	muxLoop.OnModelCall = func(inputTokens, outputTokens int, costUSD float64) {
 		logger.LogModelCall(cfg.OpenAI.Model, inputTokens, outputTokens, costUSD, 0)
@@ -202,6 +202,14 @@ func Run(mc Config) error {
 		cleanText, attachments := media.Parse(response)
 
 		if cleanText != "" {
+			// Add mux identity header unless this is agent passthrough.
+			if !isAgentPassthrough(cleanText, ctxData.Agents) {
+				if cfg.Persona.Name != "" {
+					cleanText = fmt.Sprintf("🔀 *%s*\n\n%s", cfg.Persona.Name, cleanText)
+				} else {
+					cleanText = "🔀\n\n" + cleanText
+				}
+			}
 			if err := tgBot.Send(chatID, cleanText); err != nil {
 				logger.Error("telegram send failed", "error", err)
 			}
@@ -517,6 +525,19 @@ func sendAttachment(tgBot *telegram.Bot, logger *logging.Logger, chatID int64, a
 		logger.Error("send attachment failed", "type", att.Type, "path", hostPath, "error", err)
 		tgBot.Send(chatID, fmt.Sprintf("Failed to send %s: %v", att.Type, err))
 	}
+}
+
+// isAgentPassthrough checks if the response starts with a known agent emoji,
+// indicating this is forwarded agent output (not mux speaking).
+func isAgentPassthrough(text string, agents []memory.AgentState) bool {
+	for _, a := range agents {
+		if a.Emoji != nil && *a.Emoji != "" {
+			if strings.HasPrefix(text, *a.Emoji+" ") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // truncateLog truncates a string for log output at rune boundaries.

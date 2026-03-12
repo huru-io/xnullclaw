@@ -108,7 +108,7 @@ type Mux struct {
 	toolTimeout   time.Duration
 
 	// Observability hooks (optional).
-	OnToolCall  func(name string, args map[string]any, duration time.Duration)
+	OnToolCall  func(name string, args map[string]any, result string, duration time.Duration, err error)
 	OnModelCall func(inputTokens, outputTokens int, costUSD float64)
 }
 
@@ -288,7 +288,7 @@ func (m *Mux) executeToolCalls(ctx context.Context, calls []ToolCall) []toolResu
 
 			// Fire tool-call hook.
 			if m.OnToolCall != nil {
-				m.OnToolCall(call.Name, call.Args, duration)
+				m.OnToolCall(call.Name, call.Args, content, duration, err)
 			}
 		}(i, tc)
 	}

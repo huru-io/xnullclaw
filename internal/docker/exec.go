@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/pkg/stdcopy"
 )
 
 // ExecSync runs a command inside a container and returns stdout+stderr.
@@ -38,20 +39,29 @@ func (c *Client) ExecSync(ctx context.Context, name string, cmd []string, stdin 
 		}()
 	}
 
-	// Read all output.
-	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, attachResp.Reader); err != nil {
+	// Demultiplex stdout/stderr (Docker multiplexes when TTY=false).
+	var stdout, stderr bytes.Buffer
+	if _, err := stdcopy.StdCopy(&stdout, &stderr, attachResp.Reader); err != nil {
 		return "", fmt.Errorf("docker: exec read in %s: %w", name, err)
+	}
+
+	// Combine stdout + stderr for the result.
+	combined := stdout.String()
+	if stderr.Len() > 0 {
+		if combined != "" {
+			combined += "\n"
+		}
+		combined += stderr.String()
 	}
 
 	// Check exit code.
 	inspect, err := c.cli.ContainerExecInspect(ctx, execResp.ID)
 	if err != nil {
-		return buf.String(), fmt.Errorf("docker: exec inspect in %s: %w", name, err)
+		return combined, fmt.Errorf("docker: exec inspect in %s: %w", name, err)
 	}
 	if inspect.ExitCode != 0 {
-		return buf.String(), fmt.Errorf("docker: exec in %s: exit code %d", name, inspect.ExitCode)
+		return combined, fmt.Errorf("docker: exec in %s: exit code %d", name, inspect.ExitCode)
 	}
 
-	return buf.String(), nil
+	return combined, nil
 }
