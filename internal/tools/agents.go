@@ -95,8 +95,6 @@ func buildAgentSystemPrompt(name string, v personaVariant) string {
 	return strings.Join(lines, "\n")
 }
 
-// sendToAgent sends a message to a running agent container via docker exec.
-// Uses flock inside the container to serialize concurrent sends.
 // sendToAgent sends a message to an agent asynchronously (fire-and-forget).
 // The agent's response is written to its .outbox/ directory and picked up
 // by the drain goroutine, which sends it directly to Telegram.
@@ -127,6 +125,18 @@ func startOpts(d Deps, name string, port int) docker.ContainerOpts {
 	return agent.StartOpts(d.Image, d.Home, name, port)
 }
 
+// validatedAgentArg extracts and validates the "agent" argument from tool args.
+func validatedAgentArg(args map[string]any) (string, error) {
+	name, err := stringArg(args, "agent")
+	if err != nil {
+		return "", err
+	}
+	if err := agent.ValidateName(name); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
 func registerAgentTools(r *Registry, d Deps) {
 	// send_to_agent
 	r.Register(
@@ -143,7 +153,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			},
 		},
 		func(ctx context.Context, args map[string]any) (string, error) {
-			agentName, err := stringArg(args, "agent")
+			agentName, err := validatedAgentArg(args)
 			if err != nil {
 				return "", err
 			}
@@ -263,7 +273,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			},
 		},
 		func(ctx context.Context, args map[string]any) (string, error) {
-			agentName, err := stringArg(args, "agent")
+			agentName, err := validatedAgentArg(args)
 			if err != nil {
 				return "", err
 			}
@@ -294,7 +304,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			},
 		},
 		func(ctx context.Context, args map[string]any) (string, error) {
-			agentName, err := stringArg(args, "agent")
+			agentName, err := validatedAgentArg(args)
 			if err != nil {
 				return "", err
 			}
@@ -324,7 +334,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			},
 		},
 		func(ctx context.Context, args map[string]any) (string, error) {
-			agentName, err := stringArg(args, "agent")
+			agentName, err := validatedAgentArg(args)
 			if err != nil {
 				return "", err
 			}
@@ -350,7 +360,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			},
 		},
 		func(ctx context.Context, args map[string]any) (string, error) {
-			agentName, err := stringArg(args, "agent")
+			agentName, err := validatedAgentArg(args)
 			if err != nil {
 				return "", err
 			}
@@ -386,7 +396,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			},
 		},
 		func(ctx context.Context, args map[string]any) (string, error) {
-			agentName, err := stringArg(args, "agent")
+			agentName, err := validatedAgentArg(args)
 			if err != nil {
 				return "", err
 			}
@@ -448,7 +458,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			},
 		},
 		func(ctx context.Context, args map[string]any) (string, error) {
-			agentName, err := stringArg(args, "agent")
+			agentName, err := validatedAgentArg(args)
 			if err != nil {
 				return "", err
 			}
@@ -481,7 +491,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			},
 		},
 		func(ctx context.Context, args map[string]any) (string, error) {
-			oldName, err := stringArg(args, "agent")
+			oldName, err := validatedAgentArg(args)
 			if err != nil {
 				return "", err
 			}
@@ -583,13 +593,15 @@ func registerAgentTools(r *Registry, d Deps) {
 			steps = append(steps, fmt.Sprintf("Personality: %s", variant.Trait))
 
 			// Store persona in mux SQLite.
-			d.Store.UpsertAgentPersona(memory.AgentPersona{
+			if err := d.Store.UpsertAgentPersona(memory.AgentPersona{
 				Agent: agentName, Trait: variant.Trait,
 				Warmth: variant.Warmth, Humor: variant.Humor, Verbosity: variant.Verbosity,
 				Proactiveness: variant.Proactiveness, Formality: variant.Formality,
 				Empathy: variant.Empathy, Sarcasm: variant.Sarcasm, Autonomy: variant.Autonomy,
 				Interpretation: variant.Interpretation, Creativity: variant.Creativity,
-			})
+			}); err != nil {
+				steps = append(steps, fmt.Sprintf("Warning: persona store failed: %v", err))
+			}
 
 			// 4. Start in mux mode.
 			cn := agent.ContainerName(d.Home, agentName)
@@ -634,7 +646,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			},
 		},
 		func(ctx context.Context, args map[string]any) (string, error) {
-			agentName, err := stringArg(args, "agent")
+			agentName, err := validatedAgentArg(args)
 			if err != nil {
 				return "", err
 			}
@@ -667,13 +679,17 @@ func registerAgentTools(r *Registry, d Deps) {
 			},
 		},
 		func(ctx context.Context, args map[string]any) (string, error) {
-			agentName, err := stringArg(args, "agent")
+			agentName, err := validatedAgentArg(args)
 			if err != nil {
 				return "", err
 			}
 			key, err := stringArg(args, "key")
 			if err != nil {
 				return "", err
+			}
+			// Reject redacted keys (API keys, tokens) — prevent LLM from overwriting secrets.
+			if ck, ok := agent.LookupConfigKey(key); ok && ck.Redacted {
+				return "", fmt.Errorf("cannot set %q via tool — use xnc config instead", key)
 			}
 			value, err := stringArg(args, "value")
 			if err != nil {
@@ -701,7 +717,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			},
 		},
 		func(ctx context.Context, args map[string]any) (string, error) {
-			agentName, err := stringArg(args, "agent")
+			agentName, err := validatedAgentArg(args)
 			if err != nil {
 				return "", err
 			}
@@ -745,7 +761,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			},
 		},
 		func(ctx context.Context, args map[string]any) (string, error) {
-			agentName, err := stringArg(args, "agent")
+			agentName, err := validatedAgentArg(args)
 			if err != nil {
 				return "", err
 			}

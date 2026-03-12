@@ -124,7 +124,7 @@ func (a *Assembler) Assemble(query string) (*ContextData, error) {
 		cd.TimeSinceUser = now.Sub(*lastMsg)
 	}
 
-	// 5. For each agent, calculate time since last_interaction.
+	// 6. For each agent, calculate time since last_interaction.
 	for _, ag := range agents {
 		if ag.LastInteraction != nil {
 			cd.AgentLastSeen[ag.Agent] = now.Sub(*ag.LastInteraction)

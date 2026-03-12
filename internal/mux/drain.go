@@ -233,12 +233,14 @@ func (d *Drainer) drainAgent(name string) {
 		}, truncateLog(raw, 300))
 		agentName := name
 		if allOK {
-			d.store.AddMessage(memory.Message{
+			if err := d.store.AddMessage(memory.Message{
 				Role:    "assistant",
 				Content: fmt.Sprintf("[%s]: %s", name, sanitized),
 				Agent:   &agentName,
 				Stream:  "drain",
-			})
+			}); err != nil {
+				d.logger.Error("drain: store message failed", "agent", name, "error", err)
+			}
 		}
 
 		d.logger.Info("drain: delivered", "agent", name, "file", fname, "len", len(raw))

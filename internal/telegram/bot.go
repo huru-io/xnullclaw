@@ -220,9 +220,13 @@ func (b *Bot) handleUpdate(update tgbotapi.Update, threadID int) {
 
 	// Chat filtering.
 	if b.groupID != 0 {
-		// Discovery mode (topic_id = -1): log ALL incoming messages
-		// regardless of group_id so the user can find the right IDs.
+		// Discovery mode (topic_id = -1): log incoming messages so the
+		// user can find the right group/topic IDs. Apply allowFrom filter
+		// to avoid logging messages from unauthorized users.
 		if b.topicID == -1 {
+			if len(b.allowFrom) > 0 && !b.allowFrom[userID] {
+				return
+			}
 			if b.onDiscovery != nil {
 				b.onDiscovery(chatID, userID, threadID, msg.Text)
 			}
@@ -429,6 +433,12 @@ func (b *Bot) SendDocument(chatID int64, filePath string, caption string) error 
 	return b.enqueueSend(doc, PriorityNormal)
 }
 
+// downloadClient is a dedicated HTTP client for file downloads with a timeout.
+var downloadClient = &http.Client{Timeout: 60 * time.Second}
+
+// maxDownloadSize limits file downloads to 22 MB (Telegram bot limit is 20 MB).
+const maxDownloadSize = 22 << 20
+
 // DownloadFile downloads a Telegram file by its fileID to the given destination path.
 func (b *Bot) DownloadFile(fileID, destPath string) error {
 	url, err := b.api.GetFileDirectURL(fileID)
@@ -436,7 +446,7 @@ func (b *Bot) DownloadFile(fileID, destPath string) error {
 		return fmt.Errorf("bot: get file URL: %w", err)
 	}
 
-	resp, err := http.Get(url)
+	resp, err := downloadClient.Get(url)
 	if err != nil {
 		return fmt.Errorf("bot: download file: %w", err)
 	}
@@ -452,7 +462,7 @@ func (b *Bot) DownloadFile(fileID, destPath string) error {
 	}
 	defer out.Close()
 
-	if _, err := io.Copy(out, resp.Body); err != nil {
+	if _, err := io.Copy(out, io.LimitReader(resp.Body, maxDownloadSize)); err != nil {
 		return fmt.Errorf("bot: write file: %w", err)
 	}
 
@@ -681,15 +691,6 @@ func (b *Bot) sendWithTopic(c tgbotapi.Chattable) (*tgbotapi.APIResponse, error)
 	default:
 		return nil, fmt.Errorf("bot: sendWithTopic: unhandled Chattable type %T", c)
 	}
-}
-
-// truncateLog truncates a string for log output at rune boundaries.
-func truncateLog(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n]) + "..."
 }
 
 // SplitMessage splits a long message into parts that fit within maxLen,

@@ -72,9 +72,10 @@ func (c *Client) ExecSync(ctx context.Context, name string, cmd []string, stdin 
 	}
 	defer attachResp.Close()
 
-	// Write stdin if provided.
+	// Write stdin if provided (with deadline to prevent goroutine leaks).
 	if stdin != nil {
 		go func() {
+			attachResp.Conn.SetWriteDeadline(time.Now().Add(execFireWriteTimeout))
 			io.Copy(attachResp.Conn, stdin)
 			attachResp.CloseWrite()
 		}()

@@ -44,11 +44,15 @@ func Run(mc Config) error {
 		return fmt.Errorf("create mux home: %w", err)
 	}
 
-	// Load config.
+	// Load config — use defaults only if file doesn't exist yet.
 	cfg, err := config.Load(mc.CfgPath)
 	if err != nil {
-		cfg = config.DefaultConfig()
-		_ = cfg.Save(mc.CfgPath)
+		if os.IsNotExist(err) {
+			cfg = config.DefaultConfig()
+			_ = cfg.Save(mc.CfgPath)
+		} else {
+			return fmt.Errorf("config: %w (fix the file or delete it to reset)", err)
+		}
 	}
 
 	// Logging.

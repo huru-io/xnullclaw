@@ -802,35 +802,6 @@ func TestHandleUpdate_GroupMode_TopicZeroAcceptsAll(t *testing.T) {
 	}
 }
 
-// --- truncateLog Tests ---
-
-func TestTruncateLog_Short(t *testing.T) {
-	if got := truncateLog("hello", 10); got != "hello" {
-		t.Errorf("expected 'hello', got %q", got)
-	}
-}
-
-func TestTruncateLog_Exact(t *testing.T) {
-	if got := truncateLog("hello", 5); got != "hello" {
-		t.Errorf("expected 'hello', got %q", got)
-	}
-}
-
-func TestTruncateLog_Truncated(t *testing.T) {
-	if got := truncateLog("hello world", 5); got != "hello..." {
-		t.Errorf("expected 'hello...', got %q", got)
-	}
-}
-
-func TestTruncateLog_Unicode(t *testing.T) {
-	// 5 runes, each 3 bytes in UTF-8.
-	s := "привет"
-	got := truncateLog(s, 3)
-	if got != "при..." {
-		t.Errorf("expected 'при...', got %q", got)
-	}
-}
-
 // --- Helpers ---
 
 func summarizeParts(parts []string) []string {

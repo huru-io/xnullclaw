@@ -310,11 +310,12 @@ func (s *Store) MessagesSince(t time.Time, stream string) ([]Message, error) {
 // check), the insert is skipped and nil is returned.
 func (s *Store) AddFact(f Fact) error {
 	// Simple dedup: check if any fact of the same type contains or is contained by this content.
+	escaped := escapeLike(f.Content)
 	var count int
 	err := s.db.QueryRow(
 		`SELECT COUNT(*) FROM facts
-		 WHERE type = ? AND (content = ? OR content LIKE ? OR ? LIKE '%' || content || '%')`,
-		f.Type, f.Content, "%"+f.Content+"%", f.Content,
+		 WHERE type = ? AND (content = ? OR content LIKE ? ESCAPE '\' OR ? LIKE '%' || content || '%' ESCAPE '\')`,
+		f.Type, f.Content, "%"+escaped+"%", escaped,
 	).Scan(&count)
 	if err != nil {
 		return err
@@ -336,28 +337,38 @@ func (s *Store) AddFact(f Fact) error {
 	return err
 }
 
+// escapeLike escapes SQLite LIKE wildcards (%, _, \) so they are treated as literals.
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
+}
+
 // SearchFacts retrieves facts matching the query keywords and optional agent filter,
 // ordered by score descending. Pass agent="" to search across all agents.
 func (s *Store) SearchFacts(query string, agent string, limit int) ([]Fact, error) {
+	// Escape SQLite LIKE wildcards in the query to prevent full table scans.
+	escaped := escapeLike(query)
 	var rows *sql.Rows
 	var err error
 	if agent != "" {
 		rows, err = s.db.Query(
 			`SELECT id, type, content, source, agent, score, created, accessed, access_count
 			 FROM facts
-			 WHERE content LIKE ? AND agent = ?
+			 WHERE content LIKE ? ESCAPE '\' AND agent = ?
 			 ORDER BY score DESC
 			 LIMIT ?`,
-			"%"+query+"%", agent, limit,
+			"%"+escaped+"%", agent, limit,
 		)
 	} else {
 		rows, err = s.db.Query(
 			`SELECT id, type, content, source, agent, score, created, accessed, access_count
 			 FROM facts
-			 WHERE content LIKE ?
+			 WHERE content LIKE ? ESCAPE '\'
 			 ORDER BY score DESC
 			 LIMIT ?`,
-			"%"+query+"%", limit,
+			"%"+escaped+"%", limit,
 		)
 	}
 	if err != nil {

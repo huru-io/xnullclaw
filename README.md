@@ -9,7 +9,7 @@ Manage fleets of AI agents from your phone. One binary, full control.
 The killer feature. Run `xnc mux` and your Telegram bot becomes a full agent control plane:
 
 ```bash
-xnc mux                    # start the mux daemon
+xnc mux start              # start the mux daemon
 ```
 
 From Telegram you can:
@@ -244,7 +244,8 @@ xnc snapshot-delete <snapshot>            Delete snapshot
 ### Mux
 
 ```
-xnc mux      [--foreground]              Start Telegram bot
+xnc mux                                  Check mux status (same as mux status)
+xnc mux      start [--foreground]        Start Telegram bot daemon
 xnc mux      stop                        Stop daemon
 xnc mux      status                      Check status
 xnc mux      logs [-f]                   View logs

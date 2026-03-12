@@ -310,10 +310,11 @@ func estimateCost(model string, inputTokens, outputTokens int) float64 {
 		output float64
 	}
 	prices := map[string]pricing{
-		"gpt-4o":      {2.50, 10.00},
-		"gpt-4o-mini": {0.15, 0.60},
-		"gpt-4-turbo": {10.00, 30.00},
-		"gpt-4":       {30.00, 60.00},
+		"gpt-5-mini":    {0.15, 0.60},
+		"gpt-4o":        {2.50, 10.00},
+		"gpt-4o-mini":   {0.15, 0.60},
+		"gpt-4-turbo":   {10.00, 30.00},
+		"gpt-4":         {30.00, 60.00},
 		"gpt-3.5-turbo": {0.50, 1.50},
 	}
 
