@@ -32,6 +32,7 @@ var muxConfigKeys = []muxConfigKey{
 	{"costs.daily_budget_usd", "float", "Daily budget in USD", false},
 	{"costs.monthly_budget_usd", "float", "Monthly budget in USD", false},
 	{"logging.level", "string", "Log level (debug/info/warn/error)", false},
+	{"persona.show_header", "bool", "Show mux identity header (🔀) on messages", false},
 }
 
 func lookupMuxKey(path string) (muxConfigKey, bool) {
@@ -126,6 +127,8 @@ func muxConfigGet(cfgPath string, key string) {
 				val = float64(0)
 			case "float":
 				val = float64(0)
+			case "bool":
+				val = false
 			case "string_array":
 				val = []any{}
 			}
@@ -232,6 +235,15 @@ func muxConfigSet(cfgPath string, key string, value string) {
 			cfg.Logging.Level = value
 		default:
 			log.Fatalf("invalid log level %q (must be debug/info/warn/error)", value)
+		}
+	case "persona.show_header":
+		switch strings.ToLower(value) {
+		case "true", "1", "yes":
+			cfg.Persona.ShowHeader = true
+		case "false", "0", "no":
+			cfg.Persona.ShowHeader = false
+		default:
+			log.Fatalf("invalid bool for %s: %s (use true/false)", key, value)
 		}
 	}
 

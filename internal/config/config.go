@@ -25,6 +25,7 @@ type PersonaConfig struct {
 	Language          string            `json:"language"`
 	Bio               string            `json:"bio"`
 	ExtraInstructions string            `json:"extra_instructions"`
+	ShowHeader        bool              `json:"show_header,omitempty"`
 	Dimensions        PersonaDimensions `json:"dimensions"`
 }
 

@@ -202,8 +202,8 @@ func Run(mc Config) error {
 		cleanText, attachments := media.Parse(response)
 
 		if cleanText != "" {
-			// Add mux identity header unless this is agent passthrough.
-			if !isAgentPassthrough(cleanText, ctxData.Agents) {
+			// Optional mux identity header (off by default).
+			if cfg.Persona.ShowHeader && !isAgentPassthrough(cleanText, ctxData.Agents) {
 				if cfg.Persona.Name != "" {
 					cleanText = fmt.Sprintf("🔀 *%s*\n\n%s", cfg.Persona.Name, cleanText)
 				} else {
