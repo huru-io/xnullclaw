@@ -25,7 +25,8 @@ func (c *Client) IsRunning(ctx context.Context, name string) (bool, error) {
 }
 
 // StartContainer creates and starts a container.
-// If a container with the name already exists, it returns an error.
+// If a stopped container with the same name exists, it is removed first
+// so the new container picks up any image or config changes.
 func (c *Client) StartContainer(ctx context.Context, name string, opts ContainerOpts) error {
 	cfg, hostCfg := HardenedConfig(opts.AgentDir, opts.Image, opts.Cmd)
 
@@ -38,6 +39,12 @@ func (c *Client) StartContainer(ctx context.Context, name string, opts Container
 	}
 	if len(opts.Env) > 0 {
 		WithEnv(cfg, opts.Env)
+	}
+
+	// Remove any existing stopped container with this name.
+	// This ensures we always create fresh from the current image/config.
+	if info, err := c.InspectContainer(ctx, name); err == nil && info.State != "running" {
+		_ = c.cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: true})
 	}
 
 	resp, err := c.cli.ContainerCreate(ctx, cfg, hostCfg, &network.NetworkingConfig{}, nil, name)

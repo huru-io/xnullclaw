@@ -81,6 +81,7 @@ func runMux(args []string) {
 	muxHome := filepath.Join(home, "mux")
 	pidFile := filepath.Join(muxHome, "mux.pid")
 	logFile := filepath.Join(muxHome, "mux.log")
+	cfgPath := filepath.Join(muxHome, "config.json")
 
 	// Subcommand dispatch.
 	sub := ""
@@ -101,6 +102,8 @@ func runMux(args []string) {
 			}
 		}
 		muxLogs(logFile, follow)
+	case "config":
+		muxConfig(cfgPath, remaining[1:])
 	default:
 		// Start mux.
 		if foreground || sub == "" {
@@ -119,7 +122,6 @@ func runMux(args []string) {
 			writePID(pidFile, os.Getpid())
 			defer os.Remove(pidFile)
 
-			cfgPath := filepath.Join(muxHome, "config.json")
 			if err := mux.Run(mux.Config{
 				Home:       home,
 				CfgPath:    cfgPath,
@@ -415,6 +417,8 @@ BOOTSTRAP:
     -n N, --agents N                        Number of agents to create
     --name NAME                             Agent name (repeatable)
     --mux                                   Enable Telegram bot setup
+    --group-id ID                           Telegram group chat ID
+    --topic-id ID                           Forum topic ID (-1/0/1/N)
     --yes, -y                               Non-interactive mode
 
 AGENT LIFECYCLE:
@@ -470,6 +474,10 @@ MUX (Telegram bot):
   mux      stop                            Stop mux daemon
   mux      status                          Check mux status
   mux      logs [-f]                       Mux log output
+  mux      config                          Show mux config (secrets redacted)
+  mux      config get <key>                Get a config value
+  mux      config set <key> <value>        Set a config value
+  mux      config keys                     List all settable keys
 
 IMAGE:
   image    build   [--from-source]         Pull image (or build from source)

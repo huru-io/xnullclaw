@@ -411,6 +411,50 @@ func runInit(args []string) {
 			}
 		}
 
+		// Group mode (optional).
+		if opts.groupID != "" {
+			v, err := strconv.ParseInt(opts.groupID, 10, 64)
+			if err != nil {
+				log.Fatalf("invalid group ID: %s", opts.groupID)
+			}
+			cfg.Telegram.GroupID = v
+		} else if interactive {
+			fmt.Println()
+			fmt.Println("─── Group Mode (optional) ───")
+			fmt.Println("To use mux in a Telegram group, provide the group chat ID.")
+			fmt.Println("Use https://t.me/c/<id>/<msg> links: group_id = -100<id>")
+			fmt.Println("Leave empty for private chat mode.")
+			fmt.Println()
+			gid := promptInput(fmt.Sprintf("Group chat ID [%d, Enter to keep]: ", cfg.Telegram.GroupID))
+			if gid != "" {
+				v, err := strconv.ParseInt(gid, 10, 64)
+				if err != nil {
+					log.Fatalf("invalid group ID: %s", gid)
+				}
+				cfg.Telegram.GroupID = v
+			}
+		}
+
+		if cfg.Telegram.GroupID != 0 {
+			if opts.topicID != "" {
+				v, err := strconv.Atoi(opts.topicID)
+				if err != nil {
+					log.Fatalf("invalid topic ID: %s", opts.topicID)
+				}
+				cfg.Telegram.TopicID = v
+			} else if interactive {
+				fmt.Println("Topic ID: -1 = discover (log only), 0 = no filtering, 1 = General, N = specific")
+				tid := promptInput(fmt.Sprintf("Topic ID [%d]: ", cfg.Telegram.TopicID))
+				if tid != "" {
+					v, err := strconv.Atoi(tid)
+					if err != nil {
+						log.Fatalf("invalid topic ID: %s", tid)
+					}
+					cfg.Telegram.TopicID = v
+				}
+			}
+		}
+
 		// Budget.
 		if interactive {
 			fmt.Println()
@@ -545,6 +589,17 @@ func runInit(args []string) {
 		fmt.Printf("  Temperature:  %.1f\n", cfg.OpenAI.Temperature)
 		if cfg.Telegram.BotToken != "" {
 			fmt.Println("  Telegram:     configured")
+			if cfg.Telegram.GroupID != 0 {
+				fmt.Printf("  Chat mode:    group (%d)", cfg.Telegram.GroupID)
+				if cfg.Telegram.TopicID == -1 {
+					fmt.Print(" topic: discovery")
+				} else if cfg.Telegram.TopicID > 0 {
+					fmt.Printf(" topic: %d", cfg.Telegram.TopicID)
+				}
+				fmt.Println()
+			} else {
+				fmt.Println("  Chat mode:    private")
+			}
 		} else {
 			fmt.Println("  Telegram:     token missing (mux won't start without it)")
 		}
@@ -606,6 +661,8 @@ type initOpts struct {
 	agentCount    int
 	agentNames    []string
 	ownerName     string
+	groupID       string
+	topicID       string
 	setupMux      bool
 	nonInter      bool
 }
@@ -724,6 +781,18 @@ func parseInitFlags(args []string) initOpts {
 		case "--owner":
 			if i+1 < len(args) {
 				opts.ownerName = args[i+1]
+				opts.setupMux = true
+				i++
+			}
+		case "--group-id":
+			if i+1 < len(args) {
+				opts.groupID = args[i+1]
+				opts.setupMux = true
+				i++
+			}
+		case "--topic-id":
+			if i+1 < len(args) {
+				opts.topicID = args[i+1]
 				opts.setupMux = true
 				i++
 			}
@@ -901,6 +970,8 @@ TELEGRAM MUX (optional):
   --telegram-token TOKEN  Telegram bot token (also reads TELEGRAM_BOT_TOKEN env)
   --telegram-user ID      Allowed Telegram user ID
   --owner NAME            Owner name for mux persona
+  --group-id ID           Telegram group chat ID (0 = private mode)
+  --topic-id ID           Forum topic ID (-1 = discover, 0 = all, N = specific)
 
 OTHER:
   --home PATH             Override XNC_HOME (default: ~/.xnc)
