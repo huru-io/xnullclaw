@@ -29,12 +29,22 @@ func ContainerEnv(agentDir string) []string {
 // networkName attaches the container to a Docker network (empty = default bridge).
 func StartOpts(image, home, name string, exposePort bool, networkName string) docker.ContainerOpts {
 	agentDir := Dir(home, name)
+
+	// For Docker bind mounts, use host-side path if available (DooD mode).
+	// The Docker daemon resolves mount source paths on the HOST filesystem,
+	// not inside the mux container. XNC_HOST_HOME provides the host path.
+	// On bare metal (no XNC_HOST_HOME), mountDir == agentDir.
+	mountDir := agentDir
+	if hostHome := HostHome(); hostHome != "" {
+		mountDir = Dir(hostHome, name)
+	}
+
 	return docker.ContainerOpts{
 		Image:       image,
 		Cmd:         []string{ContainerCmd},
-		AgentDir:    agentDir,
+		AgentDir:    mountDir,
 		ExposePort:  exposePort,
-		Env:         ContainerEnv(agentDir),
+		Env:         ContainerEnv(agentDir), // read config from container-local path
 		NetworkName: networkName,
 	}
 }

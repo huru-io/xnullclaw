@@ -218,8 +218,13 @@ func TestApplyEnvOverrides_AllVars(t *testing.T) {
 	t.Setenv("XNC_TELEGRAM_BOT_TOKEN", "tok123")
 	t.Setenv("XNC_TELEGRAM_GROUP_ID", "-100999")
 	t.Setenv("XNC_TELEGRAM_TOPIC_ID", "42")
+	t.Setenv("XNC_TELEGRAM_ALLOW_FROM", "user1, user2,user3")
 	t.Setenv("XNC_OPENAI_API_KEY", "sk-test")
 	t.Setenv("XNC_OPENAI_MODEL", "gpt-4o")
+	t.Setenv("XNC_OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
+	t.Setenv("XNC_PERSONA_NAME", "TestBot")
+	t.Setenv("XNC_PERSONA_OWNER", "TestOwner")
+	t.Setenv("XNC_LOG_LEVEL", "debug")
 	t.Setenv("XNC_RUNTIME", "docker")
 	t.Setenv("XNC_NETWORK", "xnc-net")
 
@@ -234,17 +239,57 @@ func TestApplyEnvOverrides_AllVars(t *testing.T) {
 	if cfg.Telegram.TopicID != 42 {
 		t.Errorf("TopicID = %d, want %d", cfg.Telegram.TopicID, 42)
 	}
+	if len(cfg.Telegram.AllowFrom) != 3 || cfg.Telegram.AllowFrom[0] != "user1" || cfg.Telegram.AllowFrom[1] != "user2" || cfg.Telegram.AllowFrom[2] != "user3" {
+		t.Errorf("AllowFrom = %v, want [user1 user2 user3]", cfg.Telegram.AllowFrom)
+	}
 	if cfg.OpenAI.APIKey != "sk-test" {
 		t.Errorf("APIKey = %q, want %q", cfg.OpenAI.APIKey, "sk-test")
 	}
 	if cfg.OpenAI.Model != "gpt-4o" {
 		t.Errorf("Model = %q, want %q", cfg.OpenAI.Model, "gpt-4o")
 	}
+	if cfg.OpenAI.BaseURL != "https://openrouter.ai/api/v1" {
+		t.Errorf("BaseURL = %q, want OpenRouter URL", cfg.OpenAI.BaseURL)
+	}
+	if cfg.Persona.Name != "TestBot" {
+		t.Errorf("Persona.Name = %q, want %q", cfg.Persona.Name, "TestBot")
+	}
+	if cfg.Persona.OwnerName != "TestOwner" {
+		t.Errorf("Persona.OwnerName = %q, want %q", cfg.Persona.OwnerName, "TestOwner")
+	}
+	if cfg.Logging.Level != "debug" {
+		t.Errorf("Logging.Level = %q, want %q", cfg.Logging.Level, "debug")
+	}
 	if cfg.Runtime.Mode != "docker" {
 		t.Errorf("Runtime.Mode = %q, want %q", cfg.Runtime.Mode, "docker")
 	}
 	if cfg.Runtime.Network != "xnc-net" {
 		t.Errorf("Runtime.Network = %q, want %q", cfg.Runtime.Network, "xnc-net")
+	}
+}
+
+func TestSplitCSV(t *testing.T) {
+	tests := []struct {
+		input string
+		want  []string
+	}{
+		{"", nil},
+		{"a", []string{"a"}},
+		{"a,b,c", []string{"a", "b", "c"}},
+		{" a , b , c ", []string{"a", "b", "c"}},
+		{"a,,b", []string{"a", "b"}},
+	}
+	for _, tt := range tests {
+		got := splitCSV(tt.input)
+		if len(got) != len(tt.want) {
+			t.Errorf("splitCSV(%q) = %v, want %v", tt.input, got, tt.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tt.want[i] {
+				t.Errorf("splitCSV(%q)[%d] = %q, want %q", tt.input, i, got[i], tt.want[i])
+			}
+		}
 	}
 }
 

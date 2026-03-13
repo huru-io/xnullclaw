@@ -628,14 +628,23 @@ GLOBAL FLAGS:
 
 ENVIRONMENT:
   XNC_HOME                  Data directory (default: ~/.xnc)
+  XNC_HOST_HOME             Host-side data path for Docker-out-of-Docker mode
   XNC_IMAGE                 Docker image (default: nullclaw:latest)
   XNC_RUNTIME               Runtime mode: local (default), docker
   XNC_NETWORK               Docker network name for container mode
   XNC_TELEGRAM_BOT_TOKEN    Override Telegram bot token
   XNC_TELEGRAM_GROUP_ID     Override Telegram group ID
   XNC_TELEGRAM_TOPIC_ID     Override Telegram topic ID
+  XNC_TELEGRAM_ALLOW_FROM   Comma-separated allowed Telegram user IDs
   XNC_OPENAI_API_KEY        Override OpenAI API key
   XNC_OPENAI_MODEL          Override OpenAI model
+  XNC_OPENAI_BASE_URL       Override OpenAI base URL (for OpenRouter etc.)
+  XNC_ANTHROPIC_API_KEY     Anthropic API key for agent provisioning
+  XNC_OPENROUTER_API_KEY    OpenRouter API key for agent provisioning
+  XNC_BRAVE_API_KEY         Brave Search API key for agent provisioning
+  XNC_PERSONA_NAME          Override mux persona name
+  XNC_PERSONA_OWNER         Override mux persona owner name
+  XNC_LOG_LEVEL             Override log level (debug, info, warn, error)
 
 DOCKER MODE:
   Run the mux inside a container with sibling agents on a shared network.
@@ -646,6 +655,7 @@ DOCKER MODE:
       -v /var/run/docker.sock:/var/run/docker.sock \
       -v ~/.xnc:/xnc-home \
       -e XNC_HOME=/xnc-home \
+      -e XNC_HOST_HOME=$HOME/.xnc \
       -e XNC_RUNTIME=docker \
       -e XNC_NETWORK=xnc-net \
       -e XNC_TELEGRAM_BOT_TOKEN=... \

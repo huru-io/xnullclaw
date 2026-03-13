@@ -66,7 +66,23 @@ func SelfContainerID() string {
 		return "" // not in a container
 	}
 
-	// Read cgroup to extract container ID.
+	// Try /proc/self/cgroup first (works on cgroups v1 and some v2 setups).
+	if id := containerIDFromCgroup(); id != "" {
+		return id
+	}
+
+	// Fallback: /proc/self/mountinfo (cgroups v2 on modern kernels like Ubuntu 22.04+).
+	// On cgroups v2, /proc/self/cgroup just contains "0::/" but mountinfo has:
+	// "... /docker/containers/<id>/... ..."
+	if id := containerIDFromMountinfo(); id != "" {
+		return id
+	}
+
+	return ""
+}
+
+// containerIDFromCgroup extracts a container ID from /proc/self/cgroup.
+func containerIDFromCgroup() string {
 	data, err := os.ReadFile("/proc/self/cgroup")
 	if err != nil {
 		return ""
@@ -76,13 +92,33 @@ func SelfContainerID() string {
 		// cgroup v2: "0::/docker/<id>" or "0::/system.slice/docker-<id>.scope"
 		if idx := strings.LastIndex(line, "/docker/"); idx != -1 {
 			id := line[idx+len("/docker/"):]
-			if len(id) >= 12 {
+			if len(id) >= 12 && isHex(id[:12]) {
 				return id[:12]
 			}
 		}
 		if idx := strings.Index(line, "/docker-"); idx != -1 {
 			rest := line[idx+len("/docker-"):]
-			if dotIdx := strings.Index(rest, "."); dotIdx >= 12 {
+			if dotIdx := strings.Index(rest, "."); dotIdx >= 12 && isHex(rest[:12]) {
+				return rest[:12]
+			}
+		}
+	}
+	return ""
+}
+
+// containerIDFromMountinfo extracts a container ID from /proc/self/mountinfo.
+// Format: "... /docker/containers/<64-char-hex>/... ..."
+func containerIDFromMountinfo() string {
+	data, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return ""
+	}
+	const marker = "/docker/containers/"
+	for _, line := range strings.Split(string(data), "\n") {
+		if idx := strings.Index(line, marker); idx != -1 {
+			rest := line[idx+len(marker):]
+			// Container ID is a 64-char hex string followed by '/'.
+			if slashIdx := strings.Index(rest, "/"); slashIdx >= 12 && isHex(rest[:12]) {
 				return rest[:12]
 			}
 		}

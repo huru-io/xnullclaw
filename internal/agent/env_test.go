@@ -95,6 +95,28 @@ func TestStartOpts_WithNetworkName(t *testing.T) {
 	}
 }
 
+func TestStartOpts_HostHome(t *testing.T) {
+	home := t.TempDir()
+	Setup(home, "alice", SetupOpts{})
+
+	// Without XNC_HOST_HOME: AgentDir uses container-local path.
+	t.Setenv("XNC_HOST_HOME", "")
+	opts := StartOpts("nullclaw:latest", home, "alice", true, "")
+	if !strings.HasPrefix(opts.AgentDir, home) {
+		t.Errorf("without HostHome, AgentDir should use home; got %q", opts.AgentDir)
+	}
+
+	// With XNC_HOST_HOME: AgentDir uses host-side path for Docker daemon.
+	t.Setenv("XNC_HOST_HOME", "/host/path/.xnc")
+	opts = StartOpts("nullclaw:latest", home, "alice", true, "xnc-net")
+	if !strings.HasPrefix(opts.AgentDir, "/host/path/.xnc") {
+		t.Errorf("with HostHome, AgentDir should use host path; got %q", opts.AgentDir)
+	}
+	if !strings.HasSuffix(opts.AgentDir, "alice") {
+		t.Errorf("AgentDir should end with agent name; got %q", opts.AgentDir)
+	}
+}
+
 func TestStartOpts_WithBraveKey(t *testing.T) {
 	home := t.TempDir()
 	Setup(home, "alice", SetupOpts{BraveKey: "BSA-test-key"})

@@ -26,6 +26,14 @@ func DefaultHome() string {
 	return filepath.Join(home, ".xnc")
 }
 
+// HostHome returns the host-side XNC_HOME path for Docker-out-of-Docker.
+// When the mux runs inside a container, bind mount paths are resolved by
+// the Docker daemon on the HOST, not inside the mux container. XNC_HOST_HOME
+// tells us the actual host path. Returns empty string when not in DooD mode.
+func HostHome() string {
+	return os.Getenv("XNC_HOST_HOME")
+}
+
 // NullclawRegistry is the default container registry for agent images.
 const NullclawRegistry = "ghcr.io/nullclaw/nullclaw"
 

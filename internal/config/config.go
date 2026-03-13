@@ -7,6 +7,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 // Config is the top-level configuration matching PRD 5.3.
@@ -284,6 +285,21 @@ func (c *Config) ApplyEnvOverrides() {
 	if v := os.Getenv("XNC_OPENAI_MODEL"); v != "" {
 		c.OpenAI.Model = v
 	}
+	if v := os.Getenv("XNC_OPENAI_BASE_URL"); v != "" {
+		c.OpenAI.BaseURL = v
+	}
+	if v := os.Getenv("XNC_PERSONA_NAME"); v != "" {
+		c.Persona.Name = v
+	}
+	if v := os.Getenv("XNC_PERSONA_OWNER"); v != "" {
+		c.Persona.OwnerName = v
+	}
+	if v := os.Getenv("XNC_LOG_LEVEL"); v != "" {
+		c.Logging.Level = v
+	}
+	if v := os.Getenv("XNC_TELEGRAM_ALLOW_FROM"); v != "" {
+		c.Telegram.AllowFrom = splitCSV(v)
+	}
 	if v := os.Getenv("XNC_RUNTIME"); v != "" {
 		if ValidRuntimeMode(v) {
 			c.Runtime.Mode = v
@@ -298,4 +314,18 @@ func (c *Config) ApplyEnvOverrides() {
 			fmt.Fprintf(os.Stderr, "config: ignoring invalid XNC_NETWORK=%q (must be alphanumeric/hyphens/underscores, 1-64 chars)\n", v)
 		}
 	}
+}
+
+// splitCSV splits a comma-separated string, trimming whitespace from each element.
+// Empty elements are discarded.
+func splitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	var result []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
 }

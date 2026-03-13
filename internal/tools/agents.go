@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -616,14 +617,14 @@ func registerAgentTools(r *Registry, d Deps) {
 				setupOpts.OpenAIKey = d.Cfg.OpenAI.APIKey
 			}
 
-			// Propagate keys from existing agents (single-tenant: all share the same keys).
+			// Propagate keys: env vars > existing agents (single-tenant: all share the same keys).
 			existingKeys := agent.CollectKeys(d.Home)
 			if setupOpts.OpenAIKey == "" {
 				setupOpts.OpenAIKey = existingKeys["openai"]
 			}
-			setupOpts.AnthropicKey = existingKeys["anthropic"]
-			setupOpts.OpenRouterKey = existingKeys["openrouter"]
-			setupOpts.BraveKey = existingKeys["brave"]
+			setupOpts.AnthropicKey = envOrDefault("XNC_ANTHROPIC_API_KEY", existingKeys["anthropic"])
+			setupOpts.OpenRouterKey = envOrDefault("XNC_OPENROUTER_API_KEY", existingKeys["openrouter"])
+			setupOpts.BraveKey = envOrDefault("XNC_BRAVE_API_KEY", existingKeys["brave"])
 
 			if err := agent.Setup(d.Home, agentName, setupOpts); err != nil {
 				return "", fmt.Errorf("setup agent: %w", err)
@@ -907,4 +908,12 @@ func sendToMultiple(ctx context.Context, d Deps, names []string, message string)
 
 	data, _ := json.MarshalIndent(results, "", "  ")
 	return string(data), nil
+}
+
+// envOrDefault returns the env var value if non-empty, otherwise the fallback.
+func envOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }

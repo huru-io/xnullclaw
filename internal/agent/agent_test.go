@@ -362,4 +362,22 @@ func TestNullclawRegistry(t *testing.T) {
 	if NullclawRegistry != "ghcr.io/nullclaw/nullclaw" {
 		t.Errorf("NullclawRegistry = %q", NullclawRegistry)
 	}
+	if NullclawLatestRef != NullclawRegistry+":latest" {
+		t.Errorf("NullclawLatestRef = %q", NullclawLatestRef)
+	}
+}
+
+func TestHostHome(t *testing.T) {
+	t.Run("unset", func(t *testing.T) {
+		t.Setenv("XNC_HOST_HOME", "")
+		if got := HostHome(); got != "" {
+			t.Errorf("HostHome() = %q, want empty", got)
+		}
+	})
+	t.Run("set", func(t *testing.T) {
+		t.Setenv("XNC_HOST_HOME", "/home/user/.xnc")
+		if got := HostHome(); got != "/home/user/.xnc" {
+			t.Errorf("HostHome() = %q, want %q", got, "/home/user/.xnc")
+		}
+	})
 }
