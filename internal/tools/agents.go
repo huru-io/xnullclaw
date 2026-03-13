@@ -95,16 +95,27 @@ func buildAgentSystemPrompt(name string, v personaVariant) string {
 	return strings.Join(lines, "\n")
 }
 
-// sendToAgent sends a message to an agent asynchronously (fire-and-forget).
-// The agent's response is written to its .outbox/ directory and picked up
-// by the drain goroutine, which sends it directly to Telegram.
+// sendToAgent sends a message to an agent via HTTP webhook (preferred) or
+// falls back to docker exec + outbox if the container has no port mapping.
 func sendToAgent(ctx context.Context, d Deps, agentName, message string) (string, error) {
 	cn := agent.ContainerName(d.Home, agentName)
-	// The shell command:
-	// 1. Acquires the send lock (serializes concurrent sends)
-	// 2. Creates the .outbox directory if needed
-	// 3. Writes the agent response to a .pending file
-	// 4. Renames to .msg atomically (only complete responses are drained)
+
+	// Try webhook first — query actual mapped port from Docker.
+	port, err := d.Docker.MappedPort(ctx, cn)
+	if err == nil && port > 0 {
+		agentDir := agent.Dir(d.Home, agentName)
+		token, _ := agent.ReadToken(agentDir)
+		resp, err := agent.SendWebhook(port, token, message)
+		if err != nil {
+			return "", fmt.Errorf("webhook to %s: %w", agentName, err)
+		}
+		if resp.Response != "" {
+			return resp.Response, nil
+		}
+		return fmt.Sprintf("Message delivered to %s (webhook).", agentName), nil
+	}
+
+	// Fallback: docker exec + outbox (legacy containers without port mapping).
 	cmd := []string{
 		"sh", "-c",
 		`flock /tmp/.send.lock sh -c '
@@ -121,8 +132,8 @@ func sendToAgent(ctx context.Context, d Deps, agentName, message string) (string
 }
 
 // startOpts returns ContainerOpts for starting an agent.
-func startOpts(d Deps, name string, port int) docker.ContainerOpts {
-	return agent.StartOpts(d.Image, d.Home, name, port)
+func startOpts(d Deps, name string) docker.ContainerOpts {
+	return agent.StartOpts(d.Image, d.Home, name, true)
 }
 
 // validatedAgentArg extracts and validates the "agent" argument from tool args.
@@ -317,7 +328,7 @@ func registerAgentTools(r *Registry, d Deps) {
 				return "", fmt.Errorf("agent %q has no API key configured", agentName)
 			}
 			cn := agent.ContainerName(d.Home, agentName)
-			opts := startOpts(d, agentName, agent.AgentPort(d.Home, agentName))
+			opts := startOpts(d, agentName)
 			if err := d.Docker.StartContainer(ctx, cn, opts); err != nil {
 				return "", err
 			}
@@ -378,7 +389,7 @@ func registerAgentTools(r *Registry, d Deps) {
 				// Force-remove in case stop failed but container still exists.
 				d.Docker.RemoveContainer(ctx, cn, true)
 			}
-			opts := startOpts(d, agentName, agent.AgentPort(d.Home, agentName))
+			opts := startOpts(d, agentName)
 			if err := d.Docker.StartContainer(ctx, cn, opts); err != nil {
 				return "", err
 			}
@@ -544,7 +555,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			// Start the agent and send identity-change message.
 			if agent.HasProviderKey(d.Home, newName) {
 				newCN := agent.ContainerName(d.Home, newName)
-				opts := startOpts(d, newName, agent.AgentPort(d.Home, newName))
+				opts := startOpts(d, newName)
 				if err := d.Docker.StartContainer(ctx, newCN, opts); err != nil {
 					steps = append(steps, fmt.Sprintf("Warning: start failed: %v", err))
 				} else {
@@ -623,7 +634,7 @@ func registerAgentTools(r *Registry, d Deps) {
 
 			// 4. Start in mux mode.
 			cn := agent.ContainerName(d.Home, agentName)
-			opts := startOpts(d, agentName, agent.AgentPort(d.Home, agentName))
+			opts := startOpts(d, agentName)
 			if err := d.Docker.StartContainer(ctx, cn, opts); err != nil {
 				steps = append(steps, fmt.Sprintf("Warning: start failed: %v", err))
 				return strings.Join(steps, "\n"), nil

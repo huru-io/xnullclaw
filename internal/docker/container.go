@@ -30,8 +30,8 @@ func (c *Client) IsRunning(ctx context.Context, name string) (bool, error) {
 func (c *Client) StartContainer(ctx context.Context, name string, opts ContainerOpts) error {
 	cfg, hostCfg := HardenedConfig(opts.AgentDir, opts.Image, opts.Cmd)
 
-	if opts.Port > 0 {
-		WithPort(hostCfg, opts.Port)
+	if opts.ExposePort {
+		WithPort(hostCfg)
 	}
 	if opts.TTY {
 		WithTTY(cfg)
@@ -114,6 +114,22 @@ func (c *Client) RemoveContainer(ctx context.Context, name string, force bool) e
 		return fmt.Errorf("docker: remove container %s: %w", name, err)
 	}
 	return nil
+}
+
+// MappedPort returns the host port mapped to container port 3000/tcp.
+// Returns 0 if no mapping exists (container not running or port not exposed).
+func (c *Client) MappedPort(ctx context.Context, name string) (int, error) {
+	raw, err := c.cli.ContainerInspect(ctx, name)
+	if err != nil {
+		return 0, fmt.Errorf("docker: inspect %s: %w", name, err)
+	}
+	bindings, ok := raw.NetworkSettings.Ports["3000/tcp"]
+	if !ok || len(bindings) == 0 {
+		return 0, nil
+	}
+	port := 0
+	fmt.Sscanf(bindings[0].HostPort, "%d", &port)
+	return port, nil
 }
 
 // InspectContainer returns info about a container.

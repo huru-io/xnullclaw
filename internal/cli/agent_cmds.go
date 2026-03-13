@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -100,31 +99,20 @@ func testKeys(openaiKey, anthropicKey, openrouterKey string) {
 }
 
 func cmdStart(g Globals, args []string) {
-	portStr, _ := flagValue(&args, "--port")
 	names := agentNames(args)
 
 	if len(names) == 0 {
-		die("usage: xnc start <agents...> [--port N]")
+		die("usage: xnc start <agents...>")
 	}
 
 	g.ensureDocker()
 	ctx := context.Background()
 
-	port := 0
-	if portStr != "" {
-		var err error
-		port, err = strconv.Atoi(portStr)
-		if err != nil {
-			die("invalid port: %s", portStr)
-		}
-	}
-
-	// For multi-agent start, only first agent gets the explicit port.
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var errs []string
 
-	for i, name := range names {
+	for _, name := range names {
 		if err := agent.ValidateName(name); err != nil {
 			die("%v", err)
 		}
@@ -147,11 +135,7 @@ func cmdStart(g Globals, args []string) {
 			continue
 		}
 
-		agentPort := 0
-		if i == 0 {
-			agentPort = port
-		}
-		opts := agent.StartOpts(g.Image, g.Home, name, agentPort)
+		opts := agent.StartOpts(g.Image, g.Home, name, true)
 
 		wg.Add(1)
 		go func(n, cn string, o docker.ContainerOpts) {
@@ -163,10 +147,6 @@ func cmdStart(g Globals, args []string) {
 				return
 			}
 
-			// Update meta.
-			if o.Port > 0 {
-				agent.WriteMeta(agent.Dir(g.Home, n), "HOST_PORT", strconv.Itoa(o.Port))
-			}
 			meta, _ := agent.ReadMeta(agent.Dir(g.Home, n))
 			mu.Lock()
 			ok("started %s %s", meta["EMOJI"], n)
@@ -222,9 +202,6 @@ func cmdStop(g Globals, args []string) {
 			if err := g.Docker.RemoveContainer(ctx, cn, false); err != nil {
 				// Not fatal — container may auto-remove.
 			}
-			// Clear runtime meta.
-			dir := agent.Dir(g.Home, n)
-			agent.DeleteMetaKey(dir, "HOST_PORT")
 			ok("stopped %s", n)
 		}(name)
 	}

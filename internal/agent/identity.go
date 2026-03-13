@@ -5,7 +5,6 @@ import (
 	"hash/fnv"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
@@ -104,7 +103,7 @@ func compoundEmoji(name string, used map[string]bool) string {
 }
 
 // forEachAgentDir iterates over all agent directories under home,
-// calling fn with each agent's directory path. Shared by usedEmojis/usedPorts.
+// calling fn with each agent's directory path. Used by usedEmojis.
 func forEachAgentDir(home string, fn func(dir string)) {
 	agentsDir := AgentsDir(home)
 	entries, err := os.ReadDir(agentsDir)
@@ -128,46 +127,6 @@ func usedEmojis(home string) map[string]bool {
 		}
 	})
 	return used
-}
-
-const startPort = 3001
-
-// NextPort returns the next available port starting from 3001.
-// Scans all agent .meta files to find ports already in use.
-func NextPort(home string) int {
-	used := usedPorts(home)
-	port := startPort
-	for used[port] {
-		port++
-	}
-	return port
-}
-
-// usedPorts scans all agent .meta files and collects assigned ports.
-func usedPorts(home string) map[int]bool {
-	used := make(map[int]bool)
-	forEachAgentDir(home, func(dir string) {
-		if portStr := ReadMetaKey(dir, "HOST_PORT", ""); portStr != "" {
-			if p, err := strconv.Atoi(portStr); err == nil {
-				used[p] = true
-			}
-		}
-	})
-	return used
-}
-
-// AgentPort reads the assigned host port from the agent's .meta file.
-// Returns 0 if no port is assigned (legacy agent or not yet started).
-func AgentPort(home, name string) int {
-	portStr := ReadMetaKey(Dir(home, name), "HOST_PORT", "")
-	if portStr == "" {
-		return 0
-	}
-	p, err := strconv.Atoi(portStr)
-	if err != nil {
-		return 0
-	}
-	return p
 }
 
 // NamePool provides a list of suggested agent names for setup.

@@ -45,7 +45,7 @@ func cmdRename(g Globals, args []string) {
 	// Start agent and send identity-change message.
 	if agent.HasProviderKey(g.Home, newName) {
 		newCN := agent.ContainerName(g.Home, newName)
-		opts := agent.StartOpts(g.Image, g.Home, newName, agent.AgentPort(g.Home, newName))
+		opts := agent.StartOpts(g.Image, g.Home, newName, true)
 		if err := g.Docker.StartContainer(ctx, newCN, opts); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not start %s: %v\n", newName, err)
 		} else {

@@ -54,11 +54,6 @@ func TestSetup(t *testing.T) {
 		t.Error("EMOJI not set in .meta")
 	}
 
-	// Check HOST_PORT is assigned.
-	if meta["HOST_PORT"] == "" {
-		t.Error("HOST_PORT not set in .meta")
-	}
-
 	// Check webhook auth token was generated.
 	token, err := ReadToken(dir)
 	if err != nil {

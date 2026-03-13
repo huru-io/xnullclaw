@@ -63,7 +63,7 @@ func TestHardenedConfig(t *testing.T) {
 func TestWithPort(t *testing.T) {
 	_, hostCfg := HardenedConfig("/tmp/test", "img", nil)
 
-	WithPort(hostCfg, 3001)
+	WithPort(hostCfg)
 
 	bindings, ok := hostCfg.PortBindings["3000/tcp"]
 	if !ok {
@@ -75,18 +75,9 @@ func TestWithPort(t *testing.T) {
 	if bindings[0].HostIP != "127.0.0.1" {
 		t.Errorf("expected localhost binding, got %q", bindings[0].HostIP)
 	}
-	if bindings[0].HostPort != "3001" {
-		t.Errorf("expected port 3001, got %q", bindings[0].HostPort)
-	}
-}
-
-func TestWithPortZero(t *testing.T) {
-	_, hostCfg := HardenedConfig("/tmp/test", "img", nil)
-
-	WithPort(hostCfg, 0) // should be a no-op
-
-	if hostCfg.PortBindings != nil {
-		t.Error("expected no port bindings for port 0")
+	// HostPort="" means Docker auto-assigns an ephemeral port.
+	if bindings[0].HostPort != "" {
+		t.Errorf("expected empty HostPort (dynamic), got %q", bindings[0].HostPort)
 	}
 }
 

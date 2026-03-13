@@ -487,9 +487,9 @@ AGENT LIFECYCLE:
     --brave-key KEY                         Brave Search API key
     --model MODEL                           LLM model
     --system-prompt TEXT                     Custom system prompt
-  start    <agents...> [--port N]          Start agent containers
+  start    <agents...>                     Start agent containers
   stop     <agents...> [--all]             Stop agent containers
-  restart  <agents...> [--port N]          Restart agent containers
+  restart  <agents...>                     Restart agent containers
   destroy  <agents...> [--yes]             Delete agents permanently
   clone    <source> <new> [--with-data]    Clone an agent
   rename   <old> <new>                     Rename an agent

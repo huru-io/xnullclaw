@@ -62,15 +62,15 @@ func TestStartOpts(t *testing.T) {
 	home := t.TempDir()
 	Setup(home, "alice", SetupOpts{})
 
-	opts := StartOpts("nullclaw:latest", home, "alice", 8080)
+	opts := StartOpts("nullclaw:latest", home, "alice", true)
 	if opts.Image != "nullclaw:latest" {
 		t.Errorf("unexpected image: %s", opts.Image)
 	}
 	if len(opts.Cmd) != 1 || opts.Cmd[0] != ContainerCmd {
 		t.Errorf("unexpected cmd: %v", opts.Cmd)
 	}
-	if opts.Port != 8080 {
-		t.Errorf("unexpected port: %d", opts.Port)
+	if !opts.ExposePort {
+		t.Error("expected ExposePort=true")
 	}
 	if !strings.HasSuffix(opts.AgentDir, "alice") {
 		t.Errorf("unexpected agent dir: %s", opts.AgentDir)
@@ -85,7 +85,7 @@ func TestStartOpts_WithBraveKey(t *testing.T) {
 	home := t.TempDir()
 	Setup(home, "alice", SetupOpts{BraveKey: "BSA-test-key"})
 
-	opts := StartOpts("nullclaw:latest", home, "alice", 0)
+	opts := StartOpts("nullclaw:latest", home, "alice", false)
 	if len(opts.Env) != 1 {
 		t.Fatalf("expected 1 env var, got %d: %v", len(opts.Env), opts.Env)
 	}

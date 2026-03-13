@@ -15,6 +15,7 @@ type MockOps struct {
 	RemoveContainerFn    func(ctx context.Context, name string, force bool) error
 	InspectContainerFn   func(ctx context.Context, name string) (*ContainerInfo, error)
 	ListContainersFn     func(ctx context.Context, prefix string) ([]ContainerInfo, error)
+	MappedPortFn         func(ctx context.Context, name string) (int, error)
 	ContainerLogsFn      func(ctx context.Context, name string, opts LogOpts) (io.ReadCloser, error)
 	ExecSyncFn           func(ctx context.Context, name string, cmd []string, stdin io.Reader) (string, error)
 	ExecFireFn           func(ctx context.Context, name string, cmd []string, stdin io.Reader) error
@@ -71,6 +72,13 @@ func (m *MockOps) ListContainers(ctx context.Context, prefix string) ([]Containe
 		return m.ListContainersFn(ctx, prefix)
 	}
 	return nil, nil
+}
+
+func (m *MockOps) MappedPort(ctx context.Context, name string) (int, error) {
+	if m.MappedPortFn != nil {
+		return m.MappedPortFn(ctx, name)
+	}
+	return 0, nil
 }
 
 func (m *MockOps) ContainerLogs(ctx context.Context, name string, opts LogOpts) (io.ReadCloser, error) {

@@ -509,14 +509,15 @@ func Run(mc Config) error {
 				continue
 			}
 
-			agentPort := agent.AgentPort(mc.Home, agentName)
-			opts := agent.StartOpts(mc.Image, mc.Home, agentName, agentPort)
+			opts := agent.StartOpts(mc.Image, mc.Home, agentName, true)
 			if err := dk.StartContainer(ctx, cn, opts); err != nil {
 				logger.Error("auto-start failed", "agent", agentName, "error", err)
 			} else {
 				logger.LogLifecycle("started", agentName, "")
-				if err := agent.WaitForHealthy(agentPort, 30*time.Second); err != nil {
-					logger.Error("gateway health check failed", "agent", agentName, "error", err)
+				if port, err := dk.MappedPort(ctx, cn); err == nil && port > 0 {
+					if err := agent.WaitForHealthy(port, 30*time.Second); err != nil {
+						logger.Error("gateway health check failed", "agent", agentName, "error", err)
+					}
 				}
 				started++
 			}

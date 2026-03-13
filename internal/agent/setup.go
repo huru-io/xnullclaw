@@ -115,16 +115,14 @@ func Setup(home, name string, opts SetupOpts) error {
 		return fmt.Errorf("setup: write config: %w", err)
 	}
 
-	// Assign identity and port.
+	// Assign identity.
 	emoji := NextEmoji(home, name)
-	port := NextPort(home)
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	if err := WriteMetaBatch(dir, map[string]string{
-		"NAME":      name,
-		"CREATED":   now,
-		"EMOJI":     emoji,
-		"HOST_PORT": fmt.Sprintf("%d", port),
+		"NAME":    name,
+		"CREATED": now,
+		"EMOJI":   emoji,
 	}); err != nil {
 		return fmt.Errorf("setup: write meta: %w", err)
 	}

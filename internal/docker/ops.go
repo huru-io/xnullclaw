@@ -19,6 +19,9 @@ type Ops interface {
 	InspectContainer(ctx context.Context, name string) (*ContainerInfo, error)
 	ListContainers(ctx context.Context, prefix string) ([]ContainerInfo, error)
 
+	// Port mapping
+	MappedPort(ctx context.Context, name string) (int, error)
+
 	// Container interaction
 	ContainerLogs(ctx context.Context, name string, opts LogOpts) (io.ReadCloser, error)
 	ExecSync(ctx context.Context, name string, cmd []string, stdin io.Reader) (string, error)
@@ -42,12 +45,12 @@ type Ops interface {
 
 // ContainerOpts configures container creation.
 type ContainerOpts struct {
-	Image    string
-	Cmd      []string
-	AgentDir string // host path to agent directory (for mounts)
-	Port     int    // 0 = no port exposure
-	Env      []string
-	TTY      bool // interactive mode
+	Image      string
+	Cmd        []string
+	AgentDir   string // host path to agent directory (for mounts)
+	ExposePort bool   // expose gateway port (Docker auto-assigns host port)
+	Env        []string
+	TTY        bool // interactive mode
 }
 
 // ContainerInfo holds container inspection data.

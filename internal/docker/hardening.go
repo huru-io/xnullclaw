@@ -1,7 +1,6 @@
 package docker
 
 import (
-	"fmt"
 	"os/user"
 	"path/filepath"
 
@@ -72,16 +71,14 @@ func HardenedConfig(agentDir, image string, cmd []string) (*container.Config, *c
 	return cfg, hostCfg
 }
 
-// WithPort adds a localhost-only port mapping to the host config.
-func WithPort(hostCfg *container.HostConfig, hostPort int) {
-	if hostPort <= 0 {
-		return
-	}
+// WithPort adds a localhost-only dynamic port mapping to the host config.
+// Docker auto-assigns an available host port (HostPort="" means ephemeral).
+func WithPort(hostCfg *container.HostConfig) {
 	hostCfg.PortBindings = nat.PortMap{
 		"3000/tcp": {
 			{
 				HostIP:   "127.0.0.1",
-				HostPort: fmt.Sprintf("%d", hostPort),
+				HostPort: "", // Docker picks an available port
 			},
 		},
 	}
