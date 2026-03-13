@@ -69,7 +69,9 @@ func Run(mc Config) error {
 	if err != nil {
 		if os.IsNotExist(err) {
 			cfg = config.DefaultConfig()
-			_ = cfg.Save(mc.CfgPath)
+			if saveErr := cfg.Save(mc.CfgPath); saveErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not save default config: %v\n", saveErr)
+			}
 		} else {
 			return fmt.Errorf("config: %w (fix the file or delete it to reset)", err)
 		}
@@ -278,9 +280,11 @@ func Run(mc Config) error {
 		logger.LogIncoming(userID, text, "text")
 		tgBot.SendTyping(chatID)
 
-		turnMu.Lock()
-		result := runTurn(chatID, text, "conversation")
-		turnMu.Unlock()
+		result := func() turnResult {
+			turnMu.Lock()
+			defer turnMu.Unlock()
+			return runTurn(chatID, text, "conversation")
+		}()
 
 		deliverResult(result)
 	})
@@ -321,9 +325,11 @@ func Run(mc Config) error {
 		}
 		logger.Info("voice transcribed", "text", transcript)
 
-		turnMu.Lock()
-		result := runTurn(chatID, transcript, "conversation")
-		turnMu.Unlock()
+		result := func() turnResult {
+			turnMu.Lock()
+			defer turnMu.Unlock()
+			return runTurn(chatID, transcript, "conversation")
+		}()
 
 		deliverResult(result)
 	})
@@ -375,9 +381,11 @@ func Run(mc Config) error {
 		}
 		logger.Info("media received", "type", mediaType, "path", destPath, "caption", caption, "filename", fileName)
 
-		turnMu.Lock()
-		result := runTurn(chatID, userText, "conversation")
-		turnMu.Unlock()
+		result := func() turnResult {
+			turnMu.Lock()
+			defer turnMu.Unlock()
+			return runTurn(chatID, userText, "conversation")
+		}()
 
 		deliverResult(result)
 	})
@@ -509,7 +517,10 @@ func Run(mc Config) error {
 	}()
 
 	// Auto-start agents (direct Go calls, no wrapper).
+	var autoStartWg sync.WaitGroup
+	autoStartWg.Add(1)
 	go func() {
+		defer autoStartWg.Done()
 		started := 0
 		for _, agentName := range cfg.Agents.AutoStart {
 			logger.LogLifecycle("auto-starting", agentName, "")
@@ -616,6 +627,7 @@ func Run(mc Config) error {
 		// 3. Wait for goroutines to actually exit before touching shared resources.
 		tgWg.Wait()
 		schedulerWg.Wait()
+		autoStartWg.Wait()
 
 		// 4. Final drain — turnMu is guaranteed free (all turn holders exited).
 		drainer.safeDrainAll()
@@ -657,6 +669,7 @@ func Run(mc Config) error {
 	//    no goroutine references store, docker, or logger.
 	tgWg.Wait()
 	schedulerWg.Wait()
+	autoStartWg.Wait()
 
 	// 4. Stop agents in parallel (bounded concurrency).
 	//    Timeout: 10s per agent batch (5 agents per batch), minimum 30s.

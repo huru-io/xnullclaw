@@ -84,7 +84,7 @@ func registerMemoryTools(r *Registry, store *memory.Store) {
 					agent = fmt.Sprintf(" [agent: %s]", *f.Agent)
 				}
 				fmt.Fprintf(&sb, "%d. [%s]%s %s (score: %.2f)\n", i+1, f.Type, agent, f.Content, f.Score)
-				_ = store.UpdateFactAccess(f.ID)
+				_ = store.UpdateFactAccess(f.ID) // non-critical telemetry — don't fail search on tracking error
 			}
 			return sb.String(), nil
 		},

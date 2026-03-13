@@ -149,7 +149,9 @@ func (d *Drainer) drainAgent(name string) {
 		if err != nil {
 			// ELOOP means symlink — remove it. Other errors: skip.
 			d.logger.Error("drain: cannot open outbox file", "agent", name, "file", fname, "error", err)
-			os.Remove(fpath)
+			if rmErr := os.Remove(fpath); rmErr != nil {
+				d.logger.Debug("drain: remove failed", "file", fname, "error", rmErr)
+			}
 			continue
 		}
 
@@ -158,26 +160,32 @@ func (d *Drainer) drainAgent(name string) {
 		if err != nil || !info.Mode().IsRegular() {
 			f.Close()
 			d.logger.Error("drain: skipping non-regular file", "agent", name, "file", fname)
-			os.Remove(fpath)
+			if rmErr := os.Remove(fpath); rmErr != nil {
+				d.logger.Debug("drain: remove failed", "file", fname, "error", rmErr)
+			}
 			continue
 		}
 		if info.Size() > maxOutboxFileSize {
 			f.Close()
 			d.logger.Error("drain: outbox file too large, removing", "agent", name, "file", fname, "size", info.Size())
-			os.Remove(fpath)
+			if rmErr := os.Remove(fpath); rmErr != nil {
+				d.logger.Debug("drain: remove failed", "file", fname, "error", rmErr)
+			}
 			continue
 		}
 
 		content, err := io.ReadAll(f)
 		f.Close()
 		if err != nil {
-			d.logger.Error("drain: read outbox file", "agent", name, "file", fname, "error", err)
+			d.logger.Error("drain: read outbox file, keeping for retry", "agent", name, "file", fname, "error", err)
 			continue
 		}
 
 		raw := strings.TrimSpace(string(content))
 		if raw == "" {
-			os.Remove(fpath)
+			if rmErr := os.Remove(fpath); rmErr != nil {
+				d.logger.Debug("drain: remove empty file failed", "file", fname, "error", rmErr)
+			}
 			continue
 		}
 
@@ -217,7 +225,9 @@ func (d *Drainer) drainAgent(name string) {
 		// Only remove the file after successful send — prevents message loss.
 		// Trade-off: crash after send but before delete = duplicate on restart (at-least-once).
 		if allOK {
-			os.Remove(fpath)
+			if rmErr := os.Remove(fpath); rmErr != nil {
+				d.logger.Debug("drain: remove delivered file failed", "file", fname, "error", rmErr)
+			}
 		} else {
 			d.logger.Error("drain: keeping file for retry", "agent", name, "file", fname)
 		}

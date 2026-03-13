@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -215,7 +216,7 @@ func InstanceID(home string) string {
 	b := make([]byte, 3) // 3 bytes = 6 hex chars
 	if _, err := rand.Read(b); err != nil {
 		// crypto/rand failure indicates a broken system.
-		panic("agent: crypto/rand failed: " + err.Error())
+		log.Fatalf("agent: crypto/rand failed: %v", err)
 	}
 	id := hex.EncodeToString(b)
 

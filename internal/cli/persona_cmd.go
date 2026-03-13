@@ -46,6 +46,8 @@ var muxDefaults [numDimensions]float64
 
 func init() {
 	if len(dimensions) != numDimensions {
+		// Programmer error: someone added a dimension without updating the slice.
+		// Panic is intentional — this is a compile-time invariant check that fires during init().
 		panic("dimensions slice length does not match numDimensions constant")
 	}
 	d := config.PersonaDimensions{}.Defaults()

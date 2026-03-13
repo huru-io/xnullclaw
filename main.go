@@ -112,8 +112,8 @@ func runMux(args []string) {
 				log.Fatalf("another mux instance may be running: %v", err)
 			}
 			defer func() {
-				os.Remove(pidFile)
-				os.Remove(pidFile + ".lock")
+				removeWarn(pidFile, "PID file")
+				removeWarn(pidFile+".lock", "lock file")
 				lockFile.Close()
 			}()
 			writePID(pidFile, os.Getpid())
@@ -178,7 +178,7 @@ func runMux(args []string) {
 					kp.Signal(syscall.SIGKILL)
 				}
 				time.Sleep(500 * time.Millisecond)
-				os.Remove(filepath.Join(muxHome, "mux.pid"))
+				removeWarn(filepath.Join(muxHome, "mux.pid"), "stale PID file")
 			}
 		}
 		muxDaemon(home, image, muxHome, logFile)
@@ -239,7 +239,7 @@ func muxStop(pidFile string) {
 
 	if !processAlive(pid) {
 		fmt.Fprintf(os.Stderr, "mux process %d is not running (stale PID file)\n", pid)
-		os.Remove(pidFile)
+		removeWarn(pidFile, "stale PID file")
 		os.Exit(1)
 	}
 
@@ -273,7 +273,7 @@ func muxStop(pidFile string) {
 		kp.Signal(syscall.SIGKILL)
 	}
 	time.Sleep(500 * time.Millisecond)
-	os.Remove(pidFile)
+	removeWarn(pidFile, "PID file")
 	fmt.Fprintln(os.Stderr, "mux force-killed")
 	os.Exit(1)
 }
@@ -288,7 +288,7 @@ func muxStatus(pidFile string) {
 		fmt.Printf("mux: running (PID %d)\n", pid)
 	} else {
 		fmt.Printf("mux: stale PID file (PID %d not running)\n", pid)
-		os.Remove(pidFile)
+		removeWarn(pidFile, "stale PID file")
 	}
 }
 
@@ -380,6 +380,14 @@ func readPID(path string) int {
 	}
 	pid, _ := strconv.Atoi(strings.TrimSpace(string(data)))
 	return pid
+}
+
+// removeWarn removes a file and logs a warning to stderr on failure.
+// Ignores "not exist" errors (file already gone).
+func removeWarn(path, desc string) {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "warning: remove %s: %v\n", desc, err)
+	}
 }
 
 func processAlive(pid int) bool {

@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -12,6 +11,13 @@ import (
 	"github.com/jotavich/xnullclaw/internal/agent"
 	"github.com/jotavich/xnullclaw/internal/config"
 )
+
+// muxDie prints an error message to stderr and exits. Used instead of
+// log.Fatal to avoid timestamp noise in user-facing CLI output.
+func muxDie(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "error: "+format+"\n", args...)
+	os.Exit(1)
+}
 
 // muxConfigKey describes a settable mux config field.
 type muxConfigKey struct {
@@ -56,12 +62,12 @@ func muxConfig(cfgPath string, args []string) {
 	switch args[0] {
 	case "get":
 		if len(args) < 2 {
-			log.Fatal("usage: xnc mux config get <key>")
+			muxDie("usage: xnc mux config get <key>")
 		}
 		muxConfigGet(cfgPath, args[1])
 	case "set":
 		if len(args) < 3 {
-			log.Fatal("usage: xnc mux config set <key> <value>")
+			muxDie("usage: xnc mux config set <key> <value>")
 		}
 		muxConfigSet(cfgPath, args[1], strings.Join(args[2:], " "))
 	case "keys":
@@ -76,7 +82,7 @@ func muxConfig(cfgPath string, args []string) {
 func muxConfigDump(cfgPath string) {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		muxDie("load config: %v", err)
 	}
 
 	// Marshal to map for redaction.
@@ -110,7 +116,7 @@ func muxConfigDump(cfgPath string) {
 func muxConfigGet(cfgPath string, key string) {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		muxDie("load config: %v", err)
 	}
 
 	// Marshal to generic map for dotted-path lookup.
@@ -135,7 +141,7 @@ func muxConfigGet(cfgPath string, key string) {
 				val = []any{}
 			}
 		} else {
-			log.Fatalf("unknown key: %s", key)
+			muxDie("unknown key: %s", key)
 		}
 	}
 
@@ -170,9 +176,7 @@ func muxConfigGet(cfgPath string, key string) {
 func muxConfigSet(cfgPath string, key string, value string) {
 	mk, known := lookupMuxKey(key)
 	if !known {
-		fmt.Fprintf(os.Stderr, "unknown key: %s\n", key)
-		fmt.Fprintln(os.Stderr, "run 'xnc mux config keys' to see available keys")
-		os.Exit(1)
+		muxDie("unknown key: %s\nrun 'xnc mux config keys' to see available keys", key)
 	}
 
 	// Load or create config.
@@ -187,13 +191,13 @@ func muxConfigSet(cfgPath string, key string, value string) {
 	case "telegram.group_id":
 		v, err := strconv.ParseInt(value, 10, 64)
 		if err != nil {
-			log.Fatalf("invalid int64 for %s: %s", key, value)
+			muxDie("invalid int64 for %s: %s", key, value)
 		}
 		cfg.Telegram.GroupID = v
 	case "telegram.topic_id":
 		v, err := strconv.Atoi(value)
 		if err != nil {
-			log.Fatalf("invalid int for %s: %s", key, value)
+			muxDie("invalid int for %s: %s", key, value)
 		}
 		cfg.Telegram.TopicID = v
 	case "telegram.allow_from":
@@ -213,7 +217,7 @@ func muxConfigSet(cfgPath string, key string, value string) {
 	case "openai.temperature":
 		v, err := strconv.ParseFloat(value, 64)
 		if err != nil {
-			log.Fatalf("invalid float for %s: %s", key, value)
+			muxDie("invalid float for %s: %s", key, value)
 		}
 		cfg.OpenAI.Temperature = v
 	case "openai.base_url":
@@ -221,23 +225,23 @@ func muxConfigSet(cfgPath string, key string, value string) {
 	case "costs.daily_budget_usd":
 		v, err := strconv.ParseFloat(value, 64)
 		if err != nil {
-			log.Fatalf("invalid float for %s: %s", key, value)
+			muxDie("invalid float for %s: %s", key, value)
 		}
 		cfg.Costs.DailyBudgetUSD = v
 	case "costs.monthly_budget_usd":
 		v, err := strconv.ParseFloat(value, 64)
 		if err != nil {
-			log.Fatalf("invalid float for %s: %s", key, value)
+			muxDie("invalid float for %s: %s", key, value)
 		}
 		cfg.Costs.MonthlyBudgetUSD = v
 	case "persona.name":
 		if strings.TrimSpace(value) == "" {
-			log.Fatalf("persona name cannot be empty")
+			muxDie("persona name cannot be empty")
 		}
 		cfg.Persona.Name = value
 	case "persona.owner_name":
 		if strings.TrimSpace(value) == "" {
-			log.Fatalf("owner name cannot be empty")
+			muxDie("owner name cannot be empty")
 		}
 		cfg.Persona.OwnerName = value
 	case "logging.level":
@@ -246,12 +250,12 @@ func muxConfigSet(cfgPath string, key string, value string) {
 		case "debug", "info", "warn", "error":
 			cfg.Logging.Level = value
 		default:
-			log.Fatalf("invalid log level %q (must be debug/info/warn/error)", value)
+			muxDie("invalid log level %q (must be debug/info/warn/error)", value)
 		}
 	}
 
 	if err := cfg.Save(cfgPath); err != nil {
-		log.Fatalf("save config: %v", err)
+		muxDie("save config: %v", err)
 	}
 
 	// Show confirmation.

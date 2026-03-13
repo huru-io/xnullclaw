@@ -224,13 +224,17 @@ func (l *Logger) write(target logTarget, e Entry) {
 	defer l.mu.Unlock()
 	fp, baseName := l.targetInfo(target)
 	if *fp != nil {
-		_, _ = (*fp).Write(data)
+		if _, err := (*fp).Write(data); err != nil {
+			fmt.Fprintf(os.Stderr, "logging: write to %s failed: %v\n", baseName, err)
+		}
 	}
 	if l.maxFileSize > 0 {
 		l.maybeRotate(fp, baseName)
 	}
 	if l.mirror != nil {
-		_, _ = l.mirror.Write(data)
+		if _, err := l.mirror.Write(data); err != nil {
+			fmt.Fprintf(os.Stderr, "logging: mirror write failed: %v\n", err)
+		}
 	}
 }
 
@@ -242,20 +246,25 @@ func (l *Logger) maybeRotate(fp **os.File, baseName string) {
 	if err != nil || info.Size() < l.maxFileSize {
 		return
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "logging: close %s for rotation: %v\n", baseName, err)
+	}
 	base := filepath.Join(l.logDir, baseName)
 	// Shift rotated files: .3 → delete, .2 → .3, .1 → .2.
 	for i := maxRotatedFiles; i >= 1; i-- {
 		old := fmt.Sprintf("%s.%d", base, i)
 		if i == maxRotatedFiles {
-			os.Remove(old)
+			os.Remove(old) // best-effort cleanup of oldest
 		} else {
-			os.Rename(old, fmt.Sprintf("%s.%d", base, i+1))
+			os.Rename(old, fmt.Sprintf("%s.%d", base, i+1)) // best-effort shift
 		}
 	}
-	os.Rename(base, base+".1")
+	if err := os.Rename(base, base+".1"); err != nil {
+		fmt.Fprintf(os.Stderr, "logging: rotate %s: %v\n", baseName, err)
+	}
 	newFile, err := os.OpenFile(base, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "logging: reopen %s after rotation: %v\n", baseName, err)
 		// Best effort: reopen the rotated file.
 		newFile, _ = os.OpenFile(base+".1", os.O_WRONLY|os.O_APPEND, 0600)
 	}

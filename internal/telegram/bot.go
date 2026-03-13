@@ -399,11 +399,9 @@ func (b *Bot) SendTyping(chatID int64) error {
 
 // SendPhoto sends a photo to the user.
 func (b *Bot) SendPhoto(chatID int64, filePath string, caption string) error {
-	f, err := os.Open(filePath)
-	if err != nil {
-		return fmt.Errorf("bot: open photo %s: %w", filePath, err)
+	if _, err := os.Stat(filePath); err != nil {
+		return fmt.Errorf("bot: photo %s: %w", filePath, err)
 	}
-	f.Close()
 
 	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FilePath(filePath))
 	photo.Caption = caption
@@ -412,11 +410,9 @@ func (b *Bot) SendPhoto(chatID int64, filePath string, caption string) error {
 
 // SendDocument sends a document to the user.
 func (b *Bot) SendDocument(chatID int64, filePath string, caption string) error {
-	f, err := os.Open(filePath)
-	if err != nil {
-		return fmt.Errorf("bot: open document %s: %w", filePath, err)
+	if _, err := os.Stat(filePath); err != nil {
+		return fmt.Errorf("bot: document %s: %w", filePath, err)
 	}
-	f.Close()
 
 	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(filePath))
 	doc.Caption = caption
@@ -461,11 +457,9 @@ func (b *Bot) DownloadFile(fileID, destPath string) error {
 
 // SendVoice sends a voice message (ogg/opus only; for other audio use SendAudio).
 func (b *Bot) SendVoice(chatID int64, filePath string) error {
-	f, err := os.Open(filePath)
-	if err != nil {
-		return fmt.Errorf("bot: open voice %s: %w", filePath, err)
+	if _, err := os.Stat(filePath); err != nil {
+		return fmt.Errorf("bot: voice %s: %w", filePath, err)
 	}
-	f.Close()
 
 	voice := tgbotapi.NewVoice(chatID, tgbotapi.FilePath(filePath))
 	return b.enqueueSend(voice, PriorityNormal)
@@ -473,11 +467,9 @@ func (b *Bot) SendVoice(chatID int64, filePath string) error {
 
 // SendAudio sends an audio file as a playable audio message (mp3, m4a, etc).
 func (b *Bot) SendAudio(chatID int64, filePath string, caption string) error {
-	f, err := os.Open(filePath)
-	if err != nil {
-		return fmt.Errorf("bot: open audio %s: %w", filePath, err)
+	if _, err := os.Stat(filePath); err != nil {
+		return fmt.Errorf("bot: audio %s: %w", filePath, err)
 	}
-	f.Close()
 
 	audio := tgbotapi.NewAudio(chatID, tgbotapi.FilePath(filePath))
 	audio.Caption = caption
@@ -486,11 +478,9 @@ func (b *Bot) SendAudio(chatID int64, filePath string, caption string) error {
 
 // SendVideo sends a video file.
 func (b *Bot) SendVideo(chatID int64, filePath string, caption string) error {
-	f, err := os.Open(filePath)
-	if err != nil {
-		return fmt.Errorf("bot: open video %s: %w", filePath, err)
+	if _, err := os.Stat(filePath); err != nil {
+		return fmt.Errorf("bot: video %s: %w", filePath, err)
 	}
-	f.Close()
 
 	video := tgbotapi.NewVideo(chatID, tgbotapi.FilePath(filePath))
 	video.Caption = caption

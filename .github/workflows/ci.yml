@@ -22,6 +22,9 @@ jobs:
       - name: Test
         run: CGO_ENABLED=0 go test -count=1 ./...
 
+      - name: Race detection
+        run: CGO_ENABLED=1 go test -race -count=1 ./...
+
       - name: Build
         run: make build
 

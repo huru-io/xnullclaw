@@ -45,6 +45,8 @@ func (c *Client) StartContainer(ctx context.Context, name string, opts Container
 
 	// Remove any existing non-running container with this name.
 	// Retries if the container is still transitioning (e.g. stopping).
+	// Best-effort: remove stopped container so we can recreate with updated config.
+	// Error is intentionally discarded — CreateContainer below is the authoritative check.
 	if info, err := c.InspectContainer(ctx, name); err == nil && info.State != "running" {
 		_ = c.cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: true})
 	}
@@ -58,7 +60,7 @@ func (c *Client) StartContainer(ctx context.Context, name string, opts Container
 		}
 		// Conflict means the old container is still being removed.
 		if errdefs.IsConflict(err) {
-			_ = c.cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: true})
+			_ = c.cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: true}) // best-effort retry cleanup
 			time.Sleep(time.Duration(attempt+1) * time.Second)
 			continue
 		}
@@ -69,7 +71,7 @@ func (c *Client) StartContainer(ctx context.Context, name string, opts Container
 	}
 
 	if err := c.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
-		// Clean up the created container on start failure.
+		// Clean up the created container on start failure (best-effort — caller gets the start error).
 		_ = c.cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
 		return fmt.Errorf("docker: start container %s: %w", name, err)
 	}
@@ -100,7 +102,7 @@ func (c *Client) StopContainer(ctx context.Context, name string) error {
 			return fmt.Errorf("docker: wait for stop %s: %w", name, err)
 		}
 	case <-waitCtx.Done():
-		// Timed out waiting — force kill.
+		// Timed out waiting — force kill (best-effort, container may already be gone).
 		_ = c.cli.ContainerKill(ctx, name, "KILL")
 	}
 	return nil

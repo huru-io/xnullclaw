@@ -330,7 +330,10 @@ func installFromZip(targetDir, source string) (string, error) {
 		}
 
 		if f.FileInfo().IsDir() {
-			os.MkdirAll(outPath, 0755)
+			if err := os.MkdirAll(outPath, 0755); err != nil {
+				os.RemoveAll(dest)
+				return "", fmt.Errorf("create dir %s: %w", relPath, err)
+			}
 			continue
 		}
 
@@ -339,7 +342,10 @@ func installFromZip(targetDir, source string) (string, error) {
 			continue
 		}
 
-		os.MkdirAll(filepath.Dir(outPath), 0755)
+		if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
+			os.RemoveAll(dest)
+			return "", fmt.Errorf("create parent dir for %s: %w", relPath, err)
+		}
 		n, err := extractZipFile(f, outPath)
 		if err != nil {
 			os.RemoveAll(dest)
