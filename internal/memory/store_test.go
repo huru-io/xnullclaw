@@ -559,6 +559,39 @@ func TestAgentCostSummary(t *testing.T) {
 	}
 }
 
+func TestTotalCostSince(t *testing.T) {
+	s := newTestStore(t)
+
+	now := time.Now()
+	_ = s.AddCost(Cost{Timestamp: now.Add(-2 * time.Hour), Category: "loop", CostUSD: 0.10})
+	_ = s.AddCost(Cost{Timestamp: now.Add(-30 * time.Minute), Category: "loop", CostUSD: 0.20})
+	_ = s.AddCost(Cost{Timestamp: now.Add(-10 * time.Minute), Category: "agent", CostUSD: 0.05})
+
+	// Since 1 hour ago: should include 0.20 + 0.05 = 0.25
+	total, err := s.TotalCostSince(now.Add(-1 * time.Hour))
+	if err != nil {
+		t.Fatalf("TotalCostSince: %v", err)
+	}
+	if total < 0.24 || total > 0.26 {
+		t.Errorf("expected ~0.25, got %f", total)
+	}
+
+	// Since 3 hours ago: should include all = 0.35
+	total, err = s.TotalCostSince(now.Add(-3 * time.Hour))
+	if err != nil {
+		t.Fatalf("TotalCostSince: %v", err)
+	}
+	if total < 0.34 || total > 0.36 {
+		t.Errorf("expected ~0.35, got %f", total)
+	}
+
+	// No costs in the future.
+	total, _ = s.TotalCostSince(now.Add(1 * time.Hour))
+	if total != 0 {
+		t.Errorf("expected 0 for future, got %f", total)
+	}
+}
+
 // ==================== Schema creation idempotency ====================
 
 // ==================== RenameAgent ====================

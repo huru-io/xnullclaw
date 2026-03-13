@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -24,6 +25,10 @@ import (
 var version = "dev"
 
 func main() {
+	// Set restrictive umask so all file/directory creates honor their mode bits.
+	// Without this, the default umask 0022 makes 0600 files world-readable (0644).
+	syscall.Umask(0077)
+
 	if len(os.Args) < 2 {
 		printDashboard()
 		return
@@ -102,17 +107,40 @@ func runMux(args []string) {
 			if err := os.MkdirAll(muxHome, 0700); err != nil {
 				log.Fatalf("create mux home: %v", err)
 			}
+			lockFile, err := acquirePIDLock(pidFile)
+			if err != nil {
+				log.Fatalf("another mux instance may be running: %v", err)
+			}
+			defer func() {
+				os.Remove(pidFile)
+				lockFile.Close()
+			}()
 			writePID(pidFile, os.Getpid())
-			defer os.Remove(pidFile)
 
-			if err := mux.Run(mux.Config{
+			var lastChatID int64
+			mc := mux.Config{
 				Home:       home,
 				CfgPath:    cfgPath,
 				Image:      image,
 				Version:    version,
 				Foreground: true,
-			}); err != nil {
-				log.Fatalf("mux: %v", err)
+				LastChatID: &lastChatID,
+			}
+			reloadBackoff := time.Second
+			for {
+				err := mux.Run(mc)
+				if errors.Is(err, mux.ErrReload) {
+					log.Printf("mux reloading config (backoff %v)...", reloadBackoff)
+					time.Sleep(reloadBackoff)
+					if reloadBackoff < 30*time.Second {
+						reloadBackoff *= 2
+					}
+					continue
+				}
+				if err != nil {
+					log.Fatalf("mux: %v", err)
+				}
+				break
 			}
 		} else {
 			// Daemon mode: re-exec self with --foreground, redirect output to log file.
@@ -239,7 +267,13 @@ func muxStop(pidFile string) {
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	fmt.Fprintln(os.Stderr, "mux did not stop within 60s — process may still be running")
+	fmt.Fprintln(os.Stderr, "mux did not stop gracefully, sending SIGKILL...")
+	if kp, err := os.FindProcess(pid); err == nil {
+		kp.Signal(syscall.SIGKILL)
+	}
+	time.Sleep(500 * time.Millisecond)
+	os.Remove(pidFile)
+	fmt.Fprintln(os.Stderr, "mux force-killed")
 	os.Exit(1)
 }
 
@@ -304,7 +338,7 @@ func muxLogs(logFile string, follow bool) {
 		if n > 0 {
 			os.Stdout.Write(buf[:n])
 		}
-		if err != nil {
+		if n == 0 || err != nil {
 			time.Sleep(200 * time.Millisecond)
 		}
 	}
@@ -312,9 +346,29 @@ func muxLogs(logFile string, follow bool) {
 
 // PID file helpers.
 
+// acquirePIDLock opens the PID file path with an exclusive advisory lock.
+// Returns the open file (caller must keep it open for the process lifetime).
+// Fails immediately (non-blocking) if another process holds the lock.
+func acquirePIDLock(path string) (*os.File, error) {
+	f, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("open lock file: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("acquire lock: %w", err)
+	}
+	return f, nil
+}
+
 func writePID(path string, pid int) {
-	if err := os.WriteFile(path, []byte(strconv.Itoa(pid)+"\n"), 0600); err != nil {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strconv.Itoa(pid)+"\n"), 0600); err != nil {
 		log.Fatalf("write PID file: %v", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		log.Fatalf("rename PID file: %v", err)
 	}
 }
 

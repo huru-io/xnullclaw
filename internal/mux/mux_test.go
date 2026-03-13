@@ -468,6 +468,90 @@ func TestSendAttachment_NonexistentFile(t *testing.T) {
 	}
 }
 
+// --- checkBudget tests (H24) ---
+
+func TestCheckBudget_WithinLimits(t *testing.T) {
+	store := testStore(t)
+	store.AddCost(memory.Cost{Category: "loop", CostUSD: 1.00})
+
+	costs := &config.CostsConfig{
+		Track:            true,
+		DailyBudgetUSD:   5.0,
+		MonthlyBudgetUSD: 50.0,
+	}
+	if err := checkBudget(store, costs); err != nil {
+		t.Errorf("expected no error, got %v", err)
+	}
+}
+
+func TestCheckBudget_DailyExceeded(t *testing.T) {
+	store := testStore(t)
+	store.AddCost(memory.Cost{Category: "loop", CostUSD: 6.00})
+
+	costs := &config.CostsConfig{
+		Track:          true,
+		DailyBudgetUSD: 5.0,
+	}
+	err := checkBudget(store, costs)
+	if err == nil {
+		t.Fatal("expected budget exceeded error")
+	}
+	if !containsStr(err.Error(), "daily budget exceeded") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestCheckBudget_MonthlyExceeded(t *testing.T) {
+	store := testStore(t)
+	store.AddCost(memory.Cost{Category: "loop", CostUSD: 55.00})
+
+	costs := &config.CostsConfig{
+		Track:            true,
+		MonthlyBudgetUSD: 50.0,
+	}
+	err := checkBudget(store, costs)
+	if err == nil {
+		t.Fatal("expected budget exceeded error")
+	}
+	if !containsStr(err.Error(), "monthly budget exceeded") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestCheckBudget_TrackingDisabled(t *testing.T) {
+	store := testStore(t)
+	store.AddCost(memory.Cost{Category: "loop", CostUSD: 999.00})
+
+	costs := &config.CostsConfig{
+		Track:          false,
+		DailyBudgetUSD: 1.0,
+	}
+	if err := checkBudget(store, costs); err != nil {
+		t.Errorf("expected nil when tracking disabled, got %v", err)
+	}
+}
+
+func TestCheckBudget_ZeroBudget(t *testing.T) {
+	store := testStore(t)
+	store.AddCost(memory.Cost{Category: "loop", CostUSD: 100.00})
+
+	// Zero budget = no enforcement.
+	costs := &config.CostsConfig{Track: true}
+	if err := checkBudget(store, costs); err != nil {
+		t.Errorf("expected nil for zero budget, got %v", err)
+	}
+}
+
+func testStore(t *testing.T) *memory.Store {
+	t.Helper()
+	s, err := memory.New(":memory:")
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
 // --- helpers ---
 
 func contains(s, substr string) bool {

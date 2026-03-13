@@ -443,8 +443,11 @@ func registerAgentTools(r *Registry, d Deps) {
 			steps = append(steps, "Stopped and removed container")
 
 			// Destroy agent directory.
-			agent.Destroy(d.Home, agentName)
-			steps = append(steps, "Deleted agent directory")
+			if err := agent.Destroy(d.Home, agentName); err != nil {
+				steps = append(steps, fmt.Sprintf("Warning: directory cleanup failed: %v", err))
+			} else {
+				steps = append(steps, "Deleted agent directory")
+			}
 
 			// Clean up mux-side data.
 			if err := d.Store.DeleteAgentPersona(agentName); err != nil {
@@ -622,7 +625,9 @@ func registerAgentTools(r *Registry, d Deps) {
 			setupOpts.OpenRouterKey = existingKeys["openrouter"]
 			setupOpts.BraveKey = existingKeys["brave"]
 
-			agent.Setup(d.Home, agentName, setupOpts)
+			if err := agent.Setup(d.Home, agentName, setupOpts); err != nil {
+				return "", fmt.Errorf("setup agent: %w", err)
+			}
 			steps = append(steps, "Created agent directory")
 			steps = append(steps, fmt.Sprintf("Personality: %s", variant.Trait))
 

@@ -21,6 +21,20 @@ import (
 	"github.com/jotavich/xnullclaw/internal/config"
 )
 
+const (
+	defaultMaxFileSize = 10 * 1024 * 1024 // 10 MB
+	maxRotatedFiles    = 3
+)
+
+// logTarget identifies which log file to write to.
+type logTarget int
+
+const (
+	targetMux logTarget = iota
+	targetAgent
+	targetCost
+)
+
 // Level represents a log severity level.
 type Level int
 
@@ -86,6 +100,10 @@ type Logger struct {
 	// mirror receives a copy of all log entries when non-nil (e.g. stderr
 	// for foreground mode).
 	mirror *os.File
+
+	// Rotation fields.
+	logDir      string // stored for reopening after rotation
+	maxFileSize int64  // bytes; 0 = no rotation
 }
 
 // New creates a new Logger, creating the log directory and opening log files.
@@ -123,12 +141,19 @@ func New(cfg *config.LoggingConfig, baseDir string) (*Logger, error) {
 		return nil, fmt.Errorf("logging: open costs.log: %w", err)
 	}
 
+	maxSize := int64(defaultMaxFileSize)
+	if cfg.MaxFileSizeMB > 0 {
+		maxSize = int64(cfg.MaxFileSizeMB) * 1024 * 1024
+	}
+
 	return &Logger{
-		muxLog:   muxFile,
-		agentLog: agentFile,
-		costLog:  costFile,
-		level:    ParseLevel(cfg.Level),
-		nowFunc:  func() time.Time { return time.Now().UTC() },
+		muxLog:      muxFile,
+		agentLog:    agentFile,
+		costLog:     costFile,
+		level:       ParseLevel(cfg.Level),
+		nowFunc:     func() time.Time { return time.Now().UTC() },
+		logDir:      logDir,
+		maxFileSize: maxSize,
 	}, nil
 }
 
@@ -172,10 +197,24 @@ func (l *Logger) now() time.Time {
 	return l.nowFunc()
 }
 
-// write serializes an Entry as JSON and appends it (with newline) to the given file.
-// If a mirror is set, the entry is also written there.
+// targetInfo returns the file pointer and base filename for a log target.
+// Caller must hold l.mu.
+func (l *Logger) targetInfo(t logTarget) (fp **os.File, baseName string) {
+	switch t {
+	case targetAgent:
+		return &l.agentLog, "agents.log"
+	case targetCost:
+		return &l.costLog, "costs.log"
+	default:
+		return &l.muxLog, "mux.log"
+	}
+}
+
+// write serializes an Entry as JSON and appends it (with newline) to the
+// target log file. The file pointer is resolved under the lock so that
+// rotation (which swaps the pointer) is always safe.
 // The caller must NOT hold l.mu.
-func (l *Logger) write(f *os.File, e Entry) {
+func (l *Logger) write(target logTarget, e Entry) {
 	data, err := json.Marshal(e)
 	if err != nil {
 		return
@@ -183,10 +222,49 @@ func (l *Logger) write(f *os.File, e Entry) {
 	data = append(data, '\n')
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	_, _ = f.Write(data)
+	fp, baseName := l.targetInfo(target)
+	if *fp != nil {
+		_, _ = (*fp).Write(data)
+	}
+	if l.maxFileSize > 0 {
+		l.maybeRotate(fp, baseName)
+	}
 	if l.mirror != nil {
 		_, _ = l.mirror.Write(data)
 	}
+}
+
+// maybeRotate checks if the file exceeds maxFileSize and rotates if needed.
+// Caller must hold l.mu.
+func (l *Logger) maybeRotate(fp **os.File, baseName string) {
+	f := *fp
+	info, err := f.Stat()
+	if err != nil || info.Size() < l.maxFileSize {
+		return
+	}
+	f.Close()
+	base := filepath.Join(l.logDir, baseName)
+	// Shift rotated files: .3 → delete, .2 → .3, .1 → .2.
+	for i := maxRotatedFiles; i >= 1; i-- {
+		old := fmt.Sprintf("%s.%d", base, i)
+		if i == maxRotatedFiles {
+			os.Remove(old)
+		} else {
+			os.Rename(old, fmt.Sprintf("%s.%d", base, i+1))
+		}
+	}
+	os.Rename(base, base+".1")
+	newFile, err := os.OpenFile(base, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		// Best effort: reopen the rotated file.
+		newFile, _ = os.OpenFile(base+".1", os.O_WRONLY|os.O_APPEND, 0600)
+	}
+	if newFile == nil {
+		// Both opens failed (disk full, permissions). Leave fp as the closed
+		// handle — next write will error but won't nil-pointer panic.
+		return
+	}
+	*fp = newFile
 }
 
 // fieldsToMap converts variadic key/value pairs into a map.
@@ -213,7 +291,7 @@ func fieldsToMap(kvs []any) map[string]any {
 }
 
 // log is the internal method that all level methods delegate to.
-func (l *Logger) log(lvl Level, f *os.File, msg string, kvs []any) {
+func (l *Logger) log(lvl Level, target logTarget, msg string, kvs []any) {
 	if lvl < l.level {
 		return
 	}
@@ -223,15 +301,15 @@ func (l *Logger) log(lvl Level, f *os.File, msg string, kvs []any) {
 		Message:   msg,
 		Fields:    fieldsToMap(kvs),
 	}
-	l.write(f, e)
+	l.write(target, e)
 }
 
-// logEntry writes a pre-built Entry to the given file if the level passes.
-func (l *Logger) logEntry(lvl Level, f *os.File, e Entry) {
+// logEntry writes a pre-built Entry to the given target if the level passes.
+func (l *Logger) logEntry(lvl Level, target logTarget, e Entry) {
 	if lvl < l.level {
 		return
 	}
-	l.write(f, e)
+	l.write(target, e)
 }
 
 // ---------------------------------------------------------------------------
@@ -240,22 +318,22 @@ func (l *Logger) logEntry(lvl Level, f *os.File, e Entry) {
 
 // Debug logs at debug level to mux.log.
 func (l *Logger) Debug(msg string, fields ...any) {
-	l.log(LevelDebug, l.muxLog, msg, fields)
+	l.log(LevelDebug, targetMux, msg, fields)
 }
 
 // Info logs at info level to mux.log.
 func (l *Logger) Info(msg string, fields ...any) {
-	l.log(LevelInfo, l.muxLog, msg, fields)
+	l.log(LevelInfo, targetMux, msg, fields)
 }
 
 // Warn logs at warn level to mux.log.
 func (l *Logger) Warn(msg string, fields ...any) {
-	l.log(LevelWarn, l.muxLog, msg, fields)
+	l.log(LevelWarn, targetMux, msg, fields)
 }
 
 // Error logs at error level to mux.log.
 func (l *Logger) Error(msg string, fields ...any) {
-	l.log(LevelError, l.muxLog, msg, fields)
+	l.log(LevelError, targetMux, msg, fields)
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +342,7 @@ func (l *Logger) Error(msg string, fields ...any) {
 
 // LogIncoming logs an incoming Telegram message to mux.log.
 func (l *Logger) LogIncoming(userID string, text string, messageType string) {
-	l.log(LevelInfo, l.muxLog, "incoming message", []any{
+	l.log(LevelInfo, targetMux, "incoming message", []any{
 		"user_id", userID,
 		"text_len", len(text),
 		"type", messageType,
@@ -273,7 +351,7 @@ func (l *Logger) LogIncoming(userID string, text string, messageType string) {
 
 // LogRouting logs an agent routing decision to mux.log.
 func (l *Logger) LogRouting(agent string, reason string, confidence float64) {
-	l.log(LevelInfo, l.muxLog, "routing decision", []any{
+	l.log(LevelInfo, targetMux, "routing decision", []any{
 		"agent", agent,
 		"reason", reason,
 		"confidence", confidence,
@@ -298,7 +376,7 @@ func (l *Logger) LogToolCall(name string, args map[string]any, result string, du
 		Message:   "tool call",
 		Fields:    fields,
 	}
-	l.logEntry(LevelInfo, l.agentLog, e)
+	l.logEntry(LevelInfo, targetAgent, e)
 }
 
 // LogModelCall logs an OpenAI API call to agents.log.
@@ -315,12 +393,12 @@ func (l *Logger) LogModelCall(model string, inputTokens, outputTokens int, costU
 			"latency_ms":    latencyMs,
 		},
 	}
-	l.logEntry(LevelInfo, l.agentLog, e)
+	l.logEntry(LevelInfo, targetAgent, e)
 }
 
 // LogAgentSend logs a message sent to an agent (agents.log).
 func (l *Logger) LogAgentSend(agent string, msgLen int) {
-	l.log(LevelInfo, l.agentLog, "agent send", []any{
+	l.log(LevelInfo, targetAgent, "agent send", []any{
 		"agent", agent,
 		"msg_len", msgLen,
 	})
@@ -328,7 +406,7 @@ func (l *Logger) LogAgentSend(agent string, msgLen int) {
 
 // LogAgentResponse logs a response received from an agent (agents.log).
 func (l *Logger) LogAgentResponse(agent string, respLen int, latencyMs int64) {
-	l.log(LevelInfo, l.agentLog, "agent response", []any{
+	l.log(LevelInfo, targetAgent, "agent response", []any{
 		"agent", agent,
 		"resp_len", respLen,
 		"latency_ms", latencyMs,
@@ -337,7 +415,7 @@ func (l *Logger) LogAgentResponse(agent string, respLen int, latencyMs int64) {
 
 // LogLifecycle logs agent/mux lifecycle events to agents.log.
 func (l *Logger) LogLifecycle(event string, agent string, details string) {
-	l.log(LevelInfo, l.agentLog, "lifecycle", []any{
+	l.log(LevelInfo, targetAgent, "lifecycle", []any{
 		"event", event,
 		"agent", agent,
 		"details", details,
@@ -359,12 +437,12 @@ func (l *Logger) LogCost(category, model, agent string, inputTokens, outputToken
 			"cost_usd":      costUSD,
 		},
 	}
-	l.logEntry(LevelInfo, l.costLog, e)
+	l.logEntry(LevelInfo, targetCost, e)
 }
 
 // LogCompaction logs a compaction event to mux.log.
 func (l *Logger) LogCompaction(messagesCompacted int, factsExtracted int, durationMs int64) {
-	l.log(LevelInfo, l.muxLog, "compaction", []any{
+	l.log(LevelInfo, targetMux, "compaction", []any{
 		"messages_compacted", messagesCompacted,
 		"facts_extracted", factsExtracted,
 		"duration_ms", durationMs,
@@ -373,7 +451,7 @@ func (l *Logger) LogCompaction(messagesCompacted int, factsExtracted int, durati
 
 // LogPersonaChange logs a persona dimension change to mux.log.
 func (l *Logger) LogPersonaChange(field string, oldValue, newValue string) {
-	l.log(LevelInfo, l.muxLog, "persona change", []any{
+	l.log(LevelInfo, targetMux, "persona change", []any{
 		"field", field,
 		"old_value", oldValue,
 		"new_value", newValue,

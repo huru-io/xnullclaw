@@ -2,6 +2,7 @@ package logging
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -431,6 +432,80 @@ func TestFieldsToMapEmpty(t *testing.T) {
 	m := fieldsToMap(nil)
 	if m != nil {
 		t.Errorf("expected nil, got %v", m)
+	}
+}
+
+func TestLogRotation(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.LoggingConfig{
+		Level:         "info",
+		Dir:           "logs",
+		MaxFileSizeMB: 0, // will override maxFileSize below
+	}
+	l, err := New(cfg, dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Set a tiny maxFileSize to trigger rotation quickly.
+	l.maxFileSize = 200 // bytes
+	l.nowFunc = func() time.Time {
+		return time.Date(2026, 3, 9, 14, 0, 0, 0, time.UTC)
+	}
+
+	// Write enough entries to trigger rotation.
+	for i := 0; i < 20; i++ {
+		l.Info("rotation test entry", "i", i)
+	}
+	l.Close()
+
+	logDir := filepath.Join(dir, "logs")
+
+	// The current mux.log should exist and be small (post-rotation).
+	data, err := os.ReadFile(filepath.Join(logDir, "mux.log"))
+	if err != nil {
+		t.Fatalf("read mux.log: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("mux.log should not be empty after writes")
+	}
+
+	// At least one rotated file should exist.
+	_, err = os.Stat(filepath.Join(logDir, "mux.log.1"))
+	if err != nil {
+		t.Error("expected mux.log.1 to exist after rotation")
+	}
+}
+
+func TestLogRotation_MaxFiles(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.LoggingConfig{Level: "info", Dir: "logs"}
+	l, err := New(cfg, dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	l.maxFileSize = 100 // tiny to force many rotations
+	l.nowFunc = func() time.Time {
+		return time.Date(2026, 3, 9, 14, 0, 0, 0, time.UTC)
+	}
+
+	// Write many entries to force multiple rotations.
+	for i := 0; i < 100; i++ {
+		l.Info("filling up logs", "i", i)
+	}
+	l.Close()
+
+	logDir := filepath.Join(dir, "logs")
+
+	// .1, .2, .3 should exist, but .4 should not (max 3 rotated files).
+	for i := 1; i <= maxRotatedFiles; i++ {
+		path := filepath.Join(logDir, fmt.Sprintf("mux.log.%d", i))
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("expected mux.log.%d to exist", i)
+		}
+	}
+	path4 := filepath.Join(logDir, fmt.Sprintf("mux.log.%d", maxRotatedFiles+1))
+	if _, err := os.Stat(path4); err == nil {
+		t.Errorf("mux.log.%d should not exist (max %d rotated files)", maxRotatedFiles+1, maxRotatedFiles)
 	}
 }
 

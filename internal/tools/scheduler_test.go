@@ -82,7 +82,7 @@ func TestScheduleTask_MaxPending(t *testing.T) {
 	registerSchedulerTools(r, store)
 
 	// Fill up to the limit.
-	for i := 0; i < toolMaxPendingTasks; i++ {
+	for i := 0; i < memory.MaxPendingTasks; i++ {
 		triggerAt := time.Now().Add(time.Duration(i+1) * time.Hour).UTC().Format(time.RFC3339)
 		_, err := r.Execute(context.Background(), "schedule_task", map[string]any{
 			"description": "task",

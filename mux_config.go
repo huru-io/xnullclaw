@@ -265,7 +265,7 @@ func muxConfigSet(cfgPath string, key string, value string) {
 	muxHome := filepath.Dir(cfgPath)
 	pidFile := filepath.Join(muxHome, "mux.pid")
 	if pid := readPID(pidFile); pid > 0 && processAlive(pid) {
-		fmt.Println("note: restart mux for changes to take effect")
+		fmt.Println("note: send SIGHUP to reload config, or restart mux for changes to take effect")
 	}
 }
 

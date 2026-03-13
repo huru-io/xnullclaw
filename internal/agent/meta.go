@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -101,7 +102,20 @@ func writeMetaMap(agentDir string, data map[string]string) error {
 		return fmt.Errorf("write meta: %w", err)
 	}
 
-	for k, v := range data {
+	// Sort keys for deterministic output (avoids noisy diffs).
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, k := range keys {
+		v := data[k]
+		// Strip newlines to prevent injection of extra key=value pairs.
+		k = strings.ReplaceAll(k, "\n", "")
+		k = strings.ReplaceAll(k, "\r", "")
+		v = strings.ReplaceAll(v, "\n", " ")
+		v = strings.ReplaceAll(v, "\r", "")
 		if _, err := fmt.Fprintf(f, "%s=%s\n", k, v); err != nil {
 			f.Close()
 			os.Remove(tmp)

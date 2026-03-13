@@ -219,8 +219,15 @@ func InstanceID(home string) string {
 	}
 	id := hex.EncodeToString(b)
 
-	os.MkdirAll(home, 0700)
-	os.WriteFile(path, []byte(id+"\n"), 0600)
+	if err := os.MkdirAll(home, 0700); err != nil {
+		// If we can't create the home dir, we can't persist the ID.
+		// Return the generated one — it will be regenerated each run.
+		fmt.Fprintf(os.Stderr, "agent: warning: cannot create home dir %s: %v\n", home, err)
+		return id
+	}
+	if err := os.WriteFile(path, []byte(id+"\n"), 0600); err != nil {
+		fmt.Fprintf(os.Stderr, "agent: warning: cannot persist instance ID: %v\n", err)
+	}
 	return id
 }
 

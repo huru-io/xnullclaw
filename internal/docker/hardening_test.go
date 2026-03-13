@@ -25,8 +25,15 @@ func TestHardenedConfig(t *testing.T) {
 	if len(hostCfg.CapDrop) != 1 || hostCfg.CapDrop[0] != "ALL" {
 		t.Errorf("expected cap-drop ALL, got %v", hostCfg.CapDrop)
 	}
-	if len(hostCfg.SecurityOpt) != 1 || hostCfg.SecurityOpt[0] != "no-new-privileges:true" {
-		t.Errorf("expected no-new-privileges, got %v", hostCfg.SecurityOpt)
+	expectedSecOpts := []string{"no-new-privileges:true", "seccomp=default"}
+	if len(hostCfg.SecurityOpt) != len(expectedSecOpts) {
+		t.Errorf("expected security opts %v, got %v", expectedSecOpts, hostCfg.SecurityOpt)
+	} else {
+		for i, opt := range expectedSecOpts {
+			if hostCfg.SecurityOpt[i] != opt {
+				t.Errorf("security opt [%d]: expected %q, got %q", i, opt, hostCfg.SecurityOpt[i])
+			}
+		}
 	}
 
 	// Resource limits.
@@ -112,8 +119,8 @@ func TestWithEnv(t *testing.T) {
 
 func TestSecurityFlags(t *testing.T) {
 	flags := SecurityFlags()
-	if len(flags) != 8 {
-		t.Errorf("expected 8 security flags, got %d", len(flags))
+	if len(flags) != 9 {
+		t.Errorf("expected 9 security flags, got %d", len(flags))
 	}
 }
 

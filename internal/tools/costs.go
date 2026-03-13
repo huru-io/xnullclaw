@@ -172,12 +172,12 @@ func registerCostTools(r *Registry, d Deps) {
 }
 
 func periodToRange(period string) (time.Time, time.Time, error) {
-	now := time.Now()
+	now := time.Now().UTC()
 	end := now
 
 	switch period {
 	case "today":
-		start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 		return start, end, nil
 	case "week":
 		return now.AddDate(0, 0, -7), end, nil

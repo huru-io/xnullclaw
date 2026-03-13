@@ -30,7 +30,7 @@ func HardenedConfig(agentDir, image string, cmd []string) (*container.Config, *c
 	hostCfg := &container.HostConfig{
 		ReadonlyRootfs: true,
 		CapDrop:        []string{"ALL"},
-		SecurityOpt:    []string{"no-new-privileges:true"},
+		SecurityOpt:    []string{"no-new-privileges:true", "seccomp=default"},
 
 		// Resource limits
 		Resources: container.Resources{
@@ -127,6 +127,7 @@ func SecurityFlags() []string {
 		"read-only rootfs",
 		"cap-drop ALL",
 		"no-new-privileges",
+		"seccomp=default",
 		"tmpfs /tmp (noexec, 64MB)",
 		"memory limit: 128MB",
 		"CPU limit: 0.25",

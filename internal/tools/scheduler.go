@@ -10,12 +10,6 @@ import (
 	"github.com/jotavich/xnullclaw/internal/memory"
 )
 
-// Tool-side scheduling limits (mirrors mux/scheduler.go constants).
-const (
-	toolMaxPendingTasks  = 50
-	toolMaxTriggerHorizon = 30 * 24 * time.Hour // 30 days
-)
-
 func registerSchedulerTools(r *Registry, store *memory.Store) {
 	// schedule_task
 	r.Register(
@@ -59,7 +53,7 @@ func registerSchedulerTools(r *Registry, store *memory.Store) {
 				return "", fmt.Errorf("trigger_at must be in the future")
 			}
 			// H5: prevent scheduling too far ahead.
-			if triggerAt.Sub(now) > toolMaxTriggerHorizon {
+			if triggerAt.Sub(now) > memory.MaxTriggerHorizon {
 				return "", fmt.Errorf("trigger_at cannot be more than 30 days in the future")
 			}
 
@@ -68,7 +62,7 @@ func registerSchedulerTools(r *Registry, store *memory.Store) {
 			if err != nil {
 				return "", fmt.Errorf("failed to check pending tasks: %w", err)
 			}
-			if len(pending) >= toolMaxPendingTasks {
+			if len(pending) >= memory.MaxPendingTasks {
 				return "", fmt.Errorf("too many pending tasks (%d); cancel some before scheduling more", len(pending))
 			}
 

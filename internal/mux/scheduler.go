@@ -41,12 +41,8 @@ const (
 	// before the interval starts doubling.
 	heartbeatNoopThreshold = 3
 
-	// maxPendingTasks prevents unbounded task accumulation (DoS guard).
-	maxPendingTasks = 50
 	// maxTasksPerTick prevents a single tick from holding the turn lock too long.
 	maxTasksPerTick = 3
-	// maxTriggerHorizon is the furthest in the future a task can be scheduled.
-	maxTriggerHorizon = 30 * 24 * time.Hour // 30 days
 	// minHeartbeatMinutes prevents misconfiguration from burning tokens.
 	minHeartbeatMinutes = 5
 )

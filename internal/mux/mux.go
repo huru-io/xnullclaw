@@ -43,13 +43,18 @@ type turnResult struct {
 	errMsg      string             // error message to send (mutually exclusive with text)
 }
 
+// ErrReload is returned by Run when the mux should be restarted (SIGHUP).
+// The caller should loop and call Run again to reload config.
+var ErrReload = fmt.Errorf("mux: config reload requested")
+
 // Config holds the parameters needed to run the mux.
 type Config struct {
 	Home       string // XNC home (e.g. ~/.xnc)
 	CfgPath    string // path to config.json
 	Image      string // Docker image name
 	Version    string
-	Foreground bool // mirror logs to stderr
+	Foreground bool   // mirror logs to stderr
+	LastChatID *int64 // preserved across SIGHUP reloads
 }
 
 // Run starts the mux and blocks until shutdown.
@@ -182,6 +187,10 @@ func Run(mc Config) error {
 		turnMu     sync.Mutex
 		lastChatID int64
 	)
+	// Restore lastChatID from a previous run (SIGHUP reload).
+	if mc.LastChatID != nil {
+		lastChatID = *mc.LastChatID
+	}
 
 	// maxTurnDuration caps how long a single agentic loop turn can run.
 	// This prevents the turnMu from being held indefinitely (H9).
@@ -193,6 +202,12 @@ func Run(mc Config) error {
 	// Returns a turnResult for deferred delivery outside the turn lock (M20).
 	// Callers are responsible for SendTyping before acquiring the lock.
 	runTurn := func(chatID int64, userText, stream string) turnResult {
+		// Enforce budget limits before running the LLM (H24).
+		if err := checkBudget(store, &cfg.Costs); err != nil {
+			logger.Warn("budget exceeded, rejecting turn", "error", err)
+			return turnResult{chatID: chatID, errMsg: fmt.Sprintf("Budget limit reached: %s", err)}
+		}
+
 		turnCtx, turnCancel := context.WithTimeout(ctx, maxTurnDuration)
 		defer turnCancel()
 
@@ -281,7 +296,8 @@ func Run(mc Config) error {
 			return
 		}
 
-		voicePath := filepath.Join(mediaTmpDir, fmt.Sprintf("voice_%s_%d.ogg", userID, time.Now().UnixNano()))
+		safeUID := config.SanitizeName(userID, 30)
+		voicePath := filepath.Join(mediaTmpDir, fmt.Sprintf("voice_%s_%d.ogg", safeUID, time.Now().UnixNano()))
 		if err := tgBot.DownloadFile(fileID, voicePath); err != nil {
 			logger.Error("voice download failed", "error", err)
 			tgBot.Send(chatID, "Failed to download voice message. Please try again.")
@@ -572,11 +588,26 @@ func Run(mc Config) error {
 
 	// Wait for shutdown signal.
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigCh)
 	sig := <-sigCh
 	logger.Info("shutdown signal received", "signal", sig.String())
 
-	// Graceful shutdown.
+	// SIGHUP: soft restart — stop subsystems but keep agents running.
+	if sig == syscall.SIGHUP {
+		logger.Info("reloading config (SIGHUP)")
+		close(schedulerDone)
+		drainer.drainAll()
+		close(drainDone)
+		drainWg.Wait()
+		tgBot.Stop()
+		if mc.LastChatID != nil {
+			*mc.LastChatID = atomic.LoadInt64(&lastChatID)
+		}
+		return ErrReload
+	}
+
+	// Graceful shutdown (SIGINT/SIGTERM).
 	// 1. Stop agents in parallel (bounded concurrency) — let them flush final output.
 	const maxParallelStops = 5
 	stopSem := make(chan struct{}, maxParallelStops)
@@ -733,6 +764,37 @@ func redactToolArgs(toolName string, args map[string]any) map[string]any {
 		}
 	}
 	return out
+}
+
+// checkBudget verifies daily and monthly cost limits haven't been exceeded.
+// Returns an error describing the breach, or nil if within budget.
+// Fails open on DB errors (returns nil) to avoid blocking on transient issues.
+func checkBudget(store *memory.Store, costs *config.CostsConfig) error {
+	if !costs.Track {
+		return nil
+	}
+	now := time.Now()
+	if costs.DailyBudgetUSD > 0 {
+		startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		daily, err := store.TotalCostSince(startOfDay)
+		if err != nil {
+			return nil // fail open
+		}
+		if daily >= costs.DailyBudgetUSD {
+			return fmt.Errorf("daily budget exceeded ($%.2f / $%.2f)", daily, costs.DailyBudgetUSD)
+		}
+	}
+	if costs.MonthlyBudgetUSD > 0 {
+		startOfMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+		monthly, err := store.TotalCostSince(startOfMonth)
+		if err != nil {
+			return nil // fail open
+		}
+		if monthly >= costs.MonthlyBudgetUSD {
+			return fmt.Errorf("monthly budget exceeded ($%.2f / $%.2f)", monthly, costs.MonthlyBudgetUSD)
+		}
+	}
+	return nil
 }
 
 // truncateLog truncates a string for log output at rune boundaries.

@@ -83,7 +83,13 @@ type OpenAIConfig struct {
 	TTSVoice     string  `json:"tts_voice"`
 }
 
-// AgentsConfig holds agent routing settings.
+// AgentsConfig holds agent routing and lifecycle settings.
+//
+// AutoStart vs MuxManaged:
+//   - AutoStart: containers started when mux boots (e.g. always-on agents).
+//   - MuxManaged: containers stopped when mux shuts down (superset of AutoStart).
+//     An agent can be MuxManaged without being in AutoStart if it was started
+//     manually or via a tool during the session.
 type AgentsConfig struct {
 	Default    string                   `json:"default"`       // agent name used when routing is ambiguous
 	AutoStart  []string                 `json:"auto_start"`    // agents started automatically when mux boots
@@ -119,15 +125,16 @@ type CostsConfig struct {
 	Track              bool    `json:"track"`
 	MonthlyBudgetUSD   float64 `json:"monthly_budget_usd"`
 	DailyBudgetUSD     float64 `json:"daily_budget_usd"`
-	WarnAtPercent      int     `json:"warn_at_percent"`           // percentage threshold for budget warnings (tracking-only, not enforced)
+	WarnAtPercent      int     `json:"warn_at_percent"`           // percentage threshold for budget warnings in /costs display
 	PerAgentDailyLimit float64 `json:"per_agent_daily_limit_usd"`
 }
 
 // LoggingConfig holds logging settings.
 type LoggingConfig struct {
-	Level      string `json:"level"`
-	Dir        string `json:"dir"`
-	RotateDays int    `json:"rotate_days"`
+	Level         string `json:"level"`
+	Dir           string `json:"dir"`
+	RotateDays    int    `json:"rotate_days"`
+	MaxFileSizeMB int    `json:"max_file_size_mb"` // 0 = default 10MB per log file
 }
 
 // Load reads a JSON config file from the given path and returns a Config.
@@ -144,12 +151,21 @@ func Load(path string) (*Config, error) {
 }
 
 // Save writes the config to the given path as indented JSON.
+// Uses atomic write (temp file + rename) to prevent corruption on crash.
 func (c *Config) Save(path string) error {
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0600)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // DefaultConfig returns a Config populated with sensible defaults matching the PRD.

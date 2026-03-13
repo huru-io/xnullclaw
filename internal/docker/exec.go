@@ -39,10 +39,15 @@ func (c *Client) ExecFire(ctx context.Context, name string, cmd []string, stdin 
 
 	if stdin != nil {
 		go func() {
-			attachResp.Conn.SetWriteDeadline(time.Now().Add(execFireWriteTimeout))
+			defer attachResp.Close()
+			defer attachResp.CloseWrite()
+			// Respect both the write deadline and the parent context.
+			deadline := time.Now().Add(execFireWriteTimeout)
+			if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+				deadline = dl
+			}
+			attachResp.Conn.SetWriteDeadline(deadline)
 			io.Copy(attachResp.Conn, stdin)
-			attachResp.CloseWrite()
-			attachResp.Close()
 		}()
 	} else {
 		attachResp.Close()

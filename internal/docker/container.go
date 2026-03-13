@@ -10,6 +10,7 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/errdefs"
 )
 
 // IsRunning checks whether a container with the given name is running.
@@ -17,7 +18,7 @@ func (c *Client) IsRunning(ctx context.Context, name string) (bool, error) {
 	info, err := c.InspectContainer(ctx, name)
 	if err != nil {
 		// Container doesn't exist → not running.
-		if isNotFound(err) {
+		if errdefs.IsNotFound(err) {
 			return false, nil
 		}
 		return false, err
@@ -55,8 +56,8 @@ func (c *Client) StartContainer(ctx context.Context, name string, opts Container
 		if err == nil {
 			break
 		}
-		// "name already in use" means the old container is still being removed.
-		if strings.Contains(err.Error(), "already in use") {
+		// Conflict means the old container is still being removed.
+		if errdefs.IsConflict(err) {
 			_ = c.cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: true})
 			time.Sleep(time.Duration(attempt+1) * time.Second)
 			continue
@@ -82,7 +83,7 @@ func (c *Client) StopContainer(ctx context.Context, name string) error {
 	timeout := 10
 	err := c.cli.ContainerStop(ctx, name, container.StopOptions{Timeout: &timeout})
 	if err != nil {
-		if isNotFound(err) {
+		if errdefs.IsNotFound(err) {
 			return nil // already gone
 		}
 		return fmt.Errorf("docker: stop container %s: %w", name, err)
@@ -95,7 +96,7 @@ func (c *Client) StopContainer(ctx context.Context, name string) error {
 	select {
 	case <-statusCh:
 	case err := <-errCh:
-		if err != nil && !isNotFound(err) {
+		if err != nil && !errdefs.IsNotFound(err) {
 			return fmt.Errorf("docker: wait for stop %s: %w", name, err)
 		}
 	case <-waitCtx.Done():
@@ -109,7 +110,7 @@ func (c *Client) StopContainer(ctx context.Context, name string) error {
 func (c *Client) RemoveContainer(ctx context.Context, name string, force bool) error {
 	err := c.cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: force})
 	if err != nil {
-		if isNotFound(err) {
+		if errdefs.IsNotFound(err) {
 			return nil
 		}
 		return fmt.Errorf("docker: remove container %s: %w", name, err)
@@ -205,10 +206,6 @@ func (c *Client) ListContainers(ctx context.Context, prefix string) ([]Container
 		})
 	}
 	return result, nil
-}
-
-func isNotFound(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "No such container")
 }
 
 func parseDockerTime(s string) (time.Time, error) {

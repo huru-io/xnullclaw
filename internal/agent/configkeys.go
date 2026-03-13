@@ -132,7 +132,7 @@ func ConfigSet(agentDir, key, value string) error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	return os.WriteFile(path, append(out, '\n'), 0600)
+	return atomicWriteFile(path, append(out, '\n'), 0600)
 }
 
 // ConfigGetAll reads the entire agent config.json as a map.
@@ -156,7 +156,20 @@ func ConfigSetAll(agentDir string, doc map[string]any) error {
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-	return os.WriteFile(path, append(out, '\n'), 0600)
+	return atomicWriteFile(path, append(out, '\n'), 0600)
+}
+
+// atomicWriteFile writes data to a temp file then renames it into place.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, perm); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // ConfigGetAllRedacted reads the full config with secret values masked.

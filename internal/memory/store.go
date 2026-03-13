@@ -80,6 +80,12 @@ type Compaction struct {
 	Created     time.Time
 }
 
+// Scheduling policy limits — shared by mux/scheduler and tools/scheduler.
+const (
+	MaxPendingTasks  = 50
+	MaxTriggerHorizon = 30 * 24 * time.Hour // 30 days
+)
+
 // ScheduledTask represents a mux-level scheduled task (reminders, check-ins, etc.).
 type ScheduledTask struct {
 	ID          int
@@ -191,6 +197,12 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_status_trigger
     ON scheduled_tasks(status, trigger_at);
+
+CREATE INDEX IF NOT EXISTS idx_costs_timestamp
+    ON costs(timestamp);
+
+CREATE INDEX IF NOT EXISTS idx_messages_stream
+    ON messages(stream, id);
 `
 
 // ---------- Store ----------
@@ -688,6 +700,16 @@ func (s *Store) AgentCostSummary(agent string, start, end time.Time) (float64, e
 	return total, err
 }
 
+// TotalCostSince returns the total cost_usd across all categories since the given time.
+func (s *Store) TotalCostSince(since time.Time) (float64, error) {
+	var total float64
+	err := s.db.QueryRow(
+		`SELECT COALESCE(SUM(cost_usd), 0) FROM costs WHERE timestamp >= ?`,
+		since,
+	).Scan(&total)
+	return total, err
+}
+
 // ==================== Agent Persona ====================
 
 // UpsertAgentPersona inserts or replaces an agent's persona dimensions.
@@ -929,17 +951,24 @@ func (s *Store) RenameAgent(oldName, newName string) error {
 
 // ClearAll deletes all data from messages, facts, compactions, and costs.
 // Agent state is preserved (agents are still running).
+// All deletes run in a single transaction to prevent partial clears on crash.
 func (s *Store) ClearAll() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
 	tables := []string{"messages", "facts", "compactions", "costs", "scheduled_tasks"}
 	for _, t := range tables {
 		if err := validateTable(t); err != nil {
 			return err
 		}
-		if _, err := s.db.Exec("DELETE FROM " + t); err != nil {
+		if _, err := tx.Exec("DELETE FROM " + t); err != nil {
 			return fmt.Errorf("clear %s: %w", t, err)
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 // ClearMessages deletes only conversation messages.
