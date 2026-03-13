@@ -248,8 +248,24 @@ var validRuntimeModes = map[string]bool{
 	"local": true, "docker": true, "kubernetes": true,
 }
 
+// validLogLevels is the set of accepted values for XNC_LOG_LEVEL.
+// Includes "warning" as a synonym for "warn" (matches logging.ParseLevel).
+var validLogLevels = map[string]bool{
+	"debug": true, "info": true, "warn": true, "warning": true, "error": true,
+}
+
 // networkNameRe validates Docker network names: alphanumeric, hyphens, underscores.
+// NOTE: duplicated in agent.NetworkName() because agent cannot import config
+// (import cycle). Keep both copies in sync — pattern: ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$
 var networkNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
+
+// ValidBaseURL reports whether u is a valid OpenAI-compatible base URL.
+func ValidBaseURL(u string) bool {
+	return strings.HasPrefix(u, "https://") || strings.HasPrefix(u, "http://")
+}
+
+// ValidLogLevel reports whether l is a recognised log level.
+func ValidLogLevel(l string) bool { return validLogLevels[l] }
 
 // ValidRuntimeMode reports whether m is a recognised runtime mode.
 func ValidRuntimeMode(m string) bool { return validRuntimeModes[m] }
@@ -286,7 +302,11 @@ func (c *Config) ApplyEnvOverrides() {
 		c.OpenAI.Model = v
 	}
 	if v := os.Getenv("XNC_OPENAI_BASE_URL"); v != "" {
-		c.OpenAI.BaseURL = v
+		if ValidBaseURL(v) {
+			c.OpenAI.BaseURL = v
+		} else {
+			fmt.Fprintf(os.Stderr, "config: ignoring invalid XNC_OPENAI_BASE_URL=%q (must start with http:// or https://)\n", v)
+		}
 	}
 	if v := os.Getenv("XNC_PERSONA_NAME"); v != "" {
 		c.Persona.Name = v
@@ -295,7 +315,11 @@ func (c *Config) ApplyEnvOverrides() {
 		c.Persona.OwnerName = v
 	}
 	if v := os.Getenv("XNC_LOG_LEVEL"); v != "" {
-		c.Logging.Level = v
+		if ValidLogLevel(v) {
+			c.Logging.Level = v
+		} else {
+			fmt.Fprintf(os.Stderr, "config: ignoring invalid XNC_LOG_LEVEL=%q (valid: debug, info, warn, error)\n", v)
+		}
 	}
 	if v := os.Getenv("XNC_TELEGRAM_ALLOW_FROM"); v != "" {
 		c.Telegram.AllowFrom = splitCSV(v)

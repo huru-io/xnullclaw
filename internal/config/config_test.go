@@ -408,6 +408,61 @@ func TestValidNetworkName(t *testing.T) {
 	}
 }
 
+func TestApplyEnvOverrides_InvalidBaseURL(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.OpenAI.BaseURL = "https://original.com/v1"
+
+	t.Setenv("XNC_OPENAI_BASE_URL", "ftp://not-http.com")
+
+	cfg.ApplyEnvOverrides()
+
+	if cfg.OpenAI.BaseURL != "https://original.com/v1" {
+		t.Errorf("BaseURL = %q, want original (invalid scheme should be ignored)", cfg.OpenAI.BaseURL)
+	}
+}
+
+func TestApplyEnvOverrides_ValidBaseURL(t *testing.T) {
+	// http:// scheme.
+	cfg := DefaultConfig()
+	t.Setenv("XNC_OPENAI_BASE_URL", "http://localhost:8080/v1")
+	cfg.ApplyEnvOverrides()
+	if cfg.OpenAI.BaseURL != "http://localhost:8080/v1" {
+		t.Errorf("BaseURL = %q, want http://localhost:8080/v1", cfg.OpenAI.BaseURL)
+	}
+
+	// https:// scheme.
+	cfg2 := DefaultConfig()
+	t.Setenv("XNC_OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
+	cfg2.ApplyEnvOverrides()
+	if cfg2.OpenAI.BaseURL != "https://openrouter.ai/api/v1" {
+		t.Errorf("BaseURL = %q, want https://openrouter.ai/api/v1", cfg2.OpenAI.BaseURL)
+	}
+}
+
+func TestApplyEnvOverrides_InvalidLogLevel(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Logging.Level = "info"
+
+	t.Setenv("XNC_LOG_LEVEL", "verbose")
+
+	cfg.ApplyEnvOverrides()
+
+	if cfg.Logging.Level != "info" {
+		t.Errorf("Logging.Level = %q, want %q (invalid level should be ignored)", cfg.Logging.Level, "info")
+	}
+}
+
+func TestApplyEnvOverrides_ValidLogLevels(t *testing.T) {
+	for _, level := range []string{"debug", "info", "warn", "error"} {
+		cfg := DefaultConfig()
+		t.Setenv("XNC_LOG_LEVEL", level)
+		cfg.ApplyEnvOverrides()
+		if cfg.Logging.Level != level {
+			t.Errorf("Logging.Level = %q, want %q", cfg.Logging.Level, level)
+		}
+	}
+}
+
 func TestSavePermissions(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")

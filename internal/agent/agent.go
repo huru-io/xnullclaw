@@ -30,8 +30,18 @@ func DefaultHome() string {
 // When the mux runs inside a container, bind mount paths are resolved by
 // the Docker daemon on the HOST, not inside the mux container. XNC_HOST_HOME
 // tells us the actual host path. Returns empty string when not in DooD mode.
+// Invalid values (non-absolute paths) are rejected with a warning.
 func HostHome() string {
-	return os.Getenv("XNC_HOST_HOME")
+	v := os.Getenv("XNC_HOST_HOME")
+	if v == "" {
+		return ""
+	}
+	v = filepath.Clean(v)
+	if !filepath.IsAbs(v) {
+		fmt.Fprintf(os.Stderr, "warning: ignoring non-absolute XNC_HOST_HOME=%q\n", v)
+		return ""
+	}
+	return v
 }
 
 // NullclawRegistry is the default container registry for agent images.
@@ -40,7 +50,9 @@ const NullclawRegistry = "ghcr.io/nullclaw/nullclaw"
 // NullclawLatestRef is the full registry reference for the latest agent image.
 const NullclawLatestRef = NullclawRegistry + ":latest"
 
-// networkNameRe validates Docker network names (same pattern as config.ValidNetworkName).
+// networkNameRe validates Docker network names.
+// NOTE: duplicated from config.ValidNetworkName because agent cannot import config
+// (import cycle). Keep both copies in sync — pattern: ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$
 var networkNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
 
 // RuntimeMode returns the runtime mode from XNC_RUNTIME env var (default "local").

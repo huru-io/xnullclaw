@@ -238,8 +238,9 @@ func TestIsHex(t *testing.T) {
 		want bool
 	}{
 		{"abc123def456", true},
-		{"ABCDEF012345", true},
 		{"0123456789ab", true},
+		{"ABCDEF012345", false}, // Docker IDs are always lowercase
+		{"AbCdEf012345", false}, // mixed case rejected
 		{"not-hex-!!", false},
 		{"", false},
 	}

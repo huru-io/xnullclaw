@@ -128,6 +128,25 @@ func TestSendToAgent_WebhookError(t *testing.T) {
 	}
 }
 
+func TestEnvOrDefault(t *testing.T) {
+	// With env var set.
+	t.Setenv("XNC_TEST_ENV_OR_DEFAULT", "from-env")
+	if got := envOrDefault("XNC_TEST_ENV_OR_DEFAULT", "fallback"); got != "from-env" {
+		t.Errorf("envOrDefault with set env = %q, want %q", got, "from-env")
+	}
+
+	// With env var empty.
+	t.Setenv("XNC_TEST_ENV_OR_DEFAULT", "")
+	if got := envOrDefault("XNC_TEST_ENV_OR_DEFAULT", "fallback"); got != "fallback" {
+		t.Errorf("envOrDefault with empty env = %q, want %q", got, "fallback")
+	}
+
+	// With env var unset (use a key that doesn't exist).
+	if got := envOrDefault("XNC_TEST_NONEXISTENT_VAR_12345", "fb"); got != "fb" {
+		t.Errorf("envOrDefault with unset env = %q, want %q", got, "fb")
+	}
+}
+
 func TestSendToMultiple_Parallel(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{

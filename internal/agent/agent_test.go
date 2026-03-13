@@ -374,10 +374,36 @@ func TestHostHome(t *testing.T) {
 			t.Errorf("HostHome() = %q, want empty", got)
 		}
 	})
-	t.Run("set", func(t *testing.T) {
+	t.Run("absolute_path", func(t *testing.T) {
 		t.Setenv("XNC_HOST_HOME", "/home/user/.xnc")
 		if got := HostHome(); got != "/home/user/.xnc" {
 			t.Errorf("HostHome() = %q, want %q", got, "/home/user/.xnc")
+		}
+	})
+	t.Run("relative_path_rejected", func(t *testing.T) {
+		t.Setenv("XNC_HOST_HOME", "relative/path")
+		if got := HostHome(); got != "" {
+			t.Errorf("HostHome() = %q, want empty (relative path should be rejected)", got)
+		}
+	})
+	t.Run("dot_path_rejected", func(t *testing.T) {
+		t.Setenv("XNC_HOST_HOME", "./local")
+		if got := HostHome(); got != "" {
+			t.Errorf("HostHome() = %q, want empty (relative path should be rejected)", got)
+		}
+	})
+	t.Run("tilde_path_rejected", func(t *testing.T) {
+		t.Setenv("XNC_HOST_HOME", "~/.xnc")
+		if got := HostHome(); got != "" {
+			t.Errorf("HostHome() = %q, want empty (tilde path is not absolute)", got)
+		}
+	})
+	t.Run("traversal_cleaned", func(t *testing.T) {
+		t.Setenv("XNC_HOST_HOME", "/home/user/../etc")
+		got := HostHome()
+		// filepath.Clean resolves ".." lexically: /home/user/../etc → /home/etc
+		if got != "/home/etc" {
+			t.Errorf("HostHome() = %q, want /home/etc (path traversal should be cleaned)", got)
 		}
 	})
 }

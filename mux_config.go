@@ -221,6 +221,9 @@ func muxConfigSet(cfgPath string, key string, value string) {
 		}
 		cfg.OpenAI.Temperature = v
 	case "openai.base_url":
+		if !config.ValidBaseURL(value) {
+			muxDie("invalid base URL %q (must start with http:// or https://)", value)
+		}
 		cfg.OpenAI.BaseURL = value
 	case "costs.daily_budget_usd":
 		v, err := strconv.ParseFloat(value, 64)
@@ -246,12 +249,10 @@ func muxConfigSet(cfgPath string, key string, value string) {
 		cfg.Persona.OwnerName = value
 	case "logging.level":
 		value = strings.ToLower(value)
-		switch value {
-		case "debug", "info", "warn", "error":
-			cfg.Logging.Level = value
-		default:
+		if !config.ValidLogLevel(value) {
 			muxDie("invalid log level %q (must be debug/info/warn/error)", value)
 		}
+		cfg.Logging.Level = value
 	}
 
 	if err := cfg.Save(cfgPath); err != nil {

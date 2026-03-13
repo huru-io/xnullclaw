@@ -107,7 +107,7 @@ func containerIDFromCgroup() string {
 }
 
 // containerIDFromMountinfo extracts a container ID from /proc/self/mountinfo.
-// Format: "... /docker/containers/<64-char-hex>/... ..."
+// Looks for "/docker/containers/<hex-id>/..." and returns the first 12 chars.
 func containerIDFromMountinfo() string {
 	data, err := os.ReadFile("/proc/self/mountinfo")
 	if err != nil {
@@ -117,7 +117,7 @@ func containerIDFromMountinfo() string {
 	for _, line := range strings.Split(string(data), "\n") {
 		if idx := strings.Index(line, marker); idx != -1 {
 			rest := line[idx+len(marker):]
-			// Container ID is a 64-char hex string followed by '/'.
+			// Full container ID is 64 hex chars; we extract the first 12 (short form).
 			if slashIdx := strings.Index(rest, "/"); slashIdx >= 12 && isHex(rest[:12]) {
 				return rest[:12]
 			}
@@ -126,12 +126,15 @@ func containerIDFromMountinfo() string {
 	return ""
 }
 
+// isHex reports whether s is a non-empty lowercase hex string.
+// Docker container IDs are always lowercase hex, so we reject uppercase
+// to avoid false positives from hostnames or other identifiers.
 func isHex(s string) bool {
 	if len(s) == 0 {
 		return false
 	}
 	for _, c := range s {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
 			return false
 		}
 	}

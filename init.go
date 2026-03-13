@@ -176,6 +176,9 @@ func runInit(args []string) {
 
 	// Mux base URL (for OpenRouter or other compatible APIs).
 	if opts.baseURL != "" {
+		if !config.ValidBaseURL(opts.baseURL) {
+			log.Fatalf("invalid base URL %q (must start with http:// or https://)", opts.baseURL)
+		}
 		cfg.OpenAI.BaseURL = opts.baseURL
 	} else if interactive {
 		current := cfg.OpenAI.BaseURL
@@ -184,6 +187,9 @@ func runInit(args []string) {
 		}
 		u := promptInput(fmt.Sprintf("Mux API base URL [%s]: ", current))
 		if u != "" {
+			if !config.ValidBaseURL(u) {
+				log.Fatalf("invalid base URL %q (must start with http:// or https://)", u)
+			}
 			cfg.OpenAI.BaseURL = u
 		}
 	}
