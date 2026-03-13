@@ -300,7 +300,9 @@ func muxLogs(logFile string, follow bool) {
 			os.Exit(1)
 		}
 		defer f.Close()
-		io.Copy(os.Stdout, f)
+		if _, err := io.Copy(os.Stdout, f); err != nil {
+			return // stdout broken (pipe closed) — exit silently like cat
+		}
 		return
 	}
 
@@ -313,15 +315,19 @@ func muxLogs(logFile string, follow bool) {
 	defer f.Close()
 
 	// Seek to end minus 4KB to show recent context.
-	fi, _ := f.Stat()
-	if fi.Size() > 4096 {
+	fi, err := f.Stat()
+	if err == nil && fi.Size() > 4096 {
 		f.Seek(-4096, io.SeekEnd)
 		// Skip partial first line.
 		r := bufio.NewReader(f)
 		r.ReadString('\n')
-		io.Copy(os.Stdout, r)
+		if _, err := io.Copy(os.Stdout, r); err != nil {
+			return // stdout broken
+		}
 	} else {
-		io.Copy(os.Stdout, f)
+		if _, err := io.Copy(os.Stdout, f); err != nil {
+			return // stdout broken
+		}
 	}
 
 	// Exit on Ctrl-C.
@@ -337,7 +343,9 @@ func muxLogs(logFile string, follow bool) {
 		}
 		n, err := f.Read(buf)
 		if n > 0 {
-			os.Stdout.Write(buf[:n])
+			if _, wErr := os.Stdout.Write(buf[:n]); wErr != nil {
+				return // stdout broken (pipe closed)
+			}
 		}
 		if n == 0 || err != nil {
 			time.Sleep(200 * time.Millisecond)

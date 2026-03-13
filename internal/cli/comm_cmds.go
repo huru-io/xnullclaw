@@ -184,7 +184,9 @@ func cmdLogs(g Globals, args []string) {
 	}
 	defer rc.Close()
 
-	io.Copy(os.Stdout, rc)
+	if _, err := io.Copy(os.Stdout, rc); err != nil {
+		return // stdout broken (pipe closed)
+	}
 }
 
 func cmdDrain(g Globals, args []string) {
@@ -218,7 +220,7 @@ func cmdDrain(g Globals, args []string) {
 	}
 	defer rc.Close()
 
-	io.Copy(os.Stdout, rc)
+	io.Copy(os.Stdout, rc) //nolint:errcheck — stdout may break (pipe closed), but drain timestamp must still update
 
 	// Update drain timestamp.
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -246,7 +248,9 @@ func cmdWatch(g Globals, args []string) {
 	}
 	defer rc.Close()
 
-	io.Copy(os.Stdout, rc)
+	if _, err := io.Copy(os.Stdout, rc); err != nil {
+		return // stdout broken (pipe closed)
+	}
 }
 
 func cmdCosts(g Globals, args []string) {
