@@ -61,9 +61,14 @@ func TestHardenedConfig(t *testing.T) {
 }
 
 func TestWithPort(t *testing.T) {
-	_, hostCfg := HardenedConfig("/tmp/test", "img", nil)
+	cfg, hostCfg := HardenedConfig("/tmp/test", "img", nil)
 
-	WithPort(hostCfg)
+	WithPort(cfg, hostCfg)
+
+	// Check ExposedPorts on container config.
+	if _, ok := cfg.ExposedPorts["3000/tcp"]; !ok {
+		t.Error("expected ExposedPorts to contain 3000/tcp")
+	}
 
 	bindings, ok := hostCfg.PortBindings["3000/tcp"]
 	if !ok {

@@ -136,6 +136,11 @@ func Restore(home, snapName, targetName string) error {
 	DeleteMetaKey(targetDir, "SNAPSHOT_OF")
 	DeleteMetaKey(targetDir, "SNAPSHOT_TIME")
 
+	// Regenerate webhook auth token (restored agents must not reuse snapshot credentials).
+	if _, err := SetupWebhookAuth(targetDir); err != nil {
+		return fmt.Errorf("restore: setup webhook auth: %w", err)
+	}
+
 	return nil
 }
 

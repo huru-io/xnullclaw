@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/jotavich/xnullclaw/internal/agent"
 )
@@ -51,20 +52,23 @@ func cmdRename(g Globals, args []string) {
 		} else {
 			ok("started %s %s", emoji, newName)
 
-			msg := agent.IdentityChangeMessage(oldName, newName)
-			// Prefer webhook if port is mapped.
-			var resp string
-			port, portErr := g.Docker.MappedPort(ctx, newCN)
-			if portErr == nil && port > 0 {
-				agentDir := agent.Dir(g.Home, newName)
-				token, _ := agent.ReadToken(agentDir)
-				wr, wErr := agent.SendWebhook(port, token, msg)
-				if wErr != nil {
-					fmt.Fprintf(os.Stderr, "warning: identity message failed: %v\n", wErr)
-				} else {
-					resp = wr.Response
+			// Wait for gateway readiness before sending identity message.
+			port, _ := g.Docker.MappedPort(ctx, newCN)
+			if port > 0 {
+				if err := agent.WaitForHealthy(ctx, port, 30*time.Second); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: gateway health check: %v\n", err)
 				}
+			}
+
+			msg := agent.IdentityChangeMessage(oldName, newName)
+			var resp string
+			wr, wErr := agent.TrySendWebhook(ctx, port, g.Home, newName, msg)
+			if wErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: identity message failed: %v\n", wErr)
+			} else if wr != nil {
+				resp = wr.Response
 			} else {
+				// Fallback: docker exec (legacy containers without port mapping).
 				var execErr error
 				resp, execErr = g.Docker.ExecSync(ctx, newCN,
 					[]string{"flock", "/tmp/.send.lock", "nullclaw", "agent", "-s", "mux"},

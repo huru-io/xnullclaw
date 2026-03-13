@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -15,7 +16,7 @@ var healthClient = &http.Client{Timeout: 5 * time.Second}
 //
 // This is used after container start to wait for the nullclaw gateway
 // to finish initializing before sending messages.
-func WaitForHealthy(port int, timeout time.Duration) error {
+func WaitForHealthy(ctx context.Context, port int, timeout time.Duration) error {
 	if port <= 0 {
 		return nil // no port mapped, skip health check
 	}
@@ -25,6 +26,11 @@ func WaitForHealthy(port int, timeout time.Duration) error {
 	interval := 500 * time.Millisecond
 
 	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		if checkHealth(url) {
 			return nil
 		}

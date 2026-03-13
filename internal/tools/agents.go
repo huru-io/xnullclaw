@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jotavich/xnullclaw/internal/agent"
 	"github.com/jotavich/xnullclaw/internal/config"
@@ -96,19 +97,17 @@ func buildAgentSystemPrompt(name string, v personaVariant) string {
 }
 
 // sendToAgent sends a message to an agent via HTTP webhook (preferred) or
-// falls back to docker exec + outbox if the container has no port mapping.
+// falls back to docker exec + outbox for legacy containers without port mapping.
 func sendToAgent(ctx context.Context, d Deps, agentName, message string) (string, error) {
 	cn := agent.ContainerName(d.Home, agentName)
 
 	// Try webhook first — query actual mapped port from Docker.
-	port, err := d.Docker.MappedPort(ctx, cn)
-	if err == nil && port > 0 {
-		agentDir := agent.Dir(d.Home, agentName)
-		token, _ := agent.ReadToken(agentDir)
-		resp, err := agent.SendWebhook(port, token, message)
-		if err != nil {
-			return "", fmt.Errorf("webhook to %s: %w", agentName, err)
-		}
+	port, _ := d.Docker.MappedPort(ctx, cn)
+	resp, err := agent.TrySendWebhook(ctx, port, d.Home, agentName, message)
+	if err != nil {
+		return "", fmt.Errorf("webhook to %s: %w", agentName, err)
+	}
+	if resp != nil {
 		if resp.Response != "" {
 			return resp.Response, nil
 		}
@@ -153,7 +152,7 @@ func registerAgentTools(r *Registry, d Deps) {
 	r.Register(
 		Definition{
 			Name:        "send_to_agent",
-			Description: "Send a message to a specific agent (async — response is delivered to Telegram automatically)",
+			Description: "Send a message to a specific agent. Returns the agent's response directly via webhook, or delivers asynchronously for legacy containers.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -180,7 +179,7 @@ func registerAgentTools(r *Registry, d Deps) {
 	r.Register(
 		Definition{
 			Name:        "send_to_all",
-			Description: "Send a message to ALL running agents in parallel (async — responses delivered to Telegram automatically)",
+			Description: "Send a message to ALL running agents in parallel. Returns responses directly via webhook where available.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -221,7 +220,7 @@ func registerAgentTools(r *Registry, d Deps) {
 	r.Register(
 		Definition{
 			Name:        "send_to_some",
-			Description: "Send a message to a named subset of agents in parallel (async — responses delivered to Telegram automatically)",
+			Description: "Send a message to a named subset of agents in parallel. Returns responses directly via webhook where available.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -560,6 +559,12 @@ func registerAgentTools(r *Registry, d Deps) {
 					steps = append(steps, fmt.Sprintf("Warning: start failed: %v", err))
 				} else {
 					steps = append(steps, "Started with new name")
+					// Wait for gateway readiness before sending identity message.
+					if port, err := d.Docker.MappedPort(ctx, newCN); err == nil && port > 0 {
+						if err := agent.WaitForHealthy(ctx, port, 30*time.Second); err != nil {
+							steps = append(steps, fmt.Sprintf("Warning: gateway health check: %v", err))
+						}
+					}
 					msg := agent.IdentityChangeMessage(oldName, newName)
 					if _, err := sendToAgent(ctx, d, newName, msg); err != nil {
 						steps = append(steps, fmt.Sprintf("Warning: identity message failed: %v", err))
@@ -641,7 +646,14 @@ func registerAgentTools(r *Registry, d Deps) {
 			}
 			steps = append(steps, "Started in mux mode")
 
-			// 5. Hello (async — response will be drained to Telegram).
+			// Wait for gateway readiness before sending the greeting.
+			if port, err := d.Docker.MappedPort(ctx, cn); err == nil && port > 0 {
+				if err := agent.WaitForHealthy(ctx, port, 30*time.Second); err != nil {
+					steps = append(steps, fmt.Sprintf("Warning: gateway health check: %v", err))
+				}
+			}
+
+			// 5. Hello — returns response directly via webhook.
 			ownerName := d.Cfg.Persona.OwnerName
 			if ownerName == "" {
 				ownerName = "Controller"

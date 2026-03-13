@@ -515,7 +515,7 @@ func Run(mc Config) error {
 			} else {
 				logger.LogLifecycle("started", agentName, "")
 				if port, err := dk.MappedPort(ctx, cn); err == nil && port > 0 {
-					if err := agent.WaitForHealthy(port, 30*time.Second); err != nil {
+					if err := agent.WaitForHealthy(ctx, port, 30*time.Second); err != nil {
 						logger.Error("gateway health check failed", "agent", agentName, "error", err)
 					}
 				}

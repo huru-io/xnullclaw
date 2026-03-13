@@ -86,6 +86,9 @@ func TestStartOpts_WithBraveKey(t *testing.T) {
 	Setup(home, "alice", SetupOpts{BraveKey: "BSA-test-key"})
 
 	opts := StartOpts("nullclaw:latest", home, "alice", false)
+	if opts.ExposePort {
+		t.Error("expected ExposePort=false when passed false")
+	}
 	if len(opts.Env) != 1 {
 		t.Fatalf("expected 1 env var, got %d: %v", len(opts.Env), opts.Env)
 	}

@@ -37,7 +37,7 @@ func Clone(home, src, dst string, opts CloneOpts) error {
 		"data/.nullclaw",
 		"data/workspace",
 	} {
-		if err := os.MkdirAll(filepath.Join(dstDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(dstDir, sub), 0700); err != nil {
 			return fmt.Errorf("clone: create %s: %w", sub, err)
 		}
 	}
@@ -71,6 +71,11 @@ func Clone(home, src, dst string, opts CloneOpts) error {
 		"CLONED_FROM": src,
 	}); err != nil {
 		return fmt.Errorf("clone: write meta: %w", err)
+	}
+
+	// Regenerate webhook auth token (cloned agents must not share credentials).
+	if _, err := SetupWebhookAuth(dstDir); err != nil {
+		return fmt.Errorf("clone: setup webhook auth: %w", err)
 	}
 
 	// Copy shared skills to cloned agent (same as Setup).
@@ -116,7 +121,7 @@ func copyDir(src, dst string) error {
 		target := filepath.Join(dst, rel)
 
 		if d.IsDir() {
-			return os.MkdirAll(target, 0755)
+			return os.MkdirAll(target, 0700)
 		}
 
 		return copyFile(path, target)

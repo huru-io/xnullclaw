@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,7 +32,7 @@ func (c *Client) StartContainer(ctx context.Context, name string, opts Container
 	cfg, hostCfg := HardenedConfig(opts.AgentDir, opts.Image, opts.Cmd)
 
 	if opts.ExposePort {
-		WithPort(hostCfg)
+		WithPort(cfg, hostCfg)
 	}
 	if opts.TTY {
 		WithTTY(cfg)
@@ -116,19 +117,25 @@ func (c *Client) RemoveContainer(ctx context.Context, name string, force bool) e
 	return nil
 }
 
-// MappedPort returns the host port mapped to container port 3000/tcp.
+// MappedPort returns the host port mapped to the gateway container port.
 // Returns 0 if no mapping exists (container not running or port not exposed).
 func (c *Client) MappedPort(ctx context.Context, name string) (int, error) {
 	raw, err := c.cli.ContainerInspect(ctx, name)
 	if err != nil {
 		return 0, fmt.Errorf("docker: inspect %s: %w", name, err)
 	}
-	bindings, ok := raw.NetworkSettings.Ports["3000/tcp"]
+	bindings, ok := raw.NetworkSettings.Ports[gatewayPort]
 	if !ok || len(bindings) == 0 {
 		return 0, nil
 	}
-	port := 0
-	fmt.Sscanf(bindings[0].HostPort, "%d", &port)
+	hp := bindings[0].HostPort
+	if hp == "" {
+		return 0, nil
+	}
+	port, err := strconv.Atoi(hp)
+	if err != nil {
+		return 0, fmt.Errorf("docker: parse host port %q for %s: %w", hp, name, err)
+	}
 	return port, nil
 }
 

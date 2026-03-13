@@ -71,11 +71,16 @@ func HardenedConfig(agentDir, image string, cmd []string) (*container.Config, *c
 	return cfg, hostCfg
 }
 
-// WithPort adds a localhost-only dynamic port mapping to the host config.
+// gatewayPort is the container port used by the nullclaw gateway.
+const gatewayPort nat.Port = "3000/tcp"
+
+// WithPort adds a localhost-only dynamic port mapping and declares the
+// exposed port on the container config.
 // Docker auto-assigns an available host port (HostPort="" means ephemeral).
-func WithPort(hostCfg *container.HostConfig) {
+func WithPort(cfg *container.Config, hostCfg *container.HostConfig) {
+	cfg.ExposedPorts = nat.PortSet{gatewayPort: struct{}{}}
 	hostCfg.PortBindings = nat.PortMap{
-		"3000/tcp": {
+		gatewayPort: {
 			{
 				HostIP:   "127.0.0.1",
 				HostPort: "", // Docker picks an available port

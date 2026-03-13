@@ -65,7 +65,7 @@ if [ -z "$PORT" ]; then
     exit 1
 fi
 
-BASE_URL="http://localhost:$PORT"
+BASE_URL="http://127.0.0.1:$PORT"
 info "Gateway URL: $BASE_URL"
 echo ""
 

@@ -70,17 +70,14 @@ func cmdSend(g Globals, args []string) {
 			// Prefer webhook if port is mapped, fall back to docker exec.
 			var resp string
 			var err error
-			port, portErr := g.Docker.MappedPort(ctx, cn)
-			if portErr == nil && port > 0 {
-				agentDir := agent.Dir(g.Home, n)
-				token, _ := agent.ReadToken(agentDir)
-				wr, wErr := agent.SendWebhook(port, token, string(msg))
-				if wErr != nil {
-					err = wErr
-				} else {
-					resp = wr.Response
-				}
+			port, _ := g.Docker.MappedPort(ctx, cn)
+			wr, wErr := agent.TrySendWebhook(ctx, port, g.Home, n, string(msg))
+			if wErr != nil {
+				err = wErr
+			} else if wr != nil {
+				resp = wr.Response
 			} else {
+				// Fallback: docker exec (legacy containers without port mapping).
 				resp, err = g.Docker.ExecSync(ctx, cn,
 					[]string{"flock", "/tmp/.send.lock", "nullclaw", "agent", "-s", "mux"},
 					strings.NewReader(string(msg)),
@@ -90,9 +87,10 @@ func cmdSend(g Globals, args []string) {
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
-				results = append(results, result{Agent: n, Error: err.Error()})
+				friendly := agent.FriendlyWebhookError(err)
+				results = append(results, result{Agent: n, Error: friendly})
 				if !g.Quiet {
-					fmt.Fprintf(os.Stderr, "%s error: %v\n", n, err)
+					fmt.Fprintf(os.Stderr, "%s: %s\n", n, friendly)
 				}
 			} else {
 				results = append(results, result{Agent: n, Response: resp})
@@ -114,6 +112,13 @@ func cmdSend(g Globals, args []string) {
 	if g.JSON {
 		data, _ := json.MarshalIndent(results, "", "  ")
 		fmt.Println(string(data))
+	}
+
+	// Exit non-zero if any agent had an error.
+	for _, r := range results {
+		if r.Error != "" {
+			os.Exit(1)
+		}
 	}
 }
 

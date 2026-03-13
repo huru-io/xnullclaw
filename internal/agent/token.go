@@ -99,10 +99,5 @@ func injectTokenHash(agentDir string, hash string) error {
 	// Ensure pairing is required.
 	gw["require_pairing"] = true
 
-	return writeConfig(agentDir, doc)
-}
-
-// writeConfig marshals and writes the config.json file.
-func writeConfig(agentDir string, doc map[string]any) error {
 	return ConfigSetAll(agentDir, doc)
 }

@@ -171,6 +171,64 @@ func TestRedactToolArgs_Nil(t *testing.T) {
 	}
 }
 
+func TestRedactToolArgs_RedactsSecret(t *testing.T) {
+	args := map[string]any{
+		"agent": "alice",
+		"key":   "openai_key",
+		"value": "sk-1234567890abcdef1234567890abcdef",
+	}
+	got := redactToolArgs("update_agent_config", args)
+	v, ok := got["value"].(string)
+	if !ok {
+		t.Fatalf("expected string value, got %T", got["value"])
+	}
+	// Value should be redacted (not the original).
+	if v == "sk-1234567890abcdef1234567890abcdef" {
+		t.Error("secret value should be redacted")
+	}
+	// Should contain asterisks.
+	if !containsStr(v, "****") {
+		t.Errorf("redacted value should contain asterisks: %q", v)
+	}
+	// Agent key should pass through unchanged.
+	if got["agent"] != "alice" {
+		t.Errorf("agent should be unchanged, got %v", got["agent"])
+	}
+}
+
+func TestRedactToolArgs_NonRedactedKey(t *testing.T) {
+	args := map[string]any{
+		"key":   "model",
+		"value": "gpt-4o",
+	}
+	got := redactToolArgs("update_agent_config", args)
+	if got["value"] != "gpt-4o" {
+		t.Errorf("non-redacted key should pass through, got %v", got["value"])
+	}
+}
+
+func TestRedactToolArgs_UnknownKey(t *testing.T) {
+	args := map[string]any{
+		"key":   "nonexistent_key",
+		"value": "some-value",
+	}
+	got := redactToolArgs("update_agent_config", args)
+	if got["value"] != "some-value" {
+		t.Errorf("unknown key should pass through, got %v", got["value"])
+	}
+}
+
+func TestRedactToolArgs_EmptyKey(t *testing.T) {
+	args := map[string]any{
+		"key":   "",
+		"value": "some-value",
+	}
+	got := redactToolArgs("update_agent_config", args)
+	if got["value"] != "some-value" {
+		t.Errorf("empty key should pass through, got %v", got["value"])
+	}
+}
+
 func TestFormatScheduledTaskMessage(t *testing.T) {
 	// Import needed types.
 	msg := formatScheduledTaskMessage(dummyTask("Check alice", nil))
@@ -350,6 +408,64 @@ func TestLockedRunTurn_PanicReleasesLock(t *testing.T) {
 		t.Fatal("mutex still locked after panic in lockedRunTurn")
 	}
 	mu.Unlock()
+}
+
+// --- sendAttachment tests ---
+
+func TestSendAttachment_ContainerPath(t *testing.T) {
+	bot := &mockSender{}
+	logger := testLogger(t)
+
+	// Container path should be rejected.
+	sendAttachment(bot, logger, 123, media.Attachment{
+		Type: media.TypeImage,
+		Path: "/nullclaw-data/workspace/test.jpg",
+	}, "caption")
+
+	msgs := bot.sent()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 error message, got %d", len(msgs))
+	}
+	if !containsStr(msgs[0].text, "container path") {
+		t.Errorf("expected container path error, got %q", msgs[0].text)
+	}
+}
+
+func TestSendAttachment_RelativePath(t *testing.T) {
+	bot := &mockSender{}
+	logger := testLogger(t)
+
+	// Relative path should be rejected.
+	sendAttachment(bot, logger, 123, media.Attachment{
+		Type: media.TypeImage,
+		Path: "../etc/passwd",
+	}, "")
+
+	msgs := bot.sent()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 error message, got %d", len(msgs))
+	}
+	if !containsStr(msgs[0].text, "invalid path") {
+		t.Errorf("expected invalid path error, got %q", msgs[0].text)
+	}
+}
+
+func TestSendAttachment_NonexistentFile(t *testing.T) {
+	bot := &mockSender{}
+	logger := testLogger(t)
+
+	sendAttachment(bot, logger, 123, media.Attachment{
+		Type: media.TypeImage,
+		Path: "/tmp/nonexistent_file_12345.jpg",
+	}, "")
+
+	msgs := bot.sent()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 error message, got %d", len(msgs))
+	}
+	if !containsStr(msgs[0].text, "not found") {
+		t.Errorf("expected not found error, got %q", msgs[0].text)
+	}
 }
 
 // --- helpers ---

@@ -59,6 +59,8 @@ var ConfigKeys = []ConfigKey{
 	{Name: "persona_autonomy", Path: "persona.dimensions.autonomy", Type: "float", Desc: "Autonomy (0.0-1.0)"},
 	{Name: "persona_interpretation", Path: "persona.dimensions.interpretation", Type: "float", Desc: "Interpretation (0.0-1.0)"},
 	{Name: "persona_creativity", Path: "persona.dimensions.creativity", Type: "float", Desc: "Creativity (0.0-1.0)"},
+	{Name: "gateway_paired_tokens", Path: "gateway.paired_tokens", Type: "string_array", Desc: "Gateway auth token hashes", Redacted: true},
+	{Name: "gateway_require_pairing", Path: "gateway.require_pairing", Type: "bool", Desc: "Require auth for gateway webhook"},
 }
 
 // LookupConfigKey finds a ConfigKey by its friendly name.
@@ -168,8 +170,21 @@ func ConfigGetAllRedacted(agentDir string) (map[string]any, error) {
 			continue
 		}
 		val := GetPath(doc, ck.Path)
-		if s, ok := val.(string); ok && s != "" {
-			setPath(doc, ck.Path, RedactKey(s))
+		switch v := val.(type) {
+		case string:
+			if v != "" {
+				setPath(doc, ck.Path, RedactKey(v))
+			}
+		case []any:
+			redacted := make([]any, len(v))
+			for i, elem := range v {
+				if s, ok := elem.(string); ok && s != "" {
+					redacted[i] = RedactKey(s)
+				} else {
+					redacted[i] = elem
+				}
+			}
+			setPath(doc, ck.Path, redacted)
 		}
 	}
 	return doc, nil
