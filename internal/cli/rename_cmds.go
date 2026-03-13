@@ -52,13 +52,29 @@ func cmdRename(g Globals, args []string) {
 			ok("started %s %s", emoji, newName)
 
 			msg := agent.IdentityChangeMessage(oldName, newName)
-			resp, err := g.Docker.ExecSync(ctx, newCN,
-				[]string{"flock", "/tmp/.send.lock", "nullclaw", "agent", "-s", "mux"},
-				strings.NewReader(msg),
-			)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: identity message failed: %v\n", err)
+			// Prefer webhook if port is mapped.
+			var resp string
+			port, portErr := g.Docker.MappedPort(ctx, newCN)
+			if portErr == nil && port > 0 {
+				agentDir := agent.Dir(g.Home, newName)
+				token, _ := agent.ReadToken(agentDir)
+				wr, wErr := agent.SendWebhook(port, token, msg)
+				if wErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: identity message failed: %v\n", wErr)
+				} else {
+					resp = wr.Response
+				}
 			} else {
+				var execErr error
+				resp, execErr = g.Docker.ExecSync(ctx, newCN,
+					[]string{"flock", "/tmp/.send.lock", "nullclaw", "agent", "-s", "mux"},
+					strings.NewReader(msg),
+				)
+				if execErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: identity message failed: %v\n", execErr)
+				}
+			}
+			if resp != "" {
 				info("%s acknowledged: %s", newName, strings.TrimSpace(resp))
 			}
 		}

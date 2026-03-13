@@ -67,10 +67,25 @@ func cmdSend(g Globals, args []string) {
 			defer wg.Done()
 			cn := agent.ContainerName(g.Home, n)
 
-			resp, err := g.Docker.ExecSync(ctx, cn,
-				[]string{"flock", "/tmp/.send.lock", "nullclaw", "agent", "-s", "mux"},
-				strings.NewReader(string(msg)),
-			)
+			// Prefer webhook if port is mapped, fall back to docker exec.
+			var resp string
+			var err error
+			port, portErr := g.Docker.MappedPort(ctx, cn)
+			if portErr == nil && port > 0 {
+				agentDir := agent.Dir(g.Home, n)
+				token, _ := agent.ReadToken(agentDir)
+				wr, wErr := agent.SendWebhook(port, token, string(msg))
+				if wErr != nil {
+					err = wErr
+				} else {
+					resp = wr.Response
+				}
+			} else {
+				resp, err = g.Docker.ExecSync(ctx, cn,
+					[]string{"flock", "/tmp/.send.lock", "nullclaw", "agent", "-s", "mux"},
+					strings.NewReader(string(msg)),
+				)
+			}
 
 			mu.Lock()
 			defer mu.Unlock()
