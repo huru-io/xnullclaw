@@ -202,6 +202,167 @@ func TestSaveAtomicWrite(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_RuntimeDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Runtime.Mode != "local" {
+		t.Errorf("Runtime.Mode = %q, want %q", cfg.Runtime.Mode, "local")
+	}
+	if cfg.Runtime.Network != "" {
+		t.Errorf("Runtime.Network = %q, want empty", cfg.Runtime.Network)
+	}
+}
+
+func TestApplyEnvOverrides_AllVars(t *testing.T) {
+	cfg := DefaultConfig()
+
+	t.Setenv("XNC_TELEGRAM_BOT_TOKEN", "tok123")
+	t.Setenv("XNC_TELEGRAM_GROUP_ID", "-100999")
+	t.Setenv("XNC_TELEGRAM_TOPIC_ID", "42")
+	t.Setenv("XNC_OPENAI_API_KEY", "sk-test")
+	t.Setenv("XNC_OPENAI_MODEL", "gpt-4o")
+	t.Setenv("XNC_RUNTIME", "docker")
+	t.Setenv("XNC_NETWORK", "xnc-net")
+
+	cfg.ApplyEnvOverrides()
+
+	if cfg.Telegram.BotToken != "tok123" {
+		t.Errorf("BotToken = %q, want %q", cfg.Telegram.BotToken, "tok123")
+	}
+	if cfg.Telegram.GroupID != -100999 {
+		t.Errorf("GroupID = %d, want %d", cfg.Telegram.GroupID, -100999)
+	}
+	if cfg.Telegram.TopicID != 42 {
+		t.Errorf("TopicID = %d, want %d", cfg.Telegram.TopicID, 42)
+	}
+	if cfg.OpenAI.APIKey != "sk-test" {
+		t.Errorf("APIKey = %q, want %q", cfg.OpenAI.APIKey, "sk-test")
+	}
+	if cfg.OpenAI.Model != "gpt-4o" {
+		t.Errorf("Model = %q, want %q", cfg.OpenAI.Model, "gpt-4o")
+	}
+	if cfg.Runtime.Mode != "docker" {
+		t.Errorf("Runtime.Mode = %q, want %q", cfg.Runtime.Mode, "docker")
+	}
+	if cfg.Runtime.Network != "xnc-net" {
+		t.Errorf("Runtime.Network = %q, want %q", cfg.Runtime.Network, "xnc-net")
+	}
+}
+
+func TestApplyEnvOverrides_PartialOverride(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.OpenAI.Model = "gpt-5-mini"
+	cfg.Telegram.BotToken = "original"
+
+	// Only override the API key, leave others alone.
+	t.Setenv("XNC_OPENAI_API_KEY", "sk-partial")
+
+	cfg.ApplyEnvOverrides()
+
+	if cfg.OpenAI.APIKey != "sk-partial" {
+		t.Errorf("APIKey = %q, want %q", cfg.OpenAI.APIKey, "sk-partial")
+	}
+	// Unset env vars should not clobber existing values.
+	if cfg.OpenAI.Model != "gpt-5-mini" {
+		t.Errorf("Model = %q, want %q (should be unchanged)", cfg.OpenAI.Model, "gpt-5-mini")
+	}
+	if cfg.Telegram.BotToken != "original" {
+		t.Errorf("BotToken = %q, want %q (should be unchanged)", cfg.Telegram.BotToken, "original")
+	}
+}
+
+func TestApplyEnvOverrides_InvalidGroupID(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Telegram.GroupID = 999
+
+	t.Setenv("XNC_TELEGRAM_GROUP_ID", "not-a-number")
+
+	cfg.ApplyEnvOverrides()
+
+	// Invalid value should be ignored, original preserved.
+	if cfg.Telegram.GroupID != 999 {
+		t.Errorf("GroupID = %d, want %d (invalid value should be ignored)", cfg.Telegram.GroupID, 999)
+	}
+}
+
+func TestApplyEnvOverrides_InvalidTopicID(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Telegram.TopicID = 7
+
+	t.Setenv("XNC_TELEGRAM_TOPIC_ID", "abc")
+
+	cfg.ApplyEnvOverrides()
+
+	if cfg.Telegram.TopicID != 7 {
+		t.Errorf("TopicID = %d, want %d (invalid value should be ignored)", cfg.Telegram.TopicID, 7)
+	}
+}
+
+func TestApplyEnvOverrides_InvalidRuntime(t *testing.T) {
+	cfg := DefaultConfig()
+
+	t.Setenv("XNC_RUNTIME", "invalid-mode")
+
+	cfg.ApplyEnvOverrides()
+
+	if cfg.Runtime.Mode != "local" {
+		t.Errorf("Runtime.Mode = %q, want %q (invalid mode should be ignored)", cfg.Runtime.Mode, "local")
+	}
+}
+
+func TestApplyEnvOverrides_InvalidNetwork(t *testing.T) {
+	cfg := DefaultConfig()
+
+	t.Setenv("XNC_NETWORK", "bad name with spaces!")
+
+	cfg.ApplyEnvOverrides()
+
+	if cfg.Runtime.Network != "" {
+		t.Errorf("Runtime.Network = %q, want empty (invalid name should be ignored)", cfg.Runtime.Network)
+	}
+}
+
+func TestValidRuntimeMode(t *testing.T) {
+	tests := []struct {
+		mode string
+		want bool
+	}{
+		{"local", true},
+		{"docker", true},
+		{"kubernetes", true},
+		{"", false},
+		{"invalid", false},
+		{"LOCAL", false},
+	}
+	for _, tt := range tests {
+		if got := ValidRuntimeMode(tt.mode); got != tt.want {
+			t.Errorf("ValidRuntimeMode(%q) = %v, want %v", tt.mode, got, tt.want)
+		}
+	}
+}
+
+func TestValidNetworkName(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"xnc-net", true},
+		{"my_network", true},
+		{"net123", true},
+		{"a", true},
+		{"", false},
+		{"bad name", false},
+		{"-start-hyphen", false},
+		{"has@symbol", false},
+		{"has/slash", false},
+		{string(make([]byte, 65)), false}, // too long
+	}
+	for _, tt := range tests {
+		if got := ValidNetworkName(tt.name); got != tt.want {
+			t.Errorf("ValidNetworkName(%q) = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
 func TestSavePermissions(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")

@@ -1,6 +1,8 @@
 package docker
 
 import (
+	"context"
+	"fmt"
 	"testing"
 )
 
@@ -25,7 +27,7 @@ func TestHardenedConfig(t *testing.T) {
 	if len(hostCfg.CapDrop) != 1 || hostCfg.CapDrop[0] != "ALL" {
 		t.Errorf("expected cap-drop ALL, got %v", hostCfg.CapDrop)
 	}
-	expectedSecOpts := []string{"no-new-privileges:true", "seccomp=default"}
+	expectedSecOpts := []string{"no-new-privileges:true"}
 	if len(hostCfg.SecurityOpt) != len(expectedSecOpts) {
 		t.Errorf("expected security opts %v, got %v", expectedSecOpts, hostCfg.SecurityOpt)
 	} else {
@@ -67,10 +69,10 @@ func TestHardenedConfig(t *testing.T) {
 	}
 }
 
-func TestWithPort(t *testing.T) {
+func TestWithPort_LocalMode(t *testing.T) {
 	cfg, hostCfg := HardenedConfig("/tmp/test", "img", nil)
 
-	WithPort(cfg, hostCfg)
+	WithPort(cfg, hostCfg, "")
 
 	// Check ExposedPorts on container config.
 	if _, ok := cfg.ExposedPorts["3000/tcp"]; !ok {
@@ -90,6 +92,22 @@ func TestWithPort(t *testing.T) {
 	// HostPort="" means Docker auto-assigns an ephemeral port.
 	if bindings[0].HostPort != "" {
 		t.Errorf("expected empty HostPort (dynamic), got %q", bindings[0].HostPort)
+	}
+}
+
+func TestWithPort_DockerMode(t *testing.T) {
+	cfg, hostCfg := HardenedConfig("/tmp/test", "img", nil)
+
+	WithPort(cfg, hostCfg, "xnc-net")
+
+	// ExposedPorts should still be declared.
+	if _, ok := cfg.ExposedPorts["3000/tcp"]; !ok {
+		t.Error("expected ExposedPorts to contain 3000/tcp even in docker mode")
+	}
+
+	// PortBindings should NOT be set — containers communicate via Docker network DNS.
+	if hostCfg.PortBindings != nil && len(hostCfg.PortBindings) > 0 {
+		t.Errorf("expected no PortBindings in docker mode, got %v", hostCfg.PortBindings)
 	}
 }
 
@@ -119,12 +137,115 @@ func TestWithEnv(t *testing.T) {
 
 func TestSecurityFlags(t *testing.T) {
 	flags := SecurityFlags()
-	if len(flags) != 9 {
-		t.Errorf("expected 9 security flags, got %d", len(flags))
+	if len(flags) != 8 {
+		t.Errorf("expected 8 security flags, got %d", len(flags))
 	}
 }
 
 func TestMockOpsImplementsOps(t *testing.T) {
 	// Compile-time check that MockOps satisfies Ops.
 	var _ Ops = &MockOps{}
+}
+
+func TestMockEnsureNetwork(t *testing.T) {
+	called := false
+	var gotName string
+	mock := &MockOps{
+		EnsureNetworkFn: func(_ context.Context, name string) error {
+			called = true
+			gotName = name
+			return nil
+		},
+	}
+
+	if err := mock.EnsureNetwork(context.Background(), "xnc-net"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Error("EnsureNetworkFn was not called")
+	}
+	if gotName != "xnc-net" {
+		t.Errorf("name = %q, want %q", gotName, "xnc-net")
+	}
+}
+
+func TestMockEnsureNetwork_Error(t *testing.T) {
+	mock := &MockOps{
+		EnsureNetworkFn: func(_ context.Context, name string) error {
+			return fmt.Errorf("network error: %s", name)
+		},
+	}
+
+	err := mock.EnsureNetwork(context.Background(), "bad-net")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if err.Error() != "network error: bad-net" {
+		t.Errorf("error = %q, want %q", err.Error(), "network error: bad-net")
+	}
+}
+
+func TestMockEnsureNetwork_Default(t *testing.T) {
+	// When EnsureNetworkFn is nil, default returns nil.
+	mock := &MockOps{}
+	if err := mock.EnsureNetwork(context.Background(), "test"); err != nil {
+		t.Fatalf("default should return nil, got: %v", err)
+	}
+}
+
+func TestMockConnectNetwork(t *testing.T) {
+	var gotNet, gotID string
+	mock := &MockOps{
+		ConnectNetworkFn: func(_ context.Context, networkName, containerID string) error {
+			gotNet = networkName
+			gotID = containerID
+			return nil
+		},
+	}
+
+	if err := mock.ConnectNetwork(context.Background(), "xnc-net", "abc123def456"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotNet != "xnc-net" {
+		t.Errorf("networkName = %q, want %q", gotNet, "xnc-net")
+	}
+	if gotID != "abc123def456" {
+		t.Errorf("containerID = %q, want %q", gotID, "abc123def456")
+	}
+}
+
+func TestMockConnectNetwork_Default(t *testing.T) {
+	mock := &MockOps{}
+	if err := mock.ConnectNetwork(context.Background(), "net", "id"); err != nil {
+		t.Fatalf("default should return nil, got: %v", err)
+	}
+}
+
+func TestSelfContainerID_OnHost(t *testing.T) {
+	// When running tests on the host (not in a container),
+	// SelfContainerID should return empty string.
+	id := SelfContainerID()
+	// We can't assert it's empty (CI may run in Docker), but it should
+	// be either empty or a 12-char hex string.
+	if id != "" && (len(id) != 12 || !isHex(id)) {
+		t.Errorf("SelfContainerID() = %q, want empty or 12-char hex", id)
+	}
+}
+
+func TestIsHex(t *testing.T) {
+	tests := []struct {
+		s    string
+		want bool
+	}{
+		{"abc123def456", true},
+		{"ABCDEF012345", true},
+		{"0123456789ab", true},
+		{"not-hex-!!", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := isHex(tt.s); got != tt.want {
+			t.Errorf("isHex(%q) = %v, want %v", tt.s, got, tt.want)
+		}
+	}
 }

@@ -12,11 +12,13 @@ import (
 
 // Globals holds parsed global flags.
 type Globals struct {
-	Home    string
-	Image   string
-	JSON    bool
-	Quiet   bool
-	Docker  docker.Ops
+	Home        string
+	Image       string
+	JSON        bool
+	Quiet       bool
+	Docker      docker.Ops
+	RuntimeMode string // "local", "docker" (from XNC_RUNTIME)
+	NetworkName string // Docker network name (from XNC_NETWORK)
 }
 
 // Run dispatches a CLI command.
@@ -90,8 +92,10 @@ func Run(cmd string, args []string) {
 // parseGlobals extracts global flags from args, returning the remaining args.
 func parseGlobals(args *[]string) Globals {
 	g := Globals{
-		Home:  agent.DefaultHome(),
-		Image: agent.DefaultImage(),
+		Home:        agent.DefaultHome(),
+		Image:       agent.DefaultImage(),
+		RuntimeMode: agent.RuntimeMode(),
+		NetworkName: agent.NetworkName(),
 	}
 
 	var remaining []string

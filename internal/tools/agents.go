@@ -103,7 +103,7 @@ func sendToAgent(ctx context.Context, d Deps, agentName, message string) (string
 
 	// Try webhook first — query actual mapped port from Docker.
 	port, _ := d.Docker.MappedPort(ctx, cn)
-	resp, err := agent.TrySendWebhook(ctx, port, d.Home, agentName, message)
+	resp, err := agent.TrySendWebhook(ctx, d.RuntimeMode, port, cn, d.Home, agentName, message)
 	if err != nil {
 		return "", fmt.Errorf("webhook to %s: %w", agentName, err)
 	}
@@ -132,7 +132,7 @@ func sendToAgent(ctx context.Context, d Deps, agentName, message string) (string
 
 // startOpts returns ContainerOpts for starting an agent.
 func startOpts(d Deps, name string) docker.ContainerOpts {
-	return agent.StartOpts(d.Image, d.Home, name, true)
+	return agent.StartOpts(d.Image, d.Home, name, true, d.NetworkName)
 }
 
 // validatedAgentArg extracts and validates the "agent" argument from tool args.
@@ -563,10 +563,10 @@ func registerAgentTools(r *Registry, d Deps) {
 				} else {
 					steps = append(steps, "Started with new name")
 					// Wait for gateway readiness before sending identity message.
-					if port, err := d.Docker.MappedPort(ctx, newCN); err == nil && port > 0 {
-						if err := agent.WaitForHealthy(ctx, port, 30*time.Second); err != nil {
-							steps = append(steps, fmt.Sprintf("Warning: gateway health check: %v", err))
-						}
+					port, _ := d.Docker.MappedPort(ctx, newCN)
+					baseURL := agent.AgentBaseURL(d.RuntimeMode, port, newCN)
+					if err := agent.WaitForHealthy(ctx, baseURL, 30*time.Second); err != nil {
+						steps = append(steps, fmt.Sprintf("Warning: gateway health check: %v", err))
 					}
 					msg := agent.IdentityChangeMessage(oldName, newName)
 					if _, err := sendToAgent(ctx, d, newName, msg); err != nil {
@@ -652,10 +652,10 @@ func registerAgentTools(r *Registry, d Deps) {
 			steps = append(steps, "Started in mux mode")
 
 			// Wait for gateway readiness before sending the greeting.
-			if port, err := d.Docker.MappedPort(ctx, cn); err == nil && port > 0 {
-				if err := agent.WaitForHealthy(ctx, port, 30*time.Second); err != nil {
-					steps = append(steps, fmt.Sprintf("Warning: gateway health check: %v", err))
-				}
+			port, _ := d.Docker.MappedPort(ctx, cn)
+			baseURL := agent.AgentBaseURL(d.RuntimeMode, port, cn)
+			if err := agent.WaitForHealthy(ctx, baseURL, 30*time.Second); err != nil {
+				steps = append(steps, fmt.Sprintf("Warning: gateway health check: %v", err))
 			}
 
 			// 5. Hello — returns response directly via webhook.

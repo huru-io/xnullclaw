@@ -60,12 +60,14 @@ func (r *Registry) Execute(ctx context.Context, name string, args map[string]any
 
 // Deps holds all the dependencies that tools need.
 type Deps struct {
-	Docker     docker.Ops
-	Store      *memory.Store
-	Cfg        *config.Config
-	CfgPath    string
-	Home       string // XNC home directory
-	Image      string // Docker image name
+	Docker      docker.Ops
+	Store       *memory.Store
+	Cfg         *config.Config
+	CfgPath     string
+	Home        string // XNC home directory
+	Image       string // Docker image name
+	RuntimeMode string // "local", "docker"
+	NetworkName string // Docker network for agents (empty = default bridge)
 }
 
 // RegisterAll registers all tool sets into the registry.

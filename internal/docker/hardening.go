@@ -30,7 +30,7 @@ func HardenedConfig(agentDir, image string, cmd []string) (*container.Config, *c
 	hostCfg := &container.HostConfig{
 		ReadonlyRootfs: true,
 		CapDrop:        []string{"ALL"},
-		SecurityOpt:    []string{"no-new-privileges:true", "seccomp=default"},
+		SecurityOpt:    []string{"no-new-privileges:true"},
 
 		// Resource limits
 		Resources: container.Resources{
@@ -74,11 +74,17 @@ func HardenedConfig(agentDir, image string, cmd []string) (*container.Config, *c
 // gatewayPort is the container port used by the nullclaw gateway.
 const gatewayPort nat.Port = "3000/tcp"
 
-// WithPort adds a localhost-only dynamic port mapping and declares the
-// exposed port on the container config.
-// Docker auto-assigns an available host port (HostPort="" means ephemeral).
-func WithPort(cfg *container.Config, hostCfg *container.HostConfig) {
+// WithPort declares the exposed gateway port. In local mode (networkName=""),
+// it adds a localhost-only dynamic host port mapping. In docker mode, it only
+// declares the exposed port — containers communicate via Docker network DNS
+// and no host port binding is needed.
+func WithPort(cfg *container.Config, hostCfg *container.HostConfig, networkName string) {
 	cfg.ExposedPorts = nat.PortSet{gatewayPort: struct{}{}}
+	if networkName != "" {
+		// Docker mode: containers use network DNS, no host port mapping.
+		return
+	}
+	// Local mode: bind to localhost with dynamic port.
 	hostCfg.PortBindings = nat.PortMap{
 		gatewayPort: {
 			{
@@ -127,7 +133,6 @@ func SecurityFlags() []string {
 		"read-only rootfs",
 		"cap-drop ALL",
 		"no-new-privileges",
-		"seccomp=default",
 		"tmpfs /tmp (noexec, 64MB)",
 		"memory limit: 128MB",
 		"CPU limit: 0.25",

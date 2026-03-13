@@ -1,11 +1,14 @@
 package mux
 
 import (
+	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jotavich/xnullclaw/internal/config"
+	"github.com/jotavich/xnullclaw/internal/docker"
 	"github.com/jotavich/xnullclaw/internal/logging"
 	"github.com/jotavich/xnullclaw/internal/media"
 	"github.com/jotavich/xnullclaw/internal/memory"
@@ -565,4 +568,111 @@ func containsStr(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func TestEnsureAgentImage_AlreadyExists(t *testing.T) {
+	mock := &docker.MockOps{
+		ImageExistsFn: func(_ context.Context, img string) (bool, error) {
+			return true, nil
+		},
+	}
+	err := ensureAgentImage(context.Background(), mock, "nullclaw:latest", testLogger(t))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEnsureAgentImage_PullAndTag(t *testing.T) {
+	var pulledRef, taggedSource, taggedTarget string
+	mock := &docker.MockOps{
+		ImageExistsFn: func(_ context.Context, img string) (bool, error) {
+			return false, nil // image missing
+		},
+		ImagePullFn: func(_ context.Context, ref string) error {
+			pulledRef = ref
+			return nil
+		},
+		ImageTagFn: func(_ context.Context, source, target string) error {
+			taggedSource = source
+			taggedTarget = target
+			return nil
+		},
+	}
+	err := ensureAgentImage(context.Background(), mock, "nullclaw:latest", testLogger(t))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pulledRef != "ghcr.io/nullclaw/nullclaw:latest" {
+		t.Errorf("pulled = %q, want registry ref", pulledRef)
+	}
+	// nullclaw:latest != ghcr.io/nullclaw/nullclaw:latest, so it should tag.
+	if taggedSource != "ghcr.io/nullclaw/nullclaw:latest" {
+		t.Errorf("tag source = %q, want registry ref", taggedSource)
+	}
+	if taggedTarget != "nullclaw:latest" {
+		t.Errorf("tag target = %q, want nullclaw:latest", taggedTarget)
+	}
+}
+
+func TestEnsureAgentImage_CustomImage(t *testing.T) {
+	var taggedTarget string
+	mock := &docker.MockOps{
+		ImageExistsFn: func(_ context.Context, img string) (bool, error) {
+			return false, nil
+		},
+		ImagePullFn: func(_ context.Context, ref string) error {
+			return nil
+		},
+		ImageTagFn: func(_ context.Context, source, target string) error {
+			taggedTarget = target
+			return nil
+		},
+	}
+	// Custom image via XNC_IMAGE — should pull registry and tag as custom name.
+	err := ensureAgentImage(context.Background(), mock, "my-nullclaw:v2", testLogger(t))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if taggedTarget != "my-nullclaw:v2" {
+		t.Errorf("tag target = %q, want my-nullclaw:v2", taggedTarget)
+	}
+}
+
+func TestEnsureAgentImage_PullFails(t *testing.T) {
+	mock := &docker.MockOps{
+		ImageExistsFn: func(_ context.Context, img string) (bool, error) {
+			return false, nil
+		},
+		ImagePullFn: func(_ context.Context, ref string) error {
+			return fmt.Errorf("network error")
+		},
+	}
+	err := ensureAgentImage(context.Background(), mock, "nullclaw:latest", testLogger(t))
+	if err == nil {
+		t.Fatal("expected error when pull fails")
+	}
+}
+
+func TestEnsureAgentImage_RegistryRefSkipsTag(t *testing.T) {
+	var tagged bool
+	mock := &docker.MockOps{
+		ImageExistsFn: func(_ context.Context, img string) (bool, error) {
+			return false, nil
+		},
+		ImagePullFn: func(_ context.Context, ref string) error {
+			return nil
+		},
+		ImageTagFn: func(_ context.Context, source, target string) error {
+			tagged = true
+			return nil
+		},
+	}
+	// When image IS the registry ref, no tag needed.
+	err := ensureAgentImage(context.Background(), mock, "ghcr.io/nullclaw/nullclaw:latest", testLogger(t))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tagged {
+		t.Error("should not tag when image name matches registry ref")
+	}
 }

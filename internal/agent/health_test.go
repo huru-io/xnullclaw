@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
-	"strings"
 	"testing"
 	"time"
 )
@@ -62,15 +60,15 @@ func TestCheckHealth_500(t *testing.T) {
 }
 
 func TestWaitForHealthy_SkipsZeroPort(t *testing.T) {
-	if err := WaitForHealthy(context.Background(), 0, time.Second); err != nil {
-		t.Errorf("port 0 should be a no-op, got: %v", err)
+	if err := WaitForHealthy(context.Background(), "", time.Second); err != nil {
+		t.Errorf("empty URL should be a no-op, got: %v", err)
 	}
 }
 
 func TestWaitForHealthy_TimesOut(t *testing.T) {
-	err := WaitForHealthy(context.Background(), 1, 1*time.Second)
+	err := WaitForHealthy(context.Background(), "http://127.0.0.1:1", 1*time.Second)
 	if err == nil {
-		t.Error("expected timeout error for unreachable port")
+		t.Error("expected timeout error for unreachable URL")
 	}
 }
 
@@ -86,9 +84,7 @@ func TestWaitForHealthy_EventualSuccess(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// Extract port from test server URL to test WaitForHealthy directly.
-	port, _ := strconv.Atoi(strings.Split(srv.URL, ":")[2])
-	err := WaitForHealthy(context.Background(), port, 10*time.Second)
+	err := WaitForHealthy(context.Background(), srv.URL, 10*time.Second)
 	if err != nil {
 		t.Fatalf("WaitForHealthy should succeed after retries: %v", err)
 	}
@@ -101,7 +97,7 @@ func TestWaitForHealthy_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	err := WaitForHealthy(ctx, 1, 30*time.Second)
+	err := WaitForHealthy(ctx, "http://127.0.0.1:1", 30*time.Second)
 	if err == nil {
 		t.Error("expected error for cancelled context")
 	}

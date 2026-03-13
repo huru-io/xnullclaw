@@ -62,7 +62,7 @@ func TestStartOpts(t *testing.T) {
 	home := t.TempDir()
 	Setup(home, "alice", SetupOpts{})
 
-	opts := StartOpts("nullclaw:latest", home, "alice", true)
+	opts := StartOpts("nullclaw:latest", home, "alice", true, "")
 	if opts.Image != "nullclaw:latest" {
 		t.Errorf("unexpected image: %s", opts.Image)
 	}
@@ -79,13 +79,27 @@ func TestStartOpts(t *testing.T) {
 	if len(opts.Env) != 0 {
 		t.Errorf("expected no env vars, got %v", opts.Env)
 	}
+	// Empty network name.
+	if opts.NetworkName != "" {
+		t.Errorf("NetworkName = %q, want empty", opts.NetworkName)
+	}
+}
+
+func TestStartOpts_WithNetworkName(t *testing.T) {
+	home := t.TempDir()
+	Setup(home, "bob", SetupOpts{})
+
+	opts := StartOpts("nullclaw:latest", home, "bob", true, "xnc-net")
+	if opts.NetworkName != "xnc-net" {
+		t.Errorf("NetworkName = %q, want %q", opts.NetworkName, "xnc-net")
+	}
 }
 
 func TestStartOpts_WithBraveKey(t *testing.T) {
 	home := t.TempDir()
 	Setup(home, "alice", SetupOpts{BraveKey: "BSA-test-key"})
 
-	opts := StartOpts("nullclaw:latest", home, "alice", false)
+	opts := StartOpts("nullclaw:latest", home, "alice", false, "")
 	if opts.ExposePort {
 		t.Error("expected ExposePort=false when passed false")
 	}

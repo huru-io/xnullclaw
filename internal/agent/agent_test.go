@@ -312,3 +312,54 @@ func TestDefaultHome(t *testing.T) {
 		t.Errorf("expected /old/path, got %q", got)
 	}
 }
+
+func TestRuntimeMode(t *testing.T) {
+	tests := []struct {
+		env  string
+		want string
+	}{
+		{"", "local"},
+		{"local", "local"},
+		{"docker", "docker"},
+		{"kubernetes", "kubernetes"},
+		{"banana", "local"},     // invalid → fallback
+		{"DOCKER", "local"},     // case-sensitive
+		{"k8s", "local"},        // not a valid mode
+	}
+	for _, tt := range tests {
+		t.Run("env="+tt.env, func(t *testing.T) {
+			t.Setenv("XNC_RUNTIME", tt.env)
+			if got := RuntimeMode(); got != tt.want {
+				t.Errorf("RuntimeMode() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNetworkName(t *testing.T) {
+	tests := []struct {
+		env  string
+		want string
+	}{
+		{"", ""},
+		{"xnc-net", "xnc-net"},
+		{"my_network", "my_network"},
+		{"bad network!", ""},  // invalid: spaces and special chars
+		{"/evil", ""},         // invalid: starts with slash
+		{"a", "a"},            // valid: single char network name
+	}
+	for _, tt := range tests {
+		t.Run("env="+tt.env, func(t *testing.T) {
+			t.Setenv("XNC_NETWORK", tt.env)
+			if got := NetworkName(); got != tt.want {
+				t.Errorf("NetworkName() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNullclawRegistry(t *testing.T) {
+	if NullclawRegistry != "ghcr.io/nullclaw/nullclaw" {
+		t.Errorf("NullclawRegistry = %q", NullclawRegistry)
+	}
+}

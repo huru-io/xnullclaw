@@ -7,14 +7,11 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/jotavich/xnullclaw/internal/agent"
 	"github.com/jotavich/xnullclaw/internal/docker"
 )
 
-const (
-	nullclawRepoURL   = "https://github.com/nullclaw/nullclaw.git"
-	nullclawRegistry  = "ghcr.io/nullclaw/nullclaw"
-	nullclawLatestRef = "ghcr.io/nullclaw/nullclaw:latest"
-)
+const nullclawRepoURL = "https://github.com/nullclaw/nullclaw.git"
 
 func cmdImage(g Globals, args []string) {
 	if len(args) == 0 {
@@ -112,8 +109,8 @@ func cmdImageBuild(g Globals, args []string) {
 	}
 
 	// Try pulling from registry first.
-	info("pulling %s ...", nullclawLatestRef)
-	if err := g.Docker.ImagePull(ctx, nullclawLatestRef); err != nil {
+	info("pulling %s ...", agent.NullclawLatestRef)
+	if err := g.Docker.ImagePull(ctx, agent.NullclawLatestRef); err != nil {
 		info("pull failed: %v", err)
 		info("falling back to building from source...")
 		buildFromSource(g, ctx, false)
@@ -121,8 +118,8 @@ func cmdImageBuild(g Globals, args []string) {
 	}
 
 	// Tag as the local image name if different from the registry ref.
-	if g.Image != nullclawLatestRef && g.Image != nullclawRegistry+":latest" {
-		if err := g.Docker.ImageTag(ctx, nullclawLatestRef, g.Image); err != nil {
+	if g.Image != agent.NullclawLatestRef {
+		if err := g.Docker.ImageTag(ctx, agent.NullclawLatestRef, g.Image); err != nil {
 			die("tag image: %v", err)
 		}
 	}
@@ -160,13 +157,13 @@ func cmdImageUpdate(g Globals, args []string) {
 	}
 
 	// Pull latest from registry.
-	info("pulling %s ...", nullclawLatestRef)
-	if err := g.Docker.ImagePull(ctx, nullclawLatestRef); err != nil {
+	info("pulling %s ...", agent.NullclawLatestRef)
+	if err := g.Docker.ImagePull(ctx, agent.NullclawLatestRef); err != nil {
 		die("pull failed: %v\nUse --from-source to build locally", err)
 	}
 
-	if g.Image != nullclawLatestRef && g.Image != nullclawRegistry+":latest" {
-		if err := g.Docker.ImageTag(ctx, nullclawLatestRef, g.Image); err != nil {
+	if g.Image != agent.NullclawLatestRef {
+		if err := g.Docker.ImageTag(ctx, agent.NullclawLatestRef, g.Image); err != nil {
 			die("tag image: %v", err)
 		}
 	}

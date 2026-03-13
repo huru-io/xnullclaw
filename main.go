@@ -625,5 +625,31 @@ GLOBAL FLAGS:
   --image <name>    Override Docker image (default: nullclaw:latest)
   --json            JSON output where supported
   --quiet           Suppress informational output
+
+ENVIRONMENT:
+  XNC_HOME                  Data directory (default: ~/.xnc)
+  XNC_IMAGE                 Docker image (default: nullclaw:latest)
+  XNC_RUNTIME               Runtime mode: local (default), docker
+  XNC_NETWORK               Docker network name for container mode
+  XNC_TELEGRAM_BOT_TOKEN    Override Telegram bot token
+  XNC_TELEGRAM_GROUP_ID     Override Telegram group ID
+  XNC_TELEGRAM_TOPIC_ID     Override Telegram topic ID
+  XNC_OPENAI_API_KEY        Override OpenAI API key
+  XNC_OPENAI_MODEL          Override OpenAI model
+
+DOCKER MODE:
+  Run the mux inside a container with sibling agents on a shared network.
+  Requires: nullclaw:latest image on the host (xnc image build).
+
+    docker run -d --name xnc-mux \
+      --user UID:DOCKER_GID \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      -v ~/.xnc:/xnc-home \
+      -e XNC_HOME=/xnc-home \
+      -e XNC_RUNTIME=docker \
+      -e XNC_NETWORK=xnc-net \
+      -e XNC_TELEGRAM_BOT_TOKEN=... \
+      -e XNC_OPENAI_API_KEY=... \
+      xnc-mux:latest
 `)
 }

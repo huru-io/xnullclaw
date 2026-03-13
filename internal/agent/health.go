@@ -14,14 +14,14 @@ var healthClient = &http.Client{Timeout: 5 * time.Second}
 // WaitForHealthy polls the agent's gateway /health endpoint until it
 // returns {"status":"ok"} or the timeout expires. Returns nil on success.
 //
-// This is used after container start to wait for the nullclaw gateway
-// to finish initializing before sending messages.
-func WaitForHealthy(ctx context.Context, port int, timeout time.Duration) error {
-	if port <= 0 {
-		return nil // no port mapped, skip health check
+// baseURL is the agent's base URL (e.g. "http://127.0.0.1:49823" or
+// "http://xnc-abc-alice:3000"). Pass empty string to skip the check.
+func WaitForHealthy(ctx context.Context, baseURL string, timeout time.Duration) error {
+	if baseURL == "" {
+		return nil // no URL available, skip health check
 	}
 
-	url := fmt.Sprintf("http://127.0.0.1:%d/health", port)
+	url := baseURL + "/health"
 	deadline := time.Now().Add(timeout)
 	interval := 500 * time.Millisecond
 
@@ -37,7 +37,7 @@ func WaitForHealthy(ctx context.Context, port int, timeout time.Duration) error 
 		time.Sleep(interval)
 	}
 
-	return fmt.Errorf("gateway health check timed out after %s (port %d)", timeout, port)
+	return fmt.Errorf("gateway health check timed out after %s (%s)", timeout, baseURL)
 }
 
 // checkHealth performs a single GET /health and returns true if the

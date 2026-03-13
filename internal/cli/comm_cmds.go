@@ -71,7 +71,7 @@ func cmdSend(g Globals, args []string) {
 			var resp string
 			var err error
 			port, _ := g.Docker.MappedPort(ctx, cn)
-			wr, wErr := agent.TrySendWebhook(ctx, port, g.Home, n, string(msg))
+			wr, wErr := agent.TrySendWebhook(ctx, g.RuntimeMode, port, cn, g.Home, n, string(msg))
 			if wErr != nil {
 				err = wErr
 			} else if wr != nil {

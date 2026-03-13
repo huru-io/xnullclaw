@@ -33,7 +33,7 @@ func (c *Client) StartContainer(ctx context.Context, name string, opts Container
 	cfg, hostCfg := HardenedConfig(opts.AgentDir, opts.Image, opts.Cmd)
 
 	if opts.ExposePort {
-		WithPort(cfg, hostCfg)
+		WithPort(cfg, hostCfg, opts.NetworkName)
 	}
 	if opts.TTY {
 		WithTTY(cfg)
@@ -51,10 +51,18 @@ func (c *Client) StartContainer(ctx context.Context, name string, opts Container
 		_ = c.cli.ContainerRemove(ctx, name, container.RemoveOptions{Force: true})
 	}
 
+	// Configure Docker network attachment.
+	netCfg := &network.NetworkingConfig{}
+	if opts.NetworkName != "" {
+		netCfg.EndpointsConfig = map[string]*network.EndpointSettings{
+			opts.NetworkName: {},
+		}
+	}
+
 	var resp container.CreateResponse
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
-		resp, err = c.cli.ContainerCreate(ctx, cfg, hostCfg, &network.NetworkingConfig{}, nil, name)
+		resp, err = c.cli.ContainerCreate(ctx, cfg, hostCfg, netCfg, nil, name)
 		if err == nil {
 			break
 		}

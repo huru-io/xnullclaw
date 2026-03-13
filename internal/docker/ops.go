@@ -39,18 +39,23 @@ type Ops interface {
 	ImageTag(ctx context.Context, source, target string) error
 	ImageBuild(ctx context.Context, contextDir string, opts BuildOpts) error
 
+	// Networking
+	EnsureNetwork(ctx context.Context, name string) error
+	ConnectNetwork(ctx context.Context, networkName, containerID string) error
+
 	// Cleanup
 	Close() error
 }
 
 // ContainerOpts configures container creation.
 type ContainerOpts struct {
-	Image      string
-	Cmd        []string
-	AgentDir   string // host path to agent directory (for mounts)
-	ExposePort bool   // expose gateway port (Docker auto-assigns host port)
-	Env        []string
-	TTY        bool // interactive mode
+	Image       string
+	Cmd         []string
+	AgentDir    string // host path to agent directory (for mounts)
+	ExposePort  bool   // expose gateway port (Docker auto-assigns host port)
+	Env         []string
+	TTY         bool   // interactive mode
+	NetworkName string // Docker network to attach (empty = default bridge)
 }
 
 // ContainerInfo holds container inspection data.

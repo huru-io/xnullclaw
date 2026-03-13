@@ -27,6 +27,8 @@ type MockOps struct {
 	ImagePullFn          func(ctx context.Context, refStr string) error
 	ImageTagFn           func(ctx context.Context, source, target string) error
 	ImageBuildFn         func(ctx context.Context, contextDir string, opts BuildOpts) error
+	EnsureNetworkFn      func(ctx context.Context, name string) error
+	ConnectNetworkFn     func(ctx context.Context, networkName, containerID string) error
 	CloseFn              func() error
 }
 
@@ -154,6 +156,20 @@ func (m *MockOps) ImageTag(ctx context.Context, source, target string) error {
 func (m *MockOps) ImageBuild(ctx context.Context, contextDir string, opts BuildOpts) error {
 	if m.ImageBuildFn != nil {
 		return m.ImageBuildFn(ctx, contextDir, opts)
+	}
+	return nil
+}
+
+func (m *MockOps) EnsureNetwork(ctx context.Context, name string) error {
+	if m.EnsureNetworkFn != nil {
+		return m.EnsureNetworkFn(ctx, name)
+	}
+	return nil
+}
+
+func (m *MockOps) ConnectNetwork(ctx context.Context, networkName, containerID string) error {
+	if m.ConnectNetworkFn != nil {
+		return m.ConnectNetworkFn(ctx, networkName, containerID)
 	}
 	return nil
 }

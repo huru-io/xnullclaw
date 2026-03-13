@@ -12,7 +12,7 @@ PREFIX    := /usr/local
 
 .DEFAULT_GOAL := build
 
-.PHONY: all build test lint vet install install-local clean cross
+.PHONY: all build test lint vet install install-local clean cross docker-mux
 
 all: lint test build
 
@@ -44,6 +44,11 @@ cross:
 	GOOS=linux   GOARCH=arm64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BUILD_DIR)/$(BINARY)-linux-arm64 .
 	GOOS=darwin  GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BUILD_DIR)/$(BINARY)-darwin-amd64 .
 	GOOS=darwin  GOARCH=arm64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BUILD_DIR)/$(BINARY)-darwin-arm64 .
+
+docker-mux: build
+	cp $(BUILD_DIR)/$(BINARY) $(CURDIR)/$(BINARY)
+	docker build -f Dockerfile.mux -t xnc-mux:$(VERSION) -t xnc-mux:latest .
+	rm -f $(CURDIR)/$(BINARY)
 
 clean:
 	rm -rf $(BUILD_DIR)

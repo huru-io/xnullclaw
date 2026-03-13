@@ -1,0 +1,5 @@
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY xnc /usr/local/bin/xnc
+USER nonroot
+ENTRYPOINT ["xnc"]
+CMD ["mux", "start", "--foreground"]

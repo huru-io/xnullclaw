@@ -110,6 +110,9 @@ func Run(mc Config) error {
 	defer store.Close()
 	logger.Info("memory loaded", "db", dbPath)
 
+	// Apply environment variable overrides (env > config file > default).
+	cfg.ApplyEnvOverrides()
+
 	// Docker client.
 	dk, err := docker.NewClient()
 	if err != nil {
@@ -117,15 +120,47 @@ func Run(mc Config) error {
 	}
 	defer dk.Close()
 
+	// Ensure Docker network exists (for docker runtime mode).
+	if cfg.Runtime.Network != "" {
+		if err := dk.EnsureNetwork(context.Background(), cfg.Runtime.Network); err != nil {
+			return fmt.Errorf("ensure network %s: %w", cfg.Runtime.Network, err)
+		}
+		logger.Info("docker network ready", "network", cfg.Runtime.Network)
+
+		// If mux is running inside a container, attach it to the network
+		// so it can reach agents via Docker DNS.
+		if selfID := docker.SelfContainerID(); selfID != "" {
+			if err := dk.ConnectNetwork(context.Background(), cfg.Runtime.Network, selfID); err != nil {
+				logger.Error("failed to attach mux to network", "network", cfg.Runtime.Network, "error", err)
+			} else {
+				logger.Info("mux attached to network", "network", cfg.Runtime.Network, "container", selfID)
+			}
+		} else if cfg.Runtime.Mode == "docker" {
+			logger.Warn("could not detect mux container ID — DNS-based agent communication may not work")
+		}
+	}
+	if cfg.Runtime.Mode == "docker" && cfg.Runtime.Network == "" {
+		logger.Warn("docker mode without a network — agents will not be reachable via DNS; set XNC_NETWORK")
+	}
+	logger.Info("runtime mode", "mode", cfg.Runtime.Mode)
+
+	// Ensure agent image exists — auto-pull from registry if missing.
+	if err := ensureAgentImage(context.Background(), dk, mc.Image, logger); err != nil {
+		logger.Error("agent image not available", "image", mc.Image, "error", err)
+		// Non-fatal: mux can still run, but agent starts will fail.
+	}
+
 	// Tool registry — all tools use direct Go calls.
 	registry := tools.NewRegistry()
 	deps := tools.Deps{
-		Docker:  dk,
-		Store:   store,
-		Cfg:     cfg,
-		CfgPath: mc.CfgPath,
-		Home:    mc.Home,
-		Image:   mc.Image,
+		Docker:      dk,
+		Store:       store,
+		Cfg:         cfg,
+		CfgPath:     mc.CfgPath,
+		Home:        mc.Home,
+		Image:       mc.Image,
+		RuntimeMode: cfg.Runtime.Mode,
+		NetworkName: cfg.Runtime.Network,
 	}
 	tools.RegisterAll(registry, deps)
 	logger.Info("tools registered", "count", len(registry.Definitions()))
@@ -539,15 +574,15 @@ func Run(mc Config) error {
 				continue
 			}
 
-			opts := agent.StartOpts(mc.Image, mc.Home, agentName, true)
+			opts := agent.StartOpts(mc.Image, mc.Home, agentName, true, cfg.Runtime.Network)
 			if err := dk.StartContainer(ctx, cn, opts); err != nil {
 				logger.Error("auto-start failed", "agent", agentName, "error", err)
 			} else {
 				logger.LogLifecycle("started", agentName, "")
-				if port, err := dk.MappedPort(ctx, cn); err == nil && port > 0 {
-					if err := agent.WaitForHealthy(ctx, port, 30*time.Second); err != nil {
-						logger.Error("gateway health check failed", "agent", agentName, "error", err)
-					}
+				port, _ := dk.MappedPort(ctx, cn)
+				baseURL := agent.AgentBaseURL(cfg.Runtime.Mode, port, cn)
+				if err := agent.WaitForHealthy(ctx, baseURL, 30*time.Second); err != nil {
+					logger.Error("gateway health check failed", "agent", agentName, "error", err)
 				}
 				started++
 			}
@@ -859,6 +894,36 @@ func checkBudget(store *memory.Store, costs *config.CostsConfig) error {
 			return fmt.Errorf("monthly budget exceeded ($%.2f / $%.2f)", monthly, costs.MonthlyBudgetUSD)
 		}
 	}
+	return nil
+}
+
+// ensureAgentImage checks if the agent Docker image exists locally.
+// If missing, pulls from the registry and tags as the local image name.
+func ensureAgentImage(ctx context.Context, dk docker.Ops, imageName string, logger *logging.Logger) error {
+	exists, err := dk.ImageExists(ctx, imageName)
+	if err != nil {
+		return fmt.Errorf("check image %s: %w", imageName, err)
+	}
+	if exists {
+		logger.Info("agent image ready", "image", imageName)
+		return nil
+	}
+
+	// Image not found — try pulling from registry.
+	logger.Info("agent image not found, pulling from registry", "image", imageName, "registry", agent.NullclawLatestRef)
+
+	if err := dk.ImagePull(ctx, agent.NullclawLatestRef); err != nil {
+		return fmt.Errorf("pull %s: %w", agent.NullclawLatestRef, err)
+	}
+
+	// Tag as the local image name if different from registry ref.
+	if imageName != agent.NullclawLatestRef {
+		if err := dk.ImageTag(ctx, agent.NullclawLatestRef, imageName); err != nil {
+			return fmt.Errorf("tag %s as %s: %w", agent.NullclawLatestRef, imageName, err)
+		}
+	}
+
+	logger.Info("agent image pulled and ready", "image", imageName)
 	return nil
 }
 

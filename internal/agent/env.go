@@ -26,13 +26,15 @@ func ContainerEnv(agentDir string) []string {
 
 // StartOpts returns ContainerOpts for launching an agent container.
 // exposePort enables the gateway HTTP port (Docker auto-assigns host port).
-func StartOpts(image, home, name string, exposePort bool) docker.ContainerOpts {
+// networkName attaches the container to a Docker network (empty = default bridge).
+func StartOpts(image, home, name string, exposePort bool, networkName string) docker.ContainerOpts {
 	agentDir := Dir(home, name)
 	return docker.ContainerOpts{
-		Image:      image,
-		Cmd:        []string{ContainerCmd},
-		AgentDir:   agentDir,
-		ExposePort: exposePort,
-		Env:        ContainerEnv(agentDir),
+		Image:       image,
+		Cmd:         []string{ContainerCmd},
+		AgentDir:    agentDir,
+		ExposePort:  exposePort,
+		Env:         ContainerEnv(agentDir),
+		NetworkName: networkName,
 	}
 }

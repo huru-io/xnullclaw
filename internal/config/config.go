@@ -3,7 +3,10 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"regexp"
+	"strconv"
 )
 
 // Config is the top-level configuration matching PRD 5.3.
@@ -17,6 +20,13 @@ type Config struct {
 	Logging   LoggingConfig   `json:"logging"`
 	Persona   PersonaConfig   `json:"persona"`
 	Scheduler SchedulerConfig `json:"scheduler"`
+	Runtime   RuntimeConfig   `json:"runtime"`
+}
+
+// RuntimeConfig holds settings for multi-environment deployment.
+type RuntimeConfig struct {
+	Mode    string `json:"mode"`    // "local" (default), "docker", "kubernetes"
+	Network string `json:"network"` // Docker network name (e.g. "xnc-net"), empty = default bridge
 }
 
 // SchedulerConfig holds settings for the mux's task scheduler and heartbeat.
@@ -225,5 +235,67 @@ func DefaultConfig() *Config {
 		Scheduler: SchedulerConfig{
 			HeartbeatMinutes: 30,
 		},
+		Runtime: RuntimeConfig{
+			Mode:    "local",
+			Network: "",
+		},
+	}
+}
+
+// validRuntimeModes is the set of accepted values for XNC_RUNTIME.
+var validRuntimeModes = map[string]bool{
+	"local": true, "docker": true, "kubernetes": true,
+}
+
+// networkNameRe validates Docker network names: alphanumeric, hyphens, underscores.
+var networkNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
+
+// ValidRuntimeMode reports whether m is a recognised runtime mode.
+func ValidRuntimeMode(m string) bool { return validRuntimeModes[m] }
+
+// ValidNetworkName reports whether n is a valid Docker network name.
+func ValidNetworkName(n string) bool { return networkNameRe.MatchString(n) }
+
+// ApplyEnvOverrides applies environment variable overrides on top of the
+// loaded config. Priority: env var > config file > default.
+// Only non-empty env vars take effect. Invalid values are logged to stderr
+// and ignored.
+func (c *Config) ApplyEnvOverrides() {
+	if v := os.Getenv("XNC_TELEGRAM_BOT_TOKEN"); v != "" {
+		c.Telegram.BotToken = v
+	}
+	if v := os.Getenv("XNC_TELEGRAM_GROUP_ID"); v != "" {
+		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+			c.Telegram.GroupID = id
+		} else {
+			fmt.Fprintf(os.Stderr, "config: ignoring invalid XNC_TELEGRAM_GROUP_ID=%q: %v\n", v, err)
+		}
+	}
+	if v := os.Getenv("XNC_TELEGRAM_TOPIC_ID"); v != "" {
+		if id, err := strconv.Atoi(v); err == nil {
+			c.Telegram.TopicID = id
+		} else {
+			fmt.Fprintf(os.Stderr, "config: ignoring invalid XNC_TELEGRAM_TOPIC_ID=%q: %v\n", v, err)
+		}
+	}
+	if v := os.Getenv("XNC_OPENAI_API_KEY"); v != "" {
+		c.OpenAI.APIKey = v
+	}
+	if v := os.Getenv("XNC_OPENAI_MODEL"); v != "" {
+		c.OpenAI.Model = v
+	}
+	if v := os.Getenv("XNC_RUNTIME"); v != "" {
+		if ValidRuntimeMode(v) {
+			c.Runtime.Mode = v
+		} else {
+			fmt.Fprintf(os.Stderr, "config: ignoring invalid XNC_RUNTIME=%q (valid: local, docker, kubernetes)\n", v)
+		}
+	}
+	if v := os.Getenv("XNC_NETWORK"); v != "" {
+		if ValidNetworkName(v) {
+			c.Runtime.Network = v
+		} else {
+			fmt.Fprintf(os.Stderr, "config: ignoring invalid XNC_NETWORK=%q (must be alphanumeric/hyphens/underscores, 1-64 chars)\n", v)
+		}
 	}
 }

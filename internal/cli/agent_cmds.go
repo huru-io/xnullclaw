@@ -135,7 +135,7 @@ func cmdStart(g Globals, args []string) {
 			continue
 		}
 
-		opts := agent.StartOpts(g.Image, g.Home, name, true)
+		opts := agent.StartOpts(g.Image, g.Home, name, true, g.NetworkName)
 
 		wg.Add(1)
 		go func(n, cn string, o docker.ContainerOpts) {

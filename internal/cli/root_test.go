@@ -25,8 +25,51 @@ func TestParseGlobals_Defaults(t *testing.T) {
 	if g.Quiet {
 		t.Error("Quiet should be false by default")
 	}
+	if g.RuntimeMode != "local" {
+		t.Errorf("RuntimeMode = %q, want %q", g.RuntimeMode, "local")
+	}
+	if g.NetworkName != "" {
+		t.Errorf("NetworkName = %q, want empty", g.NetworkName)
+	}
 	if len(args) != 0 {
 		t.Errorf("remaining args = %v, want empty", args)
+	}
+}
+
+func TestParseGlobals_RuntimeFromEnv(t *testing.T) {
+	t.Setenv("XNC_RUNTIME", "docker")
+	t.Setenv("XNC_NETWORK", "xnc-net")
+
+	args := []string{}
+	g := parseGlobals(&args)
+
+	if g.RuntimeMode != "docker" {
+		t.Errorf("RuntimeMode = %q, want %q", g.RuntimeMode, "docker")
+	}
+	if g.NetworkName != "xnc-net" {
+		t.Errorf("NetworkName = %q, want %q", g.NetworkName, "xnc-net")
+	}
+}
+
+func TestParseGlobals_InvalidRuntime(t *testing.T) {
+	t.Setenv("XNC_RUNTIME", "banana")
+
+	args := []string{}
+	g := parseGlobals(&args)
+
+	if g.RuntimeMode != "local" {
+		t.Errorf("RuntimeMode = %q, want %q (fallback for invalid)", g.RuntimeMode, "local")
+	}
+}
+
+func TestParseGlobals_InvalidNetwork(t *testing.T) {
+	t.Setenv("XNC_NETWORK", "bad network!")
+
+	args := []string{}
+	g := parseGlobals(&args)
+
+	if g.NetworkName != "" {
+		t.Errorf("NetworkName = %q, want empty (rejected invalid)", g.NetworkName)
 	}
 }
 

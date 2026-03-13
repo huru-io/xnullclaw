@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSendWebhook_Success(t *testing.T) {
@@ -36,8 +36,7 @@ func TestSendWebhook_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	port, _ := strconv.Atoi(strings.Split(srv.URL, ":")[2])
-	resp, err := SendWebhook(context.Background(), port, "zc_test123", "hello agent")
+	resp, err := SendWebhook(context.Background(), srv.URL, "zc_test123", "hello agent")
 	if err != nil {
 		t.Fatalf("SendWebhook: %v", err)
 	}
@@ -58,8 +57,7 @@ func TestSendWebhook_NoToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	port, _ := strconv.Atoi(strings.Split(srv.URL, ":")[2])
-	_, err := SendWebhook(context.Background(), port, "", "test")
+	_, err := SendWebhook(context.Background(), srv.URL, "", "test")
 	if err != nil {
 		t.Fatalf("SendWebhook: %v", err)
 	}
@@ -72,8 +70,7 @@ func TestSendWebhook_Unauthorized(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	port, _ := strconv.Atoi(strings.Split(srv.URL, ":")[2])
-	_, err := SendWebhook(context.Background(), port, "bad-token", "test")
+	_, err := SendWebhook(context.Background(), srv.URL, "bad-token", "test")
 	if err == nil {
 		t.Fatal("expected error for 401")
 	}
@@ -83,7 +80,7 @@ func TestSendWebhook_Unauthorized(t *testing.T) {
 }
 
 func TestSendWebhook_ConnectionRefused(t *testing.T) {
-	_, err := SendWebhook(context.Background(), 1, "token", "test")
+	_, err := SendWebhook(context.Background(), "http://127.0.0.1:1", "token", "test")
 	if err == nil {
 		t.Fatal("expected error for unreachable port")
 	}
@@ -96,8 +93,7 @@ func TestSendWebhook_ServerError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	port, _ := strconv.Atoi(strings.Split(srv.URL, ":")[2])
-	_, err := SendWebhook(context.Background(), port, "token", "test")
+	_, err := SendWebhook(context.Background(), srv.URL, "token", "test")
 	if err == nil {
 		t.Fatal("expected error for 503")
 	}
@@ -113,8 +109,7 @@ func TestSendWebhook_MalformedJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	port, _ := strconv.Atoi(strings.Split(srv.URL, ":")[2])
-	_, err := SendWebhook(context.Background(), port, "", "test")
+	_, err := SendWebhook(context.Background(), srv.URL, "", "test")
 	if err == nil {
 		t.Fatal("expected error for non-JSON response")
 	}
@@ -127,7 +122,7 @@ func TestSendWebhook_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	_, err := SendWebhook(ctx, 9999, "token", "test")
+	_, err := SendWebhook(ctx, "http://127.0.0.1:9999", "token", "test")
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
 	}
@@ -135,7 +130,7 @@ func TestSendWebhook_ContextCancelled(t *testing.T) {
 
 func TestSendWebhook_MessageTooLarge(t *testing.T) {
 	largeMsg := strings.Repeat("x", maxWebhookMessageSize+1)
-	_, err := SendWebhook(context.Background(), 9999, "token", largeMsg)
+	_, err := SendWebhook(context.Background(), "http://127.0.0.1:9999", "token", largeMsg)
 	if err == nil {
 		t.Fatal("expected error for oversized message")
 	}
@@ -156,8 +151,7 @@ func TestSendWebhook_LargeResponseCapped(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	port, _ := strconv.Atoi(strings.Split(srv.URL, ":")[2])
-	_, err := SendWebhook(context.Background(), port, "", "test")
+	_, err := SendWebhook(context.Background(), srv.URL, "", "test")
 	if err == nil {
 		t.Fatal("expected error for truncated large response")
 	}
@@ -190,12 +184,77 @@ func TestFriendlyWebhookError(t *testing.T) {
 	}
 }
 
+func TestAgentBaseURL(t *testing.T) {
+	tests := []struct {
+		name          string
+		mode          string
+		port          int
+		containerName string
+		want          string
+	}{
+		{"local mode", "local", 49823, "xnc-abc-alice", "http://127.0.0.1:49823"},
+		{"docker mode", "docker", 0, "xnc-abc-alice", "http://xnc-abc-alice:3000"},
+		{"docker mode empty container", "docker", 8080, "", "http://127.0.0.1:8080"},
+		{"unknown mode", "bogus", 9999, "xnc-abc-alice", "http://127.0.0.1:9999"},
+		{"empty mode", "", 3000, "xnc-abc-alice", "http://127.0.0.1:3000"},
+		{"docker unsafe name", "docker", 5000, "alice@evil.com:3000/", "http://127.0.0.1:5000"},
+		{"docker name with dots", "docker", 5000, "xnc-abc.alice", "http://127.0.0.1:5000"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := AgentBaseURL(tt.mode, tt.port, tt.containerName)
+			if got != tt.want {
+				t.Errorf("AgentBaseURL(%q, %d, %q) = %q, want %q",
+					tt.mode, tt.port, tt.containerName, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestTrySendWebhook_NoPort(t *testing.T) {
-	resp, err := TrySendWebhook(context.Background(), 0, "/tmp", "test", "hello")
+	resp, err := TrySendWebhook(context.Background(), "local", 0, "", "/tmp", "test", "hello")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if resp != nil {
 		t.Errorf("expected nil response for port 0, got %v", resp)
+	}
+}
+
+func TestTrySendWebhook_DockerMode(t *testing.T) {
+	// Start a test server that simulates an agent gateway.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "response": "docker pong"})
+	}))
+	defer srv.Close()
+
+	// Set up a temp agent dir with a token file.
+	home := t.TempDir()
+	Setup(home, "dtest", SetupOpts{})
+
+	// In docker mode with empty containerName and port 0 → should return (nil, nil).
+	resp, err := TrySendWebhook(context.Background(), "docker", 0, "", home, "dtest", "hello")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp != nil {
+		t.Error("expected nil response for docker mode with empty containerName and port 0")
+	}
+}
+
+func TestTrySendWebhook_DockerModeNoPortFallback(t *testing.T) {
+	// Docker mode with non-empty containerName: skips port check, uses DNS.
+	// This will fail to connect since the container doesn't exist, but it
+	// should NOT return (nil, nil) — it should attempt the request.
+	home := t.TempDir()
+	Setup(home, "dtest2", SetupOpts{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	_, err := TrySendWebhook(ctx, "docker", 0, "nonexistent-container", home, "dtest2", "hello")
+	// Should get a connection error, NOT nil (which would mean "skip").
+	if err == nil {
+		t.Error("expected connection error for unreachable docker container, got nil")
 	}
 }

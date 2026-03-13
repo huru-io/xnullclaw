@@ -7,9 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// safeContainerNameRe validates that a container name contains only safe
+// characters for embedding in a URL hostname (prevents SSRF/URL injection).
+var safeContainerNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 
 // webhookClient is used for sending messages to agent gateways.
 var webhookClient = &http.Client{Timeout: 60 * time.Second}
@@ -23,14 +28,28 @@ type WebhookResponse struct {
 	Response string `json:"response"`
 }
 
+// AgentBaseURL returns the base URL for reaching an agent's gateway.
+//   - mode "local": http://127.0.0.1:<port> (host port mapping)
+//   - mode "docker": http://<containerName>:3000 (Docker network DNS)
+//
+// If containerName fails validation, falls back to localhost to prevent
+// URL injection / SSRF.
+func AgentBaseURL(mode string, port int, containerName string) string {
+	if mode == "docker" && containerName != "" && safeContainerNameRe.MatchString(containerName) {
+		return fmt.Sprintf("http://%s:3000", containerName)
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d", port)
+}
+
 // SendWebhook sends a message to an agent's gateway via POST /webhook.
+// baseURL is the agent's base URL (e.g. "http://127.0.0.1:49823" or "http://xnc-abc-alice:3000").
 // Returns the agent's response text, or an error.
-func SendWebhook(ctx context.Context, port int, token, message string) (*WebhookResponse, error) {
+func SendWebhook(ctx context.Context, baseURL, token, message string) (*WebhookResponse, error) {
 	if len(message) > maxWebhookMessageSize {
 		return nil, fmt.Errorf("message too large (%d bytes, max %d)", len(message), maxWebhookMessageSize)
 	}
 
-	url := fmt.Sprintf("http://127.0.0.1:%d/webhook", port)
+	url := baseURL + "/webhook"
 
 	body, err := json.Marshal(map[string]string{"message": message})
 	if err != nil {
@@ -91,17 +110,21 @@ func FriendlyWebhookError(err error) string {
 	}
 }
 
-// TrySendWebhook attempts to send a message via webhook if a port is mapped.
-// Returns (nil, nil) if port <= 0 (caller should use fallback).
+// TrySendWebhook attempts to send a message via webhook.
+// In "local" mode, requires port > 0. In "docker" mode, uses container DNS.
+// Returns (nil, nil) if not reachable (caller should use fallback).
 // Returns (response, nil) on success, or (nil, err) on failure.
-func TrySendWebhook(ctx context.Context, port int, home, agentName, message string) (*WebhookResponse, error) {
-	if port <= 0 {
+func TrySendWebhook(ctx context.Context, mode string, port int, containerName, home, agentName, message string) (*WebhookResponse, error) {
+	// Docker mode with a container name uses DNS — no port needed.
+	// Local mode requires a mapped port; skip if unavailable.
+	if !(mode == "docker" && containerName != "") && port <= 0 {
 		return nil, nil
 	}
+	baseURL := AgentBaseURL(mode, port, containerName)
 	agentDir := Dir(home, agentName)
 	token, err := ReadToken(agentDir)
 	if err != nil {
 		return nil, fmt.Errorf("read token for %s: %w", agentName, err)
 	}
-	return SendWebhook(ctx, port, token, message)
+	return SendWebhook(ctx, baseURL, token, message)
 }

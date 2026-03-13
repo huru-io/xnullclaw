@@ -26,6 +26,38 @@ func DefaultHome() string {
 	return filepath.Join(home, ".xnc")
 }
 
+// NullclawRegistry is the default container registry for agent images.
+const NullclawRegistry = "ghcr.io/nullclaw/nullclaw"
+
+// NullclawLatestRef is the full registry reference for the latest agent image.
+const NullclawLatestRef = NullclawRegistry + ":latest"
+
+// networkNameRe validates Docker network names (same pattern as config.ValidNetworkName).
+var networkNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
+
+// RuntimeMode returns the runtime mode from XNC_RUNTIME env var (default "local").
+// Invalid values are silently ignored and fall back to "local".
+func RuntimeMode() string {
+	if m := os.Getenv("XNC_RUNTIME"); m != "" {
+		switch m {
+		case "local", "docker", "kubernetes":
+			return m
+		}
+	}
+	return "local"
+}
+
+// NetworkName returns the Docker network from XNC_NETWORK env var.
+// Returns empty string if unset or invalid (default bridge behavior).
+func NetworkName() string {
+	n := os.Getenv("XNC_NETWORK")
+	if n != "" && !networkNameRe.MatchString(n) {
+		fmt.Fprintf(os.Stderr, "warning: ignoring invalid XNC_NETWORK=%q\n", n)
+		return ""
+	}
+	return n
+}
+
 // DefaultImage returns the Docker image name for nullclaw containers.
 func DefaultImage() string {
 	if img := os.Getenv("XNC_IMAGE"); img != "" {
