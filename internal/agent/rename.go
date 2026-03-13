@@ -83,10 +83,12 @@ func writeIdentityChange(agentDir, oldName, newName string) {
 		newName, oldName,
 		time.Now().UTC().Format(time.RFC3339),
 	)
-	os.WriteFile(filepath.Join(ws, "IDENTITY.md"), []byte(identity), 0644)
+	if err := os.WriteFile(filepath.Join(ws, "IDENTITY.md"), []byte(identity), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: write identity file: %v\n", err)
+	}
 
-	// Remove RENAME_NOTICE from previous renames.
-	os.Remove(filepath.Join(ws, "RENAME_NOTICE.md"))
+	// Remove RENAME_NOTICE from previous renames (best-effort cleanup).
+	_ = os.Remove(filepath.Join(ws, "RENAME_NOTICE.md"))
 
 }
 

@@ -96,7 +96,9 @@ func CopyHostFileToContainer(ctx context.Context, ops Ops, hostPath, containerNa
 	if _, err := tw.Write(data); err != nil {
 		return err
 	}
-	tw.Close()
+	if err := tw.Close(); err != nil {
+		return fmt.Errorf("tar close: %w", err)
+	}
 
 	return ops.CopyToContainer(ctx, containerName, destDir, &buf)
 }

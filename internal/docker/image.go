@@ -110,9 +110,8 @@ func isImageNotFound(err error) bool {
 // tarDir writes a tar archive of the directory to w.
 func tarDir(dir string, w io.Writer) error {
 	tw := tar.NewWriter(w)
-	defer tw.Close()
 
-	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+	walkErr := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -148,4 +147,8 @@ func tarDir(dir string, w io.Writer) error {
 		_, err = io.Copy(tw, f)
 		return err
 	})
+	if closeErr := tw.Close(); closeErr != nil && walkErr == nil {
+		return fmt.Errorf("tar close: %w", closeErr)
+	}
+	return walkErr
 }
