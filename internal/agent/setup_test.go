@@ -53,6 +53,33 @@ func TestSetup(t *testing.T) {
 	if meta["EMOJI"] == "" {
 		t.Error("EMOJI not set in .meta")
 	}
+
+	// Check HOST_PORT is assigned.
+	if meta["HOST_PORT"] == "" {
+		t.Error("HOST_PORT not set in .meta")
+	}
+
+	// Check webhook auth token was generated.
+	token, err := ReadToken(dir)
+	if err != nil {
+		t.Fatalf("ReadToken: %v", err)
+	}
+	if token == "" {
+		t.Error("expected auth token to be generated during setup")
+	}
+
+	// Check gateway.paired_tokens in config.
+	val, err := ConfigGet(dir, "gateway.paired_tokens")
+	if err != nil {
+		t.Fatalf("ConfigGet paired_tokens: %v", err)
+	}
+	tokens, ok := val.([]any)
+	if !ok || len(tokens) != 1 {
+		t.Fatalf("expected 1 paired token, got %v", val)
+	}
+	if tokens[0] != HashToken(token) {
+		t.Error("paired_tokens hash doesn't match stored token")
+	}
 }
 
 func TestSetupWithBraveKey(t *testing.T) {

@@ -115,16 +115,24 @@ func Setup(home, name string, opts SetupOpts) error {
 		return fmt.Errorf("setup: write config: %w", err)
 	}
 
-	// Assign identity.
+	// Assign identity and port.
 	emoji := NextEmoji(home, name)
+	port := NextPort(home)
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	if err := WriteMetaBatch(dir, map[string]string{
-		"NAME":    name,
-		"CREATED": now,
-		"EMOJI":   emoji,
+		"NAME":      name,
+		"CREATED":   now,
+		"EMOJI":     emoji,
+		"HOST_PORT": fmt.Sprintf("%d", port),
 	}); err != nil {
 		return fmt.Errorf("setup: write meta: %w", err)
+	}
+
+	// Generate webhook auth token — pre-configures gateway.paired_tokens
+	// so the gateway accepts Bearer auth immediately on first start.
+	if _, err := SetupWebhookAuth(dir); err != nil {
+		return fmt.Errorf("setup: webhook auth: %w", err)
 	}
 
 	// Copy shared skills to new agent's workspace.

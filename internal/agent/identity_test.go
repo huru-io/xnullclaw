@@ -160,6 +160,37 @@ func TestNextPort(t *testing.T) {
 	}
 }
 
+func TestAgentPort(t *testing.T) {
+	home := t.TempDir()
+
+	// No .meta → 0.
+	if got := AgentPort(home, "alice"); got != 0 {
+		t.Errorf("expected 0 for missing agent, got %d", got)
+	}
+
+	// Create agent with port.
+	dir := filepath.Join(AgentsDir(home), "alice")
+	os.MkdirAll(dir, 0755)
+	WriteMeta(dir, "HOST_PORT", "3001")
+
+	if got := AgentPort(home, "alice"); got != 3001 {
+		t.Errorf("expected 3001, got %d", got)
+	}
+}
+
+func TestAgentPort_NoPort(t *testing.T) {
+	home := t.TempDir()
+
+	// Agent exists but no HOST_PORT.
+	dir := filepath.Join(AgentsDir(home), "alice")
+	os.MkdirAll(dir, 0755)
+	WriteMeta(dir, "NAME", "alice")
+
+	if got := AgentPort(home, "alice"); got != 0 {
+		t.Errorf("expected 0 for agent without port, got %d", got)
+	}
+}
+
 func TestSuggestName(t *testing.T) {
 	home := t.TempDir()
 

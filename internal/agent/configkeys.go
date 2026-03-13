@@ -147,6 +147,16 @@ func ConfigGetAll(agentDir string) (map[string]any, error) {
 	return doc, nil
 }
 
+// ConfigSetAll writes the entire config map back to config.json.
+func ConfigSetAll(agentDir string, doc map[string]any) error {
+	path := filepath.Join(agentDir, "config.json")
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	return os.WriteFile(path, append(out, '\n'), 0600)
+}
+
 // ConfigGetAllRedacted reads the full config with secret values masked.
 func ConfigGetAllRedacted(agentDir string) (map[string]any, error) {
 	doc, err := ConfigGetAll(agentDir)

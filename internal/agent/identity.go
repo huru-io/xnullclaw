@@ -156,6 +156,20 @@ func usedPorts(home string) map[int]bool {
 	return used
 }
 
+// AgentPort reads the assigned host port from the agent's .meta file.
+// Returns 0 if no port is assigned (legacy agent or not yet started).
+func AgentPort(home, name string) int {
+	portStr := ReadMetaKey(Dir(home, name), "HOST_PORT", "")
+	if portStr == "" {
+		return 0
+	}
+	p, err := strconv.Atoi(portStr)
+	if err != nil {
+		return 0
+	}
+	return p
+}
+
 // NamePool provides a list of suggested agent names for setup.
 var NamePool = []string{
 	"alice", "bob", "charlie", "diana", "echo",

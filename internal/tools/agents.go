@@ -317,7 +317,7 @@ func registerAgentTools(r *Registry, d Deps) {
 				return "", fmt.Errorf("agent %q has no API key configured", agentName)
 			}
 			cn := agent.ContainerName(d.Home, agentName)
-			opts := startOpts(d, agentName, 0)
+			opts := startOpts(d, agentName, agent.AgentPort(d.Home, agentName))
 			if err := d.Docker.StartContainer(ctx, cn, opts); err != nil {
 				return "", err
 			}
@@ -378,7 +378,7 @@ func registerAgentTools(r *Registry, d Deps) {
 				// Force-remove in case stop failed but container still exists.
 				d.Docker.RemoveContainer(ctx, cn, true)
 			}
-			opts := startOpts(d, agentName, 0)
+			opts := startOpts(d, agentName, agent.AgentPort(d.Home, agentName))
 			if err := d.Docker.StartContainer(ctx, cn, opts); err != nil {
 				return "", err
 			}
@@ -544,7 +544,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			// Start the agent and send identity-change message.
 			if agent.HasProviderKey(d.Home, newName) {
 				newCN := agent.ContainerName(d.Home, newName)
-				opts := startOpts(d, newName, 0)
+				opts := startOpts(d, newName, agent.AgentPort(d.Home, newName))
 				if err := d.Docker.StartContainer(ctx, newCN, opts); err != nil {
 					steps = append(steps, fmt.Sprintf("Warning: start failed: %v", err))
 				} else {
@@ -623,7 +623,7 @@ func registerAgentTools(r *Registry, d Deps) {
 
 			// 4. Start in mux mode.
 			cn := agent.ContainerName(d.Home, agentName)
-			opts := startOpts(d, agentName, 0)
+			opts := startOpts(d, agentName, agent.AgentPort(d.Home, agentName))
 			if err := d.Docker.StartContainer(ctx, cn, opts); err != nil {
 				steps = append(steps, fmt.Sprintf("Warning: start failed: %v", err))
 				return strings.Join(steps, "\n"), nil
