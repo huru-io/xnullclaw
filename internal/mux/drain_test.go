@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jotavich/xnullclaw/internal/agent"
 	"github.com/jotavich/xnullclaw/internal/config"
@@ -419,5 +420,83 @@ func TestDrainAgent_StoreMessage_UsesMemory(t *testing.T) {
 	}
 	if !strings.Contains(msgs[0].Content, "[bob]") {
 		t.Errorf("expected content to contain [bob], got %q", msgs[0].Content)
+	}
+}
+
+// --- cleanStalePending tests ---
+
+func TestCleanStalePending_RemovesOld(t *testing.T) {
+	bot := &mockSender{}
+	d, home := newTestDrainer(t, bot)
+
+	outbox := createAgentOutbox(t, home, "alice")
+
+	// Create a .pending file with an old modification time.
+	pendingFile := filepath.Join(outbox, "20260101-120000.pending")
+	if err := os.WriteFile(pendingFile, []byte("in progress"), 0600); err != nil {
+		t.Fatalf("write pending file: %v", err)
+	}
+
+	// Set mtime to well past the stalePendingCutoff (10 minutes).
+	oldTime := time.Now().Add(-30 * time.Minute)
+	if err := os.Chtimes(pendingFile, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	d.cleanStalePending(outbox)
+
+	if _, err := os.Stat(pendingFile); !os.IsNotExist(err) {
+		t.Errorf("stale .pending file should be removed, err = %v", err)
+	}
+}
+
+func TestCleanStalePending_KeepsRecent(t *testing.T) {
+	bot := &mockSender{}
+	d, home := newTestDrainer(t, bot)
+
+	outbox := createAgentOutbox(t, home, "alice")
+
+	// Create a .pending file with a recent modification time.
+	pendingFile := filepath.Join(outbox, "20260313-120000.pending")
+	if err := os.WriteFile(pendingFile, []byte("in progress"), 0600); err != nil {
+		t.Fatalf("write pending file: %v", err)
+	}
+
+	// Set mtime to recent (well within the stalePendingCutoff of 10 minutes).
+	recentTime := time.Now().Add(-1 * time.Minute)
+	if err := os.Chtimes(pendingFile, recentTime, recentTime); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	d.cleanStalePending(outbox)
+
+	if _, err := os.Stat(pendingFile); err != nil {
+		t.Errorf("recent .pending file should be preserved, err = %v", err)
+	}
+}
+
+func TestCleanStalePending_IgnoresNonPending(t *testing.T) {
+	bot := &mockSender{}
+	d, home := newTestDrainer(t, bot)
+
+	outbox := createAgentOutbox(t, home, "alice")
+
+	// Create a .msg file with an old modification time.
+	msgFile := filepath.Join(outbox, "20260101-120000.msg")
+	if err := os.WriteFile(msgFile, []byte("a message"), 0600); err != nil {
+		t.Fatalf("write msg file: %v", err)
+	}
+
+	// Set mtime to old.
+	oldTime := time.Now().Add(-30 * time.Minute)
+	if err := os.Chtimes(msgFile, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	d.cleanStalePending(outbox)
+
+	// .msg file should be untouched.
+	if _, err := os.Stat(msgFile); err != nil {
+		t.Errorf(".msg file should be untouched, err = %v", err)
 	}
 }
