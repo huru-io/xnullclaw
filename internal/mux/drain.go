@@ -272,7 +272,9 @@ func (d *Drainer) cleanStalePending(outboxDir string) {
 		if info.ModTime().Before(cutoff) {
 			fpath := filepath.Join(outboxDir, e.Name())
 			d.logger.Info("drain: removing stale pending", "file", fpath)
-			os.Remove(fpath)
+			if rmErr := os.Remove(fpath); rmErr != nil {
+				d.logger.Debug("drain: remove stale pending failed", "file", fpath, "error", rmErr)
+			}
 		}
 	}
 }

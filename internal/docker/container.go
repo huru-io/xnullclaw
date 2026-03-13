@@ -157,7 +157,7 @@ func (c *Client) InspectContainer(ctx context.Context, name string) (*ContainerI
 	}
 
 	if raw.State.StartedAt != "" {
-		info.StartedAt, _ = parseDockerTime(raw.State.StartedAt)
+		info.StartedAt, _ = parseDockerTime(raw.State.StartedAt) // best-effort — zero time on parse failure is acceptable
 	}
 
 	// Build human-readable status.

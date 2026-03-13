@@ -56,7 +56,9 @@ func cmdCpTo(g Globals, args []string) {
 	if _, err := tw.Write(data); err != nil {
 		die("tar: %v", err)
 	}
-	tw.Close()
+	if err := tw.Close(); err != nil {
+		die("tar close: %v", err)
+	}
 
 	if err := g.Docker.CopyToContainer(ctx, cn, destDir, &buf); err != nil {
 		die("copy: %v", err)
