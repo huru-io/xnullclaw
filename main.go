@@ -113,6 +113,7 @@ func runMux(args []string) {
 			}
 			defer func() {
 				os.Remove(pidFile)
+				os.Remove(pidFile + ".lock")
 				lockFile.Close()
 			}()
 			writePID(pidFile, os.Getpid())

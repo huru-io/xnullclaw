@@ -498,7 +498,10 @@ func Run(mc Config) error {
 	})
 
 	// Start Telegram polling.
+	var tgWg sync.WaitGroup
+	tgWg.Add(1)
 	go func() {
+		defer tgWg.Done()
 		logger.Info("telegram polling started")
 		if err := tgBot.Start(ctx); err != nil && ctx.Err() == nil {
 			logger.Error("telegram error", "error", err)
@@ -581,7 +584,12 @@ func Run(mc Config) error {
 		deliver:       deliverResult,
 		lastHeartbeat: time.Now(), // avoid stale drain scan on first tick (M8)
 	}
-	go scheduler.Run(schedulerInterval, schedulerDone)
+	var schedulerWg sync.WaitGroup
+	schedulerWg.Add(1)
+	go func() {
+		defer schedulerWg.Done()
+		scheduler.Run(schedulerInterval, schedulerDone)
+	}()
 	logger.Info("scheduler goroutine started", "interval", schedulerInterval)
 
 	logger.Info("mux online")
@@ -596,11 +604,24 @@ func Run(mc Config) error {
 	// SIGHUP: soft restart — stop subsystems but keep agents running.
 	if sig == syscall.SIGHUP {
 		logger.Info("reloading config (SIGHUP)")
+
+		// 1. Stop accepting new messages and signal goroutines to stop.
+		tgBot.Stop()
 		close(schedulerDone)
-		drainer.drainAll()
+
+		// 2. Cancel context to abort any in-flight LLM calls so goroutines
+		//    exit quickly instead of blocking up to maxTurnDuration.
+		cancel()
+
+		// 3. Wait for goroutines to actually exit before touching shared resources.
+		tgWg.Wait()
+		schedulerWg.Wait()
+
+		// 4. Final drain — turnMu is guaranteed free (all turn holders exited).
+		drainer.safeDrainAll()
 		close(drainDone)
 		drainWg.Wait()
-		tgBot.Stop()
+
 		if mc.LastChatID != nil {
 			*mc.LastChatID = atomic.LoadInt64(&lastChatID)
 		}
@@ -608,8 +629,45 @@ func Run(mc Config) error {
 	}
 
 	// Graceful shutdown (SIGINT/SIGTERM).
-	// 1. Stop agents in parallel (bounded concurrency) — let them flush final output.
+	//
+	// Order matters — each step depends on the previous:
+	//   1. Goodbye message (bot still running, message actually sends)
+	//   2. Stop bot + scheduler, cancel ctx (no new turns, in-flight aborted)
+	//   3. Wait for all goroutines (resources safe to tear down after this)
+	//   4. Stop agents (no callbacks can restart them)
+	//   5. Final drain (turnMu guaranteed free)
+	//   6. Stop drain goroutine
+	//   7. Return (defers close store/docker/logger — all goroutines dead)
+
+	// 1. Send goodbye while the bot can still deliver it.
+	if cid := atomic.LoadInt64(&lastChatID); cid != 0 {
+		if err := tgBot.Send(cid, "Mux going offline. Stopping agents..."); err != nil {
+			logger.Error("goodbye send failed", "error", err)
+		}
+	}
+
+	// 2. Stop accepting new messages and signal goroutines to stop.
+	//    tgBot.Stop() prevents new callbacks from starting. Cancelling ctx
+	//    aborts any in-flight LLM calls so turn holders release turnMu quickly.
+	tgBot.Stop()
+	close(schedulerDone)
+	cancel()
+
+	// 3. Wait for all turn-holding goroutines to exit. After this point,
+	//    no goroutine references store, docker, or logger.
+	tgWg.Wait()
+	schedulerWg.Wait()
+
+	// 4. Stop agents in parallel (bounded concurrency).
+	//    Timeout: 10s per agent batch (5 agents per batch), minimum 30s.
+	nAgents := len(cfg.Agents.MuxManaged)
 	const maxParallelStops = 5
+	stopTimeout := time.Duration((nAgents/maxParallelStops+1)*10) * time.Second
+	if stopTimeout < 30*time.Second {
+		stopTimeout = 30 * time.Second
+	}
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), stopTimeout)
+	defer shutdownCancel()
 	stopSem := make(chan struct{}, maxParallelStops)
 	var stopWg sync.WaitGroup
 	for _, agentName := range cfg.Agents.MuxManaged {
@@ -620,30 +678,24 @@ func Run(mc Config) error {
 			defer func() { <-stopSem }()
 			logger.LogLifecycle("stopping", name, "shutdown")
 			cn := agent.ContainerName(mc.Home, name)
-			if err := dk.StopContainer(context.Background(), cn); err != nil {
+			if err := dk.StopContainer(shutdownCtx, cn); err != nil {
 				logger.Error("agent stop failed", "agent", name, "error", err)
 			}
 		}(agentName)
 	}
 	stopWg.Wait()
+	if shutdownCtx.Err() != nil {
+		logger.Warn("shutdown timeout expired — some agents may still be running",
+			"timeout", stopTimeout, "agents", nAgents)
+	}
 
-	// 2. Stop scheduler — no more synthetic turns after this.
-	close(schedulerDone)
+	// 5. Final drain — turnMu is guaranteed free (all turn holders exited).
+	drainer.safeDrainAll()
 
-	// 3. Final drain pass — pick up messages written before/during agent shutdown.
-	drainer.drainAll()
-	// 4. Stop drain goroutine and wait for it to exit.
+	// 6. Stop drain goroutine.
 	close(drainDone)
 	drainWg.Wait()
 
-	// Send goodbye before stopping the bot (Stop closes the send queue).
-	if cid := atomic.LoadInt64(&lastChatID); cid != 0 {
-		tgBot.Send(cid, "Mux going offline. Agents stopped.")
-	}
-
-	tgBot.Stop()
-
-	cancel()
 	logger.Info("mux shutdown complete")
 	return nil
 }
