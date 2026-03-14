@@ -49,10 +49,8 @@ cross:
 	GOOS=darwin  GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BUILD_DIR)/$(BINARY)-darwin-amd64 .
 	GOOS=darwin  GOARCH=arm64 CGO_ENABLED=0 $(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BUILD_DIR)/$(BINARY)-darwin-arm64 .
 
-docker-mux: build
-	cp $(BUILD_DIR)/$(BINARY) $(CURDIR)/$(BINARY)
-	docker build -f Dockerfile.mux -t xnc-mux:$(VERSION) -t xnc-mux:latest .
-	rm -f $(CURDIR)/$(BINARY)
+docker-mux:
+	docker build -f Dockerfile.mux --build-arg VERSION=$(VERSION) -t xnc-mux:$(VERSION) -t xnc-mux:latest .
 
 clean:
 	rm -rf $(BUILD_DIR)
