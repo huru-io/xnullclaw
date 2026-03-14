@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -107,8 +108,13 @@ func sendToAgent(ctx context.Context, d Deps, agentName, message string) (string
 		if err == nil {
 			return resp, nil
 		}
+		if errors.Is(err, ErrResponseLost) {
+			// Message was delivered but response lost due to connection drop.
+			// Do NOT re-send via webhook — agent already received it.
+			return "", err
+		}
 		bridgeErr = err
-		// Bridge failed — fall through to webhook/exec path.
+		// Bridge failed before delivery — fall through to webhook/exec path.
 	}
 
 	cn := agent.ContainerName(d.Home, agentName)

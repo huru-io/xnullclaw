@@ -69,6 +69,11 @@ type AgentSender interface {
 	Disconnect(name string)
 }
 
+// ErrResponseLost means the message was delivered to the agent but the
+// WebSocket connection dropped before the response arrived. Callers must
+// NOT re-send the message (the agent already received and is processing it).
+var ErrResponseLost = fmt.Errorf("bridge: message delivered but response lost")
+
 // Deps holds all the dependencies that tools need.
 type Deps struct {
 	Docker      docker.Ops

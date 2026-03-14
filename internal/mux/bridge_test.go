@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/jotavich/xnullclaw/internal/agent"
 	"github.com/jotavich/xnullclaw/internal/config"
 	"github.com/jotavich/xnullclaw/internal/docker"
+	"github.com/jotavich/xnullclaw/internal/tools"
 )
 
 // --- fake WebSocket server helpers ---
@@ -692,7 +694,7 @@ func TestBridge_DisconnectDrainsPendingWaiter(t *testing.T) {
 		if res.err == nil {
 			t.Fatal("expected error when connection disconnected during Send")
 		}
-		if !strings.Contains(res.err.Error(), "connection to alice lost during send") {
+		if !errors.Is(res.err, tools.ErrResponseLost) {
 			t.Errorf("unexpected error: %v", res.err)
 		}
 	case <-time.After(5 * time.Second):
@@ -1218,7 +1220,7 @@ func TestBridge_ConnectionLostDuringSend(t *testing.T) {
 		if res.err == nil {
 			t.Fatal("expected error when connection lost during Send")
 		}
-		if !strings.Contains(res.err.Error(), "connection to alice lost during send") {
+		if !errors.Is(res.err, tools.ErrResponseLost) {
 			t.Errorf("unexpected error: %v", res.err)
 		}
 	case <-time.After(5 * time.Second):

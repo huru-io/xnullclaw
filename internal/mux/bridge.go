@@ -19,6 +19,7 @@ import (
 	"github.com/jotavich/xnullclaw/internal/media"
 	"github.com/jotavich/xnullclaw/internal/memory"
 	"github.com/jotavich/xnullclaw/internal/telegram"
+	"github.com/jotavich/xnullclaw/internal/tools"
 )
 
 // Bridge manages WebSocket connections to agent web channels.
@@ -63,6 +64,7 @@ const sessionID = "mux"
 
 // maxReconnectAttempts caps how many times reconnect will retry before giving up.
 const maxReconnectAttempts = 20
+
 
 // Send sends a message to an agent via WebSocket and waits for the response.
 // Implements tools.AgentSender.
@@ -112,8 +114,10 @@ func (b *Bridge) Send(ctx context.Context, name, message string) (string, error)
 	select {
 	case resp, ok := <-responseCh:
 		if !ok {
-			// Channel closed — connection was lost during Send.
-			return "", fmt.Errorf("bridge: connection to %s lost during send", name)
+			// Channel closed — connection was lost after the message was
+			// successfully written. The agent received and is processing it,
+			// but we lost the response. Callers must NOT re-send.
+			return "", fmt.Errorf("%w (agent: %s)", tools.ErrResponseLost, name)
 		}
 		return resp, nil
 	case <-ctx.Done():
