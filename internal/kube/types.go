@@ -29,6 +29,7 @@ type PodSpec struct {
 	SecurityContext               *PodSecurityContext `json:"securityContext,omitempty"`
 	ServiceAccountName            string             `json:"serviceAccountName,omitempty"`
 	AutomountServiceAccountToken  *bool              `json:"automountServiceAccountToken,omitempty"`
+	NodeSelector                  map[string]string  `json:"nodeSelector,omitempty"`
 }
 
 // Container describes a single container in a Pod.

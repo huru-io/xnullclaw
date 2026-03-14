@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,20 +19,29 @@ const gatewayPort = 3000
 
 // KubeOps implements docker.Ops by managing K8s Pods, Services, etc.
 type KubeOps struct {
-	client     *Client
-	instanceID string // 6-hex-char instance ID for resource naming
-	image      string // default container image
+	client       *Client
+	instanceID   string            // 6-hex-char instance ID for resource naming
+	image        string            // default container image
+	nodeSelector map[string]string // optional nodeSelector for agent pods
 }
 
 var _ docker.Ops = (*KubeOps)(nil)
 
 // NewOps creates a KubeOps adapter.
+// Reads XNC_NODE_SELECTOR env var (format: "key=value") to set nodeSelector
+// on agent pods. This ensures agents schedule on the correct node pool.
 func NewOps(client *Client, instanceID, image string) *KubeOps {
-	return &KubeOps{
+	ops := &KubeOps{
 		client:     client,
 		instanceID: instanceID,
 		image:      image,
 	}
+	if sel := os.Getenv("XNC_NODE_SELECTOR"); sel != "" {
+		if k, v, ok := strings.Cut(sel, "="); ok && k != "" {
+			ops.nodeSelector = map[string]string{k: v}
+		}
+	}
+	return ops
 }
 
 // labels returns the standard labels for all resources belonging to an agent.
@@ -101,6 +111,7 @@ func (k *KubeOps) StartContainer(ctx context.Context, name string, opts docker.C
 		Spec: PodSpec{
 			RestartPolicy:                "Always",
 			AutomountServiceAccountToken: &f,
+			NodeSelector:                 k.nodeSelector,
 			SecurityContext: &PodSecurityContext{
 				RunAsNonRoot:   &tt,
 				RunAsUser:      &uid,

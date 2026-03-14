@@ -24,7 +24,7 @@ func startHealthServer(logger *logging.Logger) *http.Server {
 	})
 
 	srv := &http.Server{
-		Addr:              "127.0.0.1:" + healthPort,
+		Addr:              "0.0.0.0:" + healthPort,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
