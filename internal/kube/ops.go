@@ -49,11 +49,11 @@ func NewOps(client *Client, instanceID, image string) *KubeOps {
 		instanceID: instanceID,
 		image:      image,
 		agentRes: agentResources{
-			cpuRequest: envOrDefault("XNC_AGENT_CPU_REQUEST", "100m"),
-			cpuLimit:   envOrDefault("XNC_AGENT_CPU_LIMIT", "250m"),
-			memRequest: envOrDefault("XNC_AGENT_MEMORY_REQUEST", "64Mi"),
-			memLimit:   envOrDefault("XNC_AGENT_MEMORY_LIMIT", "128Mi"),
-			storage:    envOrDefault("XNC_AGENT_STORAGE", "1Gi"),
+			cpuRequest: envOrDefault("XNC_AGENT_CPU_REQUEST", "50m"),
+			cpuLimit:   envOrDefault("XNC_AGENT_CPU_LIMIT", "125m"),
+			memRequest: envOrDefault("XNC_AGENT_MEMORY_REQUEST", "32Mi"),
+			memLimit:   envOrDefault("XNC_AGENT_MEMORY_LIMIT", "64Mi"),
+			storage:    envOrDefault("XNC_AGENT_STORAGE", "512Mi"),
 		},
 	}
 	if sel := os.Getenv("XNC_NODE_SELECTOR"); sel != "" {
