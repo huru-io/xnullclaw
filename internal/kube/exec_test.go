@@ -293,6 +293,43 @@ func TestWsReadFrame_PongSkipped(t *testing.T) {
 	}
 }
 
+func TestWsReadFrame_NonZeroRSVBits(t *testing.T) {
+	// A frame with RSV1 set (bit 6 of first byte) should be rejected.
+	var buf bytes.Buffer
+	buf.WriteByte(0xC2) // FIN=1, RSV1=1, opcode=binary
+	buf.WriteByte(0x03) // length 3
+	buf.Write([]byte("abc"))
+	br := bufio.NewReader(&buf)
+
+	_, err := wsReadFrame(br)
+	if err == nil {
+		t.Fatal("expected error for non-zero RSV bits")
+	}
+	if !strings.Contains(err.Error(), "non-zero RSV") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestWsReadFrame_ControlFrameTooLarge(t *testing.T) {
+	// A ping frame claiming > 125 bytes of payload should be rejected.
+	var buf bytes.Buffer
+	buf.WriteByte(0x89) // FIN + ping
+	buf.WriteByte(126)  // 16-bit extended length follows
+	ext := make([]byte, 2)
+	binary.BigEndian.PutUint16(ext, 200)
+	buf.Write(ext)
+	// Don't write actual payload — should error before reading it.
+
+	br := bufio.NewReader(&buf)
+	_, err := wsReadFrame(br)
+	if err == nil {
+		t.Fatal("expected error for oversized control frame")
+	}
+	if !strings.Contains(err.Error(), "control frame payload too large") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 // TestExec_Integration tests the full Exec() function end-to-end by running a
 // test HTTP server that performs the WebSocket upgrade handshake and sends
 // K8s exec protocol frames back to the client.

@@ -26,6 +26,12 @@ const (
 	maxControlPayload    = 125        // RFC 6455 §5.5: control frame max
 )
 
+// Timeouts for write operations and close handshakes.
+const (
+	writeTimeout = 10 * time.Second // deadline for each write operation
+	closeTimeout = 5 * time.Second  // deadline for close frame + TCP close
+)
+
 // wsConn wraps a raw TCP connection with WebSocket framing.
 type wsConn struct {
 	conn net.Conn
@@ -178,8 +184,10 @@ func (c *wsConn) writeFrame(opcode byte, payload []byte) error {
 		frame = append(frame, b^maskKey[i%4])
 	}
 
-	// Single atomic write.
+	// Set write deadline to prevent blocking on dead connections.
+	c.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 	_, err := c.conn.Write(frame)
+	c.conn.SetWriteDeadline(time.Time{}) // clear deadline
 	return err
 }
 
@@ -300,10 +308,17 @@ func (c *wsConn) readFrame() ([]byte, byte, bool, error) {
 }
 
 // Close sends a close frame and closes the underlying connection.
+// Sets a deadline so the close doesn't block on a dead connection.
 func (c *wsConn) Close() error {
-	// Best-effort close frame.
-	c.writeFrame(0x8, nil)
+	// Set a deadline so the close frame write and TCP close don't hang.
+	c.conn.SetDeadline(time.Now().Add(closeTimeout))
+	c.writeFrame(0x8, nil) // best-effort close frame
 	return c.conn.Close()
+}
+
+// Ping sends a WebSocket ping frame. Used as a keepalive to detect dead connections.
+func (c *wsConn) Ping() error {
+	return c.writeFrame(0x9, nil)
 }
 
 // SetReadDeadline sets the read deadline on the underlying connection.

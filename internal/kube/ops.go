@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -65,6 +66,7 @@ func (k *KubeOps) StartContainer(ctx context.Context, name string, opts docker.C
 
 	f := false
 	tt := true
+	var uid int64 = 1000
 
 	// Create PVC for agent data.
 	pvc := PersistentVolumeClaim{
@@ -95,14 +97,20 @@ func (k *KubeOps) StartContainer(ctx context.Context, name string, opts docker.C
 		Kind:       "Pod",
 		Metadata:   ObjectMeta{Name: name, Labels: labels},
 		Spec: PodSpec{
-			RestartPolicy: "Always",
+			RestartPolicy:                "Always",
+			AutomountServiceAccountToken: &f,
 			SecurityContext: &PodSecurityContext{
-				RunAsNonRoot: &tt,
+				RunAsNonRoot:   &tt,
+				RunAsUser:      &uid,
+				RunAsGroup:     &uid,
+				FSGroup:        &uid,
+				SeccompProfile: &SeccompProfile{Type: "RuntimeDefault"},
 			},
 			Containers: []Container{{
-				Name:    "agent",
-				Image:   opts.Image,
-				Command: opts.Cmd,
+				Name:            "agent",
+				Image:           opts.Image,
+				ImagePullPolicy: "Always",
+				Command:         opts.Cmd,
 				Env:     envVars,
 				Ports: []ContainerPort{
 					{Name: "http", ContainerPort: gatewayPort},
@@ -123,9 +131,13 @@ func (k *KubeOps) StartContainer(ctx context.Context, name string, opts docker.C
 					},
 				},
 				SecurityContext: &SecurityContext{
+					RunAsNonRoot:             &tt,
+					RunAsUser:                &uid,
+					RunAsGroup:               &uid,
 					ReadOnlyRootFilesystem:   &tt,
 					AllowPrivilegeEscalation: &f,
 					Capabilities:             &Capabilities{Drop: []string{"ALL"}},
+					SeccompProfile:           &SeccompProfile{Type: "RuntimeDefault"},
 				},
 			}},
 			Volumes: []Volume{
@@ -135,7 +147,7 @@ func (k *KubeOps) StartContainer(ctx context.Context, name string, opts docker.C
 				},
 				{
 					Name:     "tmp",
-					EmptyDir: &EmptyDirVolumeSource{SizeLimit: "64Mi"},
+					EmptyDir: &EmptyDirVolumeSource{Medium: "Memory", SizeLimit: "64Mi"},
 				},
 			},
 		},
@@ -271,8 +283,13 @@ const webChannelPort = 32123
 
 func (k *KubeOps) ContainerLogs(ctx context.Context, name string, opts docker.LogOpts) (io.ReadCloser, error) {
 	lines := 100
-	if opts.Tail == "all" {
+	switch {
+	case opts.Tail == "all":
 		lines = 10000
+	case opts.Tail != "":
+		if n, err := strconv.Atoi(opts.Tail); err == nil && n > 0 {
+			lines = n
+		}
 	}
 	return k.client.PodLogs(ctx, name, lines)
 }

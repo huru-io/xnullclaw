@@ -5,10 +5,11 @@ package kube
 
 // ObjectMeta contains standard metadata for K8s resources.
 type ObjectMeta struct {
-	Name        string            `json:"name"`
-	Namespace   string            `json:"namespace,omitempty"`
-	Labels      map[string]string `json:"labels,omitempty"`
-	Annotations map[string]string `json:"annotations,omitempty"`
+	Name            string            `json:"name"`
+	Namespace       string            `json:"namespace,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	Annotations     map[string]string `json:"annotations,omitempty"`
+	ResourceVersion string            `json:"resourceVersion,omitempty"`
 }
 
 // Pod represents a K8s Pod (minimal fields).
@@ -22,17 +23,19 @@ type Pod struct {
 
 // PodSpec is the specification of a Pod.
 type PodSpec struct {
-	Containers         []Container        `json:"containers"`
-	Volumes            []Volume           `json:"volumes,omitempty"`
-	RestartPolicy      string             `json:"restartPolicy,omitempty"`
-	SecurityContext    *PodSecurityContext `json:"securityContext,omitempty"`
-	ServiceAccountName string             `json:"serviceAccountName,omitempty"`
+	Containers                    []Container        `json:"containers"`
+	Volumes                       []Volume           `json:"volumes,omitempty"`
+	RestartPolicy                 string             `json:"restartPolicy,omitempty"`
+	SecurityContext               *PodSecurityContext `json:"securityContext,omitempty"`
+	ServiceAccountName            string             `json:"serviceAccountName,omitempty"`
+	AutomountServiceAccountToken  *bool              `json:"automountServiceAccountToken,omitempty"`
 }
 
 // Container describes a single container in a Pod.
 type Container struct {
 	Name            string               `json:"name"`
 	Image           string               `json:"image"`
+	ImagePullPolicy string               `json:"imagePullPolicy,omitempty"`
 	Command         []string             `json:"command,omitempty"`
 	Env             []EnvVar             `json:"env,omitempty"`
 	Ports           []ContainerPort      `json:"ports,omitempty"`
@@ -87,18 +90,27 @@ type ResourceRequirements struct {
 
 // SecurityContext holds security settings for a container.
 type SecurityContext struct {
-	RunAsNonRoot             *bool        `json:"runAsNonRoot,omitempty"`
-	ReadOnlyRootFilesystem   *bool        `json:"readOnlyRootFilesystem,omitempty"`
-	AllowPrivilegeEscalation *bool        `json:"allowPrivilegeEscalation,omitempty"`
-	Capabilities             *Capabilities `json:"capabilities,omitempty"`
+	RunAsNonRoot             *bool          `json:"runAsNonRoot,omitempty"`
+	RunAsUser                *int64         `json:"runAsUser,omitempty"`
+	RunAsGroup               *int64         `json:"runAsGroup,omitempty"`
+	ReadOnlyRootFilesystem   *bool          `json:"readOnlyRootFilesystem,omitempty"`
+	AllowPrivilegeEscalation *bool          `json:"allowPrivilegeEscalation,omitempty"`
+	Capabilities             *Capabilities  `json:"capabilities,omitempty"`
+	SeccompProfile           *SeccompProfile `json:"seccompProfile,omitempty"`
 }
 
 // PodSecurityContext holds pod-level security settings.
 type PodSecurityContext struct {
-	RunAsNonRoot *bool  `json:"runAsNonRoot,omitempty"`
-	RunAsUser    *int64 `json:"runAsUser,omitempty"`
-	RunAsGroup   *int64 `json:"runAsGroup,omitempty"`
-	FSGroup      *int64 `json:"fsGroup,omitempty"`
+	RunAsNonRoot   *bool           `json:"runAsNonRoot,omitempty"`
+	RunAsUser      *int64          `json:"runAsUser,omitempty"`
+	RunAsGroup     *int64          `json:"runAsGroup,omitempty"`
+	FSGroup        *int64          `json:"fsGroup,omitempty"`
+	SeccompProfile *SeccompProfile `json:"seccompProfile,omitempty"`
+}
+
+// SeccompProfile defines the seccomp profile for a pod or container.
+type SeccompProfile struct {
+	Type string `json:"type"`
 }
 
 // Capabilities holds Linux capabilities to add/drop.

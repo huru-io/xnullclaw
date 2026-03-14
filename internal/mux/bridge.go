@@ -274,15 +274,43 @@ func (b *Bridge) webSocketURL(ctx context.Context, name, token string) (string, 
 	return fmt.Sprintf("ws://%s:%d/ws?%s", host, port, params.Encode()), nil
 }
 
+// pingInterval controls how often we send WebSocket pings as keepalive.
+// If no pong is received within readDeadline, the connection is considered dead.
+const pingInterval = 30 * time.Second
+
+// readDeadline is how long we wait for any data (message or pong) before
+// considering the connection dead. Must be > pingInterval.
+const readDeadline = 90 * time.Second
+
 // readLoop continuously reads WebSocket frames from an agent connection.
 // Handles response routing (to synchronous waiters) and unsolicited message
 // delivery (to Telegram for autonomous/cron output).
+//
+// Starts a ping keepalive goroutine to detect dead connections faster than
+// the read deadline alone.
 func (b *Bridge) readLoop(ac *agentConn) {
 	defer close(ac.done)
 
+	// Start ping keepalive — sends periodic pings to detect dead connections.
+	// Stops when ac.done is closed (deferred above) or on write error.
+	go func() {
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := ac.ws.Ping(); err != nil {
+					return // write failed — readLoop will detect via read error
+				}
+			case <-ac.done:
+				return
+			}
+		}
+	}()
+
 	for {
-		// Set a generous read deadline to detect dead connections.
-		ac.ws.SetReadDeadline(time.Now().Add(5 * time.Minute))
+		// Read deadline detects connections where pongs stop arriving.
+		ac.ws.SetReadDeadline(time.Now().Add(readDeadline))
 
 		payload, err := ac.ws.ReadMessage()
 		if err != nil {

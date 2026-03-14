@@ -15,6 +15,11 @@ import (
 // validMetaKey matches safe K8s annotation name segments.
 var validMetaKey = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
+// maxMetaValueSize limits individual annotation values to 128KB.
+// K8s has a 256KB total annotation limit; this prevents a single value from
+// consuming the budget and leaves room for system annotations.
+const maxMetaValueSize = 128 * 1024
+
 // decodeSecretValue decodes a base64-encoded value from Secret.Data.
 // K8s API returns Secret.Data values as base64; Secret.StringData is write-only.
 // Falls back to raw value if decode fails (e.g., test mocks using StringData).
@@ -39,6 +44,10 @@ func isSecretStoredKey(ck agent.ConfigKey) bool {
 	return ck.Redacted && (ck.Provider != "" || ck.EnvVar != "")
 }
 
+// apiTimeout is the default timeout for KubeBackend operations.
+// Prevents indefinite stalls on unresponsive K8s API servers.
+const apiTimeout = 30 * time.Second
+
 // KubeBackend implements agent.Backend using K8s ConfigMaps and Secrets.
 // Agent state is stored as:
 //   - ConfigMap: config.json data + metadata annotations
@@ -46,6 +55,12 @@ func isSecretStoredKey(ck agent.ConfigKey) bool {
 type KubeBackend struct {
 	client     *Client
 	instanceID string
+}
+
+// ctx returns a context with the standard API timeout.
+// Used by Backend interface methods that don't receive a caller context.
+func (b *KubeBackend) ctx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), apiTimeout)
 }
 
 var _ agent.Backend = (*KubeBackend)(nil)
@@ -83,7 +98,8 @@ func (b *KubeBackend) Setup(name string, opts agent.SetupOpts) error {
 		return err
 	}
 
-	ctx := context.Background()
+	ctx, cancel := b.ctx()
+	defer cancel()
 	resName := b.resourceName(name)
 	labels := b.labels(name)
 
@@ -153,7 +169,8 @@ func (b *KubeBackend) Setup(name string, opts agent.SetupOpts) error {
 }
 
 func (b *KubeBackend) Destroy(name string) error {
-	ctx := context.Background()
+	ctx, cancel := b.ctx()
+	defer cancel()
 	resName := b.resourceName(name)
 
 	for _, resource := range []string{"configmaps", "secrets"} {
@@ -165,14 +182,16 @@ func (b *KubeBackend) Destroy(name string) error {
 }
 
 func (b *KubeBackend) Exists(name string) bool {
-	ctx := context.Background()
+	ctx, cancel := b.ctx()
+	defer cancel()
 	var cm ConfigMap
 	err := b.client.Get(ctx, "configmaps", b.resourceName(name), &cm)
 	return err == nil
 }
 
 func (b *KubeBackend) ListAll() ([]agent.Info, error) {
-	ctx := context.Background()
+	ctx, cancel := b.ctx()
+	defer cancel()
 	var list ConfigMapList
 	if err := b.client.List(ctx, "configmaps", b.instanceLabels(), &list); err != nil {
 		return nil, err
@@ -206,7 +225,8 @@ func (b *KubeBackend) Clone(source, dest string, opts agent.CloneOpts) error {
 		return fmt.Errorf("agent %q already exists", dest)
 	}
 
-	ctx := context.Background()
+	ctx, cancel := b.ctx()
+	defer cancel()
 	srcName := b.resourceName(source)
 	dstName := b.resourceName(dest)
 	dstLabels := b.labels(dest)
@@ -216,17 +236,25 @@ func (b *KubeBackend) Clone(source, dest string, opts agent.CloneOpts) error {
 	if err := b.client.Get(ctx, "configmaps", srcName, &srcCM); err != nil {
 		return fmt.Errorf("read source config: %w", err)
 	}
+	// Preserve custom metadata annotations from source.
+	dstAnnotations := map[string]string{
+		"xnc.io/agent-name":  agent.CanonicalName(dest),
+		"xnc.io/created":     time.Now().UTC().Format(time.RFC3339),
+		"xnc.io/cloned-from": agent.CanonicalName(source),
+	}
+	for k, v := range srcCM.Metadata.Annotations {
+		if strings.HasPrefix(k, "xnc.io/meta-") {
+			dstAnnotations[k] = v
+		}
+	}
+
 	dstCM := ConfigMap{
 		APIVersion: "v1",
 		Kind:       "ConfigMap",
 		Metadata: ObjectMeta{
-			Name:   dstName,
-			Labels: dstLabels,
-			Annotations: map[string]string{
-				"xnc.io/agent-name": agent.CanonicalName(dest),
-				"xnc.io/created":    time.Now().UTC().Format(time.RFC3339),
-				"xnc.io/cloned-from": agent.CanonicalName(source),
-			},
+			Name:        dstName,
+			Labels:      dstLabels,
+			Annotations: dstAnnotations,
 		},
 		Data: srcCM.Data,
 	}
@@ -274,7 +302,8 @@ func (b *KubeBackend) Rename(oldName, newName string) error {
 // ---------------------------------------------------------------------------
 
 func (b *KubeBackend) configMap(name string) (*ConfigMap, error) {
-	ctx := context.Background()
+	ctx, cancel := b.ctx()
+	defer cancel()
 	var cm ConfigMap
 	if err := b.client.Get(ctx, "configmaps", b.resourceName(name), &cm); err != nil {
 		if IsNotFound(err) {
@@ -309,7 +338,8 @@ func (b *KubeBackend) ConfigGet(name, key string) (any, error) {
 
 	// API keys and env-injected secrets are stored in Secret.
 	if isSecretStoredKey(ck) {
-		ctx := context.Background()
+		ctx, cancel := b.ctx()
+	defer cancel()
 		var secret Secret
 		if err := b.client.Get(ctx, "secrets", b.resourceName(name), &secret); err != nil {
 			return nil, err
@@ -336,7 +366,8 @@ func (b *KubeBackend) ConfigSet(name, key, value string) error {
 		return b.setSecretKey(name, key, value)
 	}
 
-	ctx := context.Background()
+	ctx, cancel := b.ctx()
+	defer cancel()
 	resName := b.resourceName(name)
 
 	var cm ConfigMap
@@ -367,10 +398,15 @@ func (b *KubeBackend) ConfigGetAll(name string) (map[string]any, error) {
 	}
 
 	// Read Secret for provider keys (stored separately from ConfigMap).
-	ctx := context.Background()
+	ctx, cancel := b.ctx()
+	defer cancel()
 	var secret Secret
 	hasSecret := false
-	if err := b.client.Get(ctx, "secrets", b.resourceName(name), &secret); err == nil {
+	if err := b.client.Get(ctx, "secrets", b.resourceName(name), &secret); err != nil {
+		if !IsNotFound(err) {
+			return nil, fmt.Errorf("read secret for %s: %w", name, err)
+		}
+	} else {
 		hasSecret = true
 	}
 
@@ -438,7 +474,8 @@ func (b *KubeBackend) WriteMeta(name, key, value string) error {
 }
 
 func (b *KubeBackend) WriteMetaBatch(name string, pairs map[string]string) error {
-	ctx := context.Background()
+	ctx, cancel := b.ctx()
+	defer cancel()
 	resName := b.resourceName(name)
 
 	var cm ConfigMap
@@ -453,6 +490,9 @@ func (b *KubeBackend) WriteMetaBatch(name string, pairs map[string]string) error
 		if !validMetaKey.MatchString(k) {
 			return fmt.Errorf("invalid metadata key %q", k)
 		}
+		if len(v) > maxMetaValueSize {
+			return fmt.Errorf("metadata value for %q too large: %d bytes (max %d)", k, len(v), maxMetaValueSize)
+		}
 		cm.Metadata.Annotations["xnc.io/meta-"+k] = v
 	}
 
@@ -464,7 +504,8 @@ func (b *KubeBackend) WriteMetaBatch(name string, pairs map[string]string) error
 // ---------------------------------------------------------------------------
 
 func (b *KubeBackend) ReadToken(name string) (string, error) {
-	ctx := context.Background()
+	ctx, cancel := b.ctx()
+	defer cancel()
 	var secret Secret
 	if err := b.client.Get(ctx, "secrets", b.resourceName(name), &secret); err != nil {
 		return "", err
@@ -487,7 +528,8 @@ func (b *KubeBackend) SetupWebhookAuth(name string) (string, error) {
 	// Store SHA-256 hash in ConfigMap config.json under gateway.paired_tokens.
 	hash := agent.HashToken(token)
 
-	ctx := context.Background()
+	ctx, cancel := b.ctx()
+	defer cancel()
 	resName := b.resourceName(name)
 
 	var cm ConfigMap
@@ -520,7 +562,8 @@ func (b *KubeBackend) SetupWebhookAuth(name string) (string, error) {
 // ---------------------------------------------------------------------------
 
 func (b *KubeBackend) HasProviderKey(name string) bool {
-	ctx := context.Background()
+	ctx, cancel := b.ctx()
+	defer cancel()
 	var secret Secret
 	if err := b.client.Get(ctx, "secrets", b.resourceName(name), &secret); err != nil {
 		return false
@@ -547,7 +590,8 @@ func (b *KubeBackend) CollectKeys() map[string]string {
 		return map[string]string{}
 	}
 	result := map[string]string{}
-	ctx := context.Background()
+	ctx, cancel := b.ctx()
+	defer cancel()
 	for _, a := range agents {
 		var secret Secret
 		if err := b.client.Get(ctx, "secrets", b.resourceName(a.Name), &secret); err != nil {
@@ -582,10 +626,15 @@ func (b *KubeBackend) ContainerEnv(name string) ([]string, error) {
 	}
 
 	// Read Secret for API keys (stored separately from ConfigMap).
-	ctx := context.Background()
+	ctx, cancel := b.ctx()
+	defer cancel()
 	var secret Secret
 	hasSecret := false
-	if err := b.client.Get(ctx, "secrets", b.resourceName(name), &secret); err == nil {
+	if err := b.client.Get(ctx, "secrets", b.resourceName(name), &secret); err != nil {
+		if !IsNotFound(err) {
+			return nil, fmt.Errorf("read secret for %s: %w", name, err)
+		}
+	} else {
 		hasSecret = true
 	}
 
@@ -643,7 +692,8 @@ func (b *KubeBackend) Dir(_ string) string {
 // ---------------------------------------------------------------------------
 
 func (b *KubeBackend) setSecretKey(name, key, value string) error {
-	ctx := context.Background()
+	ctx, cancel := b.ctx()
+	defer cancel()
 	resName := b.resourceName(name)
 
 	var secret Secret

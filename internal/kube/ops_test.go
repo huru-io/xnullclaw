@@ -392,6 +392,153 @@ func TestKubeOps_StartContainer_NoExposePort(t *testing.T) {
 	}
 }
 
+func TestKubeOps_StartContainer_PodSecurity(t *testing.T) {
+	var capturedPod Pod
+
+	ops := newTestOps(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/pods") {
+			json.NewDecoder(r.Body).Decode(&capturedPod)
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte("{}"))
+			return
+		}
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte("{}"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+
+	err := ops.StartContainer(context.Background(), "xnc-abc123-alice", docker.ContainerOpts{
+		Image:     "test-image:v1.0",
+		Cmd:       []string{"gateway"},
+		AgentName: "alice",
+	})
+	if err != nil {
+		t.Fatalf("StartContainer: %v", err)
+	}
+
+	spec := capturedPod.Spec
+
+	// H3: ImagePullPolicy must be Always.
+	if len(spec.Containers) == 0 {
+		t.Fatal("no containers in pod spec")
+	}
+	c := spec.Containers[0]
+	if c.ImagePullPolicy != "Always" {
+		t.Errorf("ImagePullPolicy = %q, want %q", c.ImagePullPolicy, "Always")
+	}
+
+	// M1: AutomountServiceAccountToken must be false.
+	if spec.AutomountServiceAccountToken == nil || *spec.AutomountServiceAccountToken {
+		t.Error("AutomountServiceAccountToken should be false")
+	}
+
+	// M1: SeccompProfile must be RuntimeDefault.
+	psc := spec.SecurityContext
+	if psc == nil {
+		t.Fatal("pod SecurityContext is nil")
+	}
+	if psc.SeccompProfile == nil || psc.SeccompProfile.Type != "RuntimeDefault" {
+		t.Errorf("SeccompProfile = %v, want RuntimeDefault", psc.SeccompProfile)
+	}
+
+	// M1: RunAsUser/RunAsGroup must be 1000.
+	if psc.RunAsUser == nil || *psc.RunAsUser != 1000 {
+		t.Errorf("RunAsUser = %v, want 1000", psc.RunAsUser)
+	}
+	if psc.RunAsGroup == nil || *psc.RunAsGroup != 1000 {
+		t.Errorf("RunAsGroup = %v, want 1000", psc.RunAsGroup)
+	}
+
+	// FSGroup must be set for PVC write access.
+	if psc.FSGroup == nil || *psc.FSGroup != 1000 {
+		t.Errorf("FSGroup = %v, want 1000", psc.FSGroup)
+	}
+
+	// Existing: RunAsNonRoot must be true.
+	if psc.RunAsNonRoot == nil || !*psc.RunAsNonRoot {
+		t.Error("RunAsNonRoot should be true")
+	}
+
+	// Container-level security — must mirror pod-level for Restricted PSS compliance.
+	csc := c.SecurityContext
+	if csc == nil {
+		t.Fatal("container SecurityContext is nil")
+	}
+	if csc.RunAsNonRoot == nil || !*csc.RunAsNonRoot {
+		t.Error("container RunAsNonRoot should be true")
+	}
+	if csc.RunAsUser == nil || *csc.RunAsUser != 1000 {
+		t.Errorf("container RunAsUser = %v, want 1000", csc.RunAsUser)
+	}
+	if csc.RunAsGroup == nil || *csc.RunAsGroup != 1000 {
+		t.Errorf("container RunAsGroup = %v, want 1000", csc.RunAsGroup)
+	}
+	if csc.SeccompProfile == nil || csc.SeccompProfile.Type != "RuntimeDefault" {
+		t.Errorf("container SeccompProfile = %v, want RuntimeDefault", csc.SeccompProfile)
+	}
+	if csc.ReadOnlyRootFilesystem == nil || !*csc.ReadOnlyRootFilesystem {
+		t.Error("ReadOnlyRootFilesystem should be true")
+	}
+	if csc.AllowPrivilegeEscalation == nil || *csc.AllowPrivilegeEscalation {
+		t.Error("AllowPrivilegeEscalation should be false")
+	}
+	if csc.Capabilities == nil || len(csc.Capabilities.Drop) == 0 || csc.Capabilities.Drop[0] != "ALL" {
+		t.Errorf("Capabilities.Drop = %v, want [ALL]", csc.Capabilities)
+	}
+
+	// Volume security: /tmp should use Memory medium (tmpfs equivalent).
+	for _, v := range spec.Volumes {
+		if v.Name == "tmp" && v.EmptyDir != nil {
+			if v.EmptyDir.Medium != "Memory" {
+				t.Errorf("tmp volume medium = %q, want %q", v.EmptyDir.Medium, "Memory")
+			}
+			if v.EmptyDir.SizeLimit != "64Mi" {
+				t.Errorf("tmp volume sizeLimit = %q, want %q", v.EmptyDir.SizeLimit, "64Mi")
+			}
+		}
+	}
+
+	// RestartPolicy must be Always for agent availability.
+	if spec.RestartPolicy != "Always" {
+		t.Errorf("RestartPolicy = %q, want %q", spec.RestartPolicy, "Always")
+	}
+}
+
+func TestKubeOps_ContainerLogs_NumericTail(t *testing.T) {
+	var capturedURL string
+	ops := newTestOps(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedURL = r.URL.String()
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("log line"))
+	}))
+
+	tests := []struct {
+		tail     string
+		expected string // expected tailLines= value in URL
+	}{
+		{"", "tailLines=100"},       // default
+		{"all", "tailLines=10000"},  // "all" maps to 10000
+		{"50", "tailLines=50"},      // numeric
+		{"500", "tailLines=500"},    // larger numeric
+		{"-1", "tailLines=100"},     // negative → default
+		{"abc", "tailLines=100"},    // non-numeric → default
+	}
+
+	for _, tt := range tests {
+		rc, err := ops.ContainerLogs(context.Background(), "xnc-abc123-alice", docker.LogOpts{Tail: tt.tail})
+		if err != nil {
+			t.Fatalf("ContainerLogs(%q): %v", tt.tail, err)
+		}
+		rc.Close()
+		if !strings.Contains(capturedURL, tt.expected) {
+			t.Errorf("Tail=%q: URL %q, want containing %q", tt.tail, capturedURL, tt.expected)
+		}
+	}
+}
+
 func TestKubeOps_InspectContainer(t *testing.T) {
 	ops := newTestOps(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		pod := Pod{

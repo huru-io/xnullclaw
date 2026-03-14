@@ -162,7 +162,12 @@ func (d *Drainer) drainAllParallel(agents []agent.Info) {
 		wg.Add(1)
 		go func(idx int, name string) {
 			defer wg.Done()
-			sem <- struct{}{}
+			// Bounded semaphore wait — don't block indefinitely if all slots are occupied.
+			select {
+			case sem <- struct{}{}:
+			case <-time.After(30 * time.Second):
+				return // timed out waiting for slot
+			}
 			defer func() { <-sem }()
 			cn := agent.ContainerName(d.home, name)
 
@@ -320,17 +325,16 @@ func (d *Drainer) deliverAndDeleteExecCore(name, output string, chatID int64) {
 	}
 
 	// Phase 3: Delete only successfully delivered files.
+	// Uses array form (no shell) to prevent injection from filenames.
 	if len(deliveredFiles) > 0 {
 		cn := agent.ContainerName(d.home, name)
-		// deliveredFiles are already validated by safeOutboxFilename at parse time.
-		rmParts := make([]string, len(deliveredFiles))
-		for i, f := range deliveredFiles {
-			rmParts[i] = fmt.Sprintf("/nullclaw-data/.outbox/%s", f)
+		rmCmd := []string{"rm", "-f", "--"}
+		for _, f := range deliveredFiles {
+			rmCmd = append(rmCmd, "/nullclaw-data/.outbox/"+f)
 		}
-		rmCmd := "rm -f -- " + strings.Join(rmParts, " ")
 		rmCtx, rmCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer rmCancel()
-		if _, err := d.docker.ExecSync(rmCtx, cn, []string{"sh", "-c", rmCmd}, nil); err != nil {
+		if _, err := d.docker.ExecSync(rmCtx, cn, rmCmd, nil); err != nil {
 			d.logger.Error("drain: failed to delete delivered files (exec)", "agent", name, "error", err)
 		}
 	}

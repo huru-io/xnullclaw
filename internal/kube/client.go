@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	neturl "net/url"
 	"os"
@@ -29,6 +30,10 @@ const (
 // tokenCacheTTL is how long a file-read token is cached before re-reading.
 // K8s bound SA tokens are rotated by kubelet; 60s is a safe refresh interval.
 const tokenCacheTTL = 60 * time.Second
+
+// maxResponseSize caps K8s API response bodies to prevent OOM from
+// unexpectedly large responses (e.g., large list results, error bodies).
+const maxResponseSize = 4 << 20 // 4 MB
 
 // Client is a thin Kubernetes API client that reads in-cluster credentials
 // from the ServiceAccount volume mount.
@@ -123,8 +128,8 @@ func (c *Client) bearerToken() string {
 
 	data, err := os.ReadFile(c.tokenPath)
 	if err != nil {
-		// Log-worthy: SA token file became unreadable (permissions, mount issue).
-		// Fall back to last known good token.
+		// SA token file became unreadable (permissions, mount issue).
+		log.Printf("kube: warning: SA token file %s unreadable: %v (using cached token)", c.tokenPath, err)
 		if c.cachedToken != "" {
 			return c.cachedToken
 		}
@@ -272,7 +277,6 @@ func (c *Client) ValidateRBAC(ctx context.Context) error {
 		{"configmaps", "delete"},
 		{"secrets", "create"},
 		{"secrets", "get"},
-		{"secrets", "list"},
 		{"secrets", "update"},
 		{"secrets", "delete"},
 		{"persistentvolumeclaims", "create"},
@@ -348,7 +352,7 @@ func (c *Client) do(ctx context.Context, method, url string, body, result any) e
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
 	if err != nil {
 		return fmt.Errorf("read response: %w", err)
 	}

@@ -744,3 +744,141 @@ func TestKubeBackend_ConfigSetGet_RedactedRoundTrip(t *testing.T) {
 		t.Errorf("telegram_token = %v, want %q", val, "12345:ABCDEF")
 	}
 }
+
+// mockK8sStoreFailSecretGET wraps mockK8sStore but fails GET on secrets with 500.
+type mockK8sStoreFailSecretGET struct {
+	*mockK8sStore
+}
+
+func (s *mockK8sStoreFailSecretGET) handler() http.Handler {
+	inner := s.mockK8sStore.handler()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/secrets/") {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]any{
+				"code": 500, "reason": "InternalError", "message": "simulated secret read failure",
+			})
+			return
+		}
+		inner.ServeHTTP(w, r)
+	})
+}
+
+func TestKubeBackend_ContainerEnv_SecretReadError(t *testing.T) {
+	innerStore := newMockK8sStore()
+
+	// Create agent with normal store first.
+	srv1 := httptest.NewServer(innerStore.handler())
+	client1 := NewFromConfig(srv1.URL, "test-token", "default", srv1.Client())
+	b1 := NewBackend(client1, "abc123")
+	if err := b1.Setup("alice", agent.SetupOpts{OpenAIKey: "sk-test"}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	srv1.Close()
+
+	// Now use failing store for ContainerEnv.
+	store := &mockK8sStoreFailSecretGET{innerStore}
+	srv2 := httptest.NewServer(store.handler())
+	t.Cleanup(srv2.Close)
+	client2 := NewFromConfig(srv2.URL, "test-token", "default", srv2.Client())
+	b2 := NewBackend(client2, "abc123")
+
+	_, err := b2.ContainerEnv("alice")
+	if err == nil {
+		t.Fatal("expected error when Secret read fails")
+	}
+	if !strings.Contains(err.Error(), "read secret") {
+		t.Errorf("error should mention secret read failure: %v", err)
+	}
+}
+
+func TestKubeBackend_ConfigGetAll_SecretReadError(t *testing.T) {
+	innerStore := newMockK8sStore()
+
+	// Create agent with normal store first.
+	srv1 := httptest.NewServer(innerStore.handler())
+	client1 := NewFromConfig(srv1.URL, "test-token", "default", srv1.Client())
+	b1 := NewBackend(client1, "abc123")
+	if err := b1.Setup("alice", agent.SetupOpts{OpenAIKey: "sk-test"}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	srv1.Close()
+
+	// Now use failing store.
+	store := &mockK8sStoreFailSecretGET{innerStore}
+	srv2 := httptest.NewServer(store.handler())
+	t.Cleanup(srv2.Close)
+	client2 := NewFromConfig(srv2.URL, "test-token", "default", srv2.Client())
+	b2 := NewBackend(client2, "abc123")
+
+	_, err := b2.ConfigGetAll("alice")
+	if err == nil {
+		t.Fatal("expected error when Secret read fails")
+	}
+	if !strings.Contains(err.Error(), "read secret") {
+		t.Errorf("error should mention secret read failure: %v", err)
+	}
+}
+
+func TestKubeBackend_Clone_PreservesMetaAnnotations(t *testing.T) {
+	store := newMockK8sStore()
+	b := newTestBackend(t, store)
+
+	b.Setup("alice", agent.SetupOpts{})
+
+	// Write custom metadata to source.
+	if err := b.WriteMetaBatch("alice", map[string]string{
+		"emoji":  "🎯",
+		"status": "active",
+	}); err != nil {
+		t.Fatalf("WriteMetaBatch: %v", err)
+	}
+
+	// Clone.
+	if err := b.Clone("alice", "bob", agent.CloneOpts{}); err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+
+	// Verify bob has the same metadata annotations.
+	meta, err := b.ReadMeta("bob")
+	if err != nil {
+		t.Fatalf("ReadMeta bob: %v", err)
+	}
+	if meta["emoji"] != "🎯" {
+		t.Errorf("bob emoji = %q, want %q", meta["emoji"], "🎯")
+	}
+	if meta["status"] != "active" {
+		t.Errorf("bob status = %q, want %q", meta["status"], "active")
+	}
+
+	// Verify system annotations are correct (not copied from source).
+	cm := store.configmaps["xnc-abc123-bob"]
+	if cm.Metadata.Annotations["xnc.io/agent-name"] != "bob" {
+		t.Errorf("agent-name = %q, want %q", cm.Metadata.Annotations["xnc.io/agent-name"], "bob")
+	}
+	if cm.Metadata.Annotations["xnc.io/cloned-from"] != "alice" {
+		t.Errorf("cloned-from = %q, want %q", cm.Metadata.Annotations["xnc.io/cloned-from"], "alice")
+	}
+}
+
+func TestKubeBackend_WriteMetaBatch_ValueTooLarge(t *testing.T) {
+	store := newMockK8sStore()
+	b := newTestBackend(t, store)
+
+	b.Setup("alice", agent.SetupOpts{})
+
+	// Value within limit should work.
+	if err := b.WriteMetaBatch("alice", map[string]string{"note": "short"}); err != nil {
+		t.Fatalf("WriteMetaBatch small value: %v", err)
+	}
+
+	// Value exceeding 128KB should be rejected.
+	bigValue := strings.Repeat("x", maxMetaValueSize+1)
+	err := b.WriteMetaBatch("alice", map[string]string{"big": bigValue})
+	if err == nil {
+		t.Fatal("expected error for oversized metadata value")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Errorf("error should mention size: %v", err)
+	}
+}

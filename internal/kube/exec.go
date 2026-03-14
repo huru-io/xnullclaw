@@ -73,8 +73,14 @@ func (c *Client) Exec(ctx context.Context, pod string, cmd []string) (string, er
 
 		switch channel {
 		case channelStdout:
+			if stdout.Len()+len(data) > maxFrameSize {
+				return stdout.String(), fmt.Errorf("exec stdout too large (>%d bytes)", maxFrameSize)
+			}
 			stdout.Write(data)
 		case channelStderr:
+			if stderr.Len()+len(data) > maxFrameSize {
+				break // discard excess stderr silently
+			}
 			stderr.Write(data)
 		case channelError:
 			// K8s sends a JSON status on channel 3. If it contains
@@ -164,22 +170,16 @@ func wsReadFrame(br *bufio.Reader) ([]byte, error) {
 		return nil, err
 	}
 
-	opcode := header[0] & 0x0f
-	switch opcode {
-	case 0x8: // close frame
-		return nil, io.EOF
-	case 0x9, 0xA: // ping, pong — skip (read and discard payload)
-		length := uint64(header[1] & 0x7f)
-		if length > 0 {
-			discard := make([]byte, length)
-			io.ReadFull(br, discard)
-		}
-		return nil, nil // caller will `continue` on empty payload
+	// Reject non-zero RSV bits (no extensions negotiated).
+	if rsv := (header[0] >> 4) & 0x07; rsv != 0 {
+		return nil, fmt.Errorf("websocket: non-zero RSV bits (0x%x)", rsv)
 	}
 
+	opcode := header[0] & 0x0f
 	masked := (header[1] & 0x80) != 0
 	length := uint64(header[1] & 0x7f)
 
+	// Parse extended length for all frame types.
 	switch length {
 	case 126:
 		ext := make([]byte, 2)
@@ -193,6 +193,32 @@ func wsReadFrame(br *bufio.Reader) ([]byte, error) {
 			return nil, err
 		}
 		length = binary.BigEndian.Uint64(ext)
+	}
+
+	// Handle control frames after proper length parsing.
+	switch opcode {
+	case 0x8: // close frame — discard payload (status code + reason) before returning EOF
+		if length > 125 {
+			return nil, fmt.Errorf("websocket: close frame payload too large: %d", length)
+		}
+		if length > 0 {
+			discard := make([]byte, length)
+			if _, err := io.ReadFull(br, discard); err != nil {
+				return nil, err
+			}
+		}
+		return nil, io.EOF
+	case 0x9, 0xA: // ping, pong — skip (read and discard payload)
+		if length > 125 {
+			return nil, fmt.Errorf("websocket: control frame payload too large: %d", length)
+		}
+		if length > 0 {
+			discard := make([]byte, length)
+			if _, err := io.ReadFull(br, discard); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil // caller will `continue` on empty payload
 	}
 
 	if length > maxFrameSize {
