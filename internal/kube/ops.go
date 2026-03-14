@@ -23,18 +23,38 @@ type KubeOps struct {
 	instanceID   string            // 6-hex-char instance ID for resource naming
 	image        string            // default container image
 	nodeSelector map[string]string // optional nodeSelector for agent pods
+	agentRes     agentResources    // resource requests/limits for agent pods
+}
+
+// agentResources holds configurable resource values for agent pods.
+type agentResources struct {
+	cpuRequest string
+	cpuLimit   string
+	memRequest string
+	memLimit   string
+	storage    string
 }
 
 var _ docker.Ops = (*KubeOps)(nil)
 
 // NewOps creates a KubeOps adapter.
-// Reads XNC_NODE_SELECTOR env var (format: "key=value") to set nodeSelector
-// on agent pods. This ensures agents schedule on the correct node pool.
+// Reads env vars to configure agent pod scheduling and resources:
+//   - XNC_NODE_SELECTOR: "key=value" nodeSelector for agent pods
+//   - XNC_AGENT_CPU_REQUEST, XNC_AGENT_CPU_LIMIT: CPU requests/limits (default: 100m/250m)
+//   - XNC_AGENT_MEMORY_REQUEST, XNC_AGENT_MEMORY_LIMIT: memory requests/limits (default: 64Mi/128Mi)
+//   - XNC_AGENT_STORAGE: PVC size per agent (default: 1Gi)
 func NewOps(client *Client, instanceID, image string) *KubeOps {
 	ops := &KubeOps{
 		client:     client,
 		instanceID: instanceID,
 		image:      image,
+		agentRes: agentResources{
+			cpuRequest: envOrDefault("XNC_AGENT_CPU_REQUEST", "100m"),
+			cpuLimit:   envOrDefault("XNC_AGENT_CPU_LIMIT", "250m"),
+			memRequest: envOrDefault("XNC_AGENT_MEMORY_REQUEST", "64Mi"),
+			memLimit:   envOrDefault("XNC_AGENT_MEMORY_LIMIT", "128Mi"),
+			storage:    envOrDefault("XNC_AGENT_STORAGE", "1Gi"),
+		},
 	}
 	if sel := os.Getenv("XNC_NODE_SELECTOR"); sel != "" {
 		if k, v, ok := strings.Cut(sel, "="); ok && k != "" {
@@ -42,6 +62,13 @@ func NewOps(client *Client, instanceID, image string) *KubeOps {
 		}
 	}
 	return ops
+}
+
+func envOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
 // labels returns the standard labels for all resources belonging to an agent.
@@ -87,7 +114,7 @@ func (k *KubeOps) StartContainer(ctx context.Context, name string, opts docker.C
 		Metadata:   ObjectMeta{Name: name, Labels: labels},
 		Spec: PVCSpec{
 			AccessModes: []string{"ReadWriteOnce"},
-			Resources:   PVCResourceRequirements{Requests: map[string]string{"storage": "1Gi"}},
+			Resources:   PVCResourceRequirements{Requests: map[string]string{"storage": k.agentRes.storage}},
 		},
 	}
 	if err := k.client.Create(ctx, "persistentvolumeclaims", pvc, nil); err != nil && !IsConflict(err) {
@@ -135,12 +162,12 @@ func (k *KubeOps) StartContainer(ctx context.Context, name string, opts docker.C
 				},
 				Resources: ResourceRequirements{
 					Requests: map[string]string{
-						"memory": "64Mi",
-						"cpu":    "100m",
+						"memory": k.agentRes.memRequest,
+						"cpu":    k.agentRes.cpuRequest,
 					},
 					Limits: map[string]string{
-						"memory": "128Mi",
-						"cpu":    "250m",
+						"memory": k.agentRes.memLimit,
+						"cpu":    k.agentRes.cpuLimit,
 					},
 				},
 				SecurityContext: &SecurityContext{
