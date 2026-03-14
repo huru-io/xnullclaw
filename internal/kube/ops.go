@@ -1,9 +1,11 @@
 package kube
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -308,15 +310,43 @@ func (k *KubeOps) AttachInteractive(_ context.Context, _ string, _ []string) err
 }
 
 // ---------------------------------------------------------------------------
-// File transfer (not supported in K8s mode)
+// File transfer via exec+tar
 // ---------------------------------------------------------------------------
 
-func (k *KubeOps) CopyToContainer(_ context.Context, _, _ string, _ io.Reader) error {
-	return docker.ErrNotSupported
+// maxCopySize limits file transfer payloads to prevent OOM (matches tools/files.go).
+const maxCopySize = 50 << 20 // 50MB
+
+func (k *KubeOps) CopyToContainer(ctx context.Context, name, destPath string, content io.Reader) error {
+	// content is a tar archive (same contract as Docker).
+	// Pipe it to: tar xf - -C <destPath>
+	data, err := io.ReadAll(io.LimitReader(content, maxCopySize+1))
+	if err != nil {
+		return fmt.Errorf("kube: read tar content: %w", err)
+	}
+	if len(data) > maxCopySize {
+		return fmt.Errorf("kube: tar content too large (>%d bytes)", maxCopySize)
+	}
+
+	cmd := []string{"tar", "xf", "-", "-C", destPath}
+	_, err = k.client.ExecWithStdin(ctx, name, cmd, bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("kube: copy to %s:%s: %w", name, destPath, err)
+	}
+	return nil
 }
 
-func (k *KubeOps) CopyFromContainer(_ context.Context, _, _ string) (io.ReadCloser, error) {
-	return nil, docker.ErrNotSupported
+func (k *KubeOps) CopyFromContainer(ctx context.Context, name, srcPath string) (io.ReadCloser, error) {
+	// Run: tar cf - -C <dir> <base>
+	dir := filepath.Dir(srcPath)
+	base := filepath.Base(srcPath)
+
+	stdout, err := k.client.Exec(ctx, name, []string{"tar", "cf", "-", "-C", dir, base})
+	if err != nil {
+		return nil, fmt.Errorf("kube: copy from %s:%s: %w", name, srcPath, err)
+	}
+
+	// Go strings hold arbitrary bytes — []byte(stdout) round-trips correctly.
+	return io.NopCloser(bytes.NewReader([]byte(stdout))), nil
 }
 
 // ---------------------------------------------------------------------------

@@ -12,7 +12,7 @@ PREFIX    := /usr/local
 
 .DEFAULT_GOAL := build
 
-.PHONY: all build test lint vet install install-local clean cross docker-mux
+.PHONY: all build test test-e2e lint vet install install-local clean cross docker-mux
 
 all: lint test build
 
@@ -22,6 +22,10 @@ build:
 
 test:
 	CGO_ENABLED=$(CGO_ENABLED) $(GO) test -count=1 ./...
+
+# E2E tests — requires Docker + LLM key. See internal/mux/e2e_test.go.
+test-e2e:
+	CGO_ENABLED=$(CGO_ENABLED) $(GO) test -tags e2e -count=1 -timeout 300s -v ./internal/mux/...
 
 vet:
 	$(GO) vet ./...

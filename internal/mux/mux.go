@@ -292,6 +292,7 @@ func Run(mc Config) error {
 		bridge.bot = tgBot
 		bridge.turnMu = &turnMu
 		bridge.chatID = &lastChatID
+		bridge.mediaTmpDir = mediaTmpDir
 	}
 
 	// maxTurnDuration caps how long a single agentic loop turn can run.
@@ -683,17 +684,18 @@ func Run(mc Config) error {
 	drainDone := make(chan struct{})
 	var drainWg sync.WaitGroup
 	drainer := &Drainer{
-		home:    mc.Home,
-		backend: agentBackend,
-		store:   store,
-		bot:     tgBot,
-		cfg:     cfg,
-		logger:  logger,
-		mode:    cfg.Runtime.Mode,
-		docker:  dk,
-		chatID:  &lastChatID,
-		turnMu:  &turnMu,
-		bridge:  bridge,
+		home:        mc.Home,
+		mediaTmpDir: mediaTmpDir,
+		backend:     agentBackend,
+		store:       store,
+		bot:         tgBot,
+		cfg:         cfg,
+		logger:      logger,
+		mode:        cfg.Runtime.Mode,
+		docker:      dk,
+		chatID:      &lastChatID,
+		turnMu:      &turnMu,
+		bridge:      bridge,
 	}
 	drainWg.Add(1)
 	go func() {
@@ -869,8 +871,9 @@ func sendAttachment(tgBot telegram.Sender, logger *logging.Logger, chatID int64,
 	hostPath := att.Path
 
 	if strings.HasPrefix(att.Path, "/nullclaw-data/") {
-		logger.Error("attachment path appears to be a container path", "path", att.Path)
-		tgBot.Send(chatID, fmt.Sprintf("Could not send attachment: %s (container path — use get_agent_file first)", att.Path))
+		// Safety net — should have been resolved upstream by bridge/drainer.
+		logger.Warn("attachment still has container path (retrieval failed?)", "path", att.Path)
+		tgBot.Send(chatID, fmt.Sprintf("Could not send attachment: %s (file could not be retrieved from container)", att.Path))
 		return
 	}
 

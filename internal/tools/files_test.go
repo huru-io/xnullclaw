@@ -174,34 +174,6 @@ func TestListAgentFiles_InvalidAgent(t *testing.T) {
 	}
 }
 
-func TestFileTools_KubernetesGuard(t *testing.T) {
-	d, _ := newTestDeps(t)
-	d.RuntimeMode = "kubernetes"
-	agent.Setup(d.Home, "Alice", agent.SetupOpts{})
-
-	r := NewRegistry()
-	registerFileTools(r, d)
-
-	// All three file tools should return error in K8s mode.
-	for _, tool := range []string{"send_file_to_agent", "get_agent_file", "list_agent_files"} {
-		args := map[string]any{"agent": "Alice"}
-		if tool == "send_file_to_agent" {
-			args["file_path"] = "/tmp/test"
-			args["message"] = "test"
-		}
-		if tool == "get_agent_file" {
-			args["path"] = "/nullclaw-data/test"
-			args["dest_path"] = "/tmp/test"
-		}
-		_, err := r.Execute(context.Background(), tool, args)
-		if err == nil {
-			t.Errorf("%s: expected error in kubernetes mode", tool)
-		}
-		if !strings.Contains(err.Error(), "kubernetes") {
-			t.Errorf("%s: error should mention kubernetes: %v", tool, err)
-		}
-	}
-}
 
 // Verify that ExecSync stub signature matches what mock expects (io.Reader).
 func TestListAgentFiles_WithExecSyncMock(t *testing.T) {

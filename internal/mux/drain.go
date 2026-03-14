@@ -49,12 +49,13 @@ done`
 // Drainer periodically reads agent .outbox/ directories and sends
 // completed responses directly to Telegram with identity headers.
 type Drainer struct {
-	home    string
-	backend agent.Backend
-	store   *memory.Store
-	bot     telegram.Sender
-	cfg     *config.Config
-	logger  *logging.Logger
+	home        string
+	mediaTmpDir string // host path for retrieved container files
+	backend     agent.Backend
+	store       *memory.Store
+	bot         telegram.Sender
+	cfg         *config.Config
+	logger      *logging.Logger
 
 	// mode is the runtime mode ("local", "docker", "kubernetes").
 	mode string
@@ -287,6 +288,13 @@ func (d *Drainer) deliverAndDeleteExecCore(name, output string, chatID int64) {
 		// Parse media attachments.
 		cleanText, attachments := media.Parse(content)
 
+		// Resolve container paths → host paths by retrieving files.
+		if len(attachments) > 0 && d.mediaTmpDir != "" {
+			retrieveCtx, retrieveCancel := context.WithTimeout(context.Background(), 60*time.Second)
+			attachments = resolveContainerAttachments(retrieveCtx, d.docker, d.home, name, d.mediaTmpDir, attachments, d.logger.Error)
+			retrieveCancel()
+		}
+
 		allOK := true
 		if cleanText != "" {
 			if err := d.bot.Send(chatID, header+cleanText); err != nil {
@@ -295,7 +303,6 @@ func (d *Drainer) deliverAndDeleteExecCore(name, output string, chatID int64) {
 			}
 		}
 
-		// Send attachments (no path restriction in K8s — files are inside the pod).
 		if allOK {
 			caption := strings.TrimSpace(header)
 			for _, att := range attachments {

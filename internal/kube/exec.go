@@ -95,6 +95,91 @@ func (c *Client) Exec(ctx context.Context, pod string, cmd []string) (string, er
 	return stdout.String(), readErr
 }
 
+// ExecWithStdin runs a command inside a pod, piping stdin data, and returns stdout.
+// Used for file transfer (tar piping) where the command reads from stdin.
+func (c *Client) ExecWithStdin(ctx context.Context, pod string, cmd []string, stdin io.Reader) (string, error) {
+	// Build exec URL with stdin enabled.
+	u, err := url.Parse(fmt.Sprintf("%s/api/v1/namespaces/%s/pods/%s/exec",
+		c.host, c.namespace, pod))
+	if err != nil {
+		return "", err
+	}
+	q := u.Query()
+	q.Set("stdin", "true")
+	q.Set("stdout", "true")
+	q.Set("stderr", "true")
+	q.Set("container", "agent")
+	for _, arg := range cmd {
+		q.Add("command", arg)
+	}
+	u.RawQuery = q.Encode()
+
+	wsURL := strings.Replace(u.String(), "https://", "wss://", 1)
+	wsURL = strings.Replace(wsURL, "http://", "ws://", 1)
+
+	conn, err := c.wsConnect(ctx, wsURL)
+	if err != nil {
+		return "", fmt.Errorf("exec websocket connect: %w", err)
+	}
+	defer conn.Close()
+
+	// Write stdin data in chunks as K8s channel 0 frames.
+	// Each frame: [channelStdin byte] + data, wrapped in a WebSocket binary frame.
+	const stdinChunkSize = 32 * 1024 // 32KB chunks
+	buf := make([]byte, 1+stdinChunkSize) // channel byte + data
+	buf[0] = channelStdin
+	for {
+		n, readErr := stdin.Read(buf[1:])
+		if n > 0 {
+			if err := wsWriteFrame(conn, buf[:1+n]); err != nil {
+				return "", fmt.Errorf("exec stdin write: %w", err)
+			}
+		}
+		if readErr != nil {
+			if readErr != io.EOF {
+				return "", fmt.Errorf("exec stdin read: %w", readErr)
+			}
+			break
+		}
+	}
+
+	// Read all frames, collecting stdout.
+	var stdout strings.Builder
+	br := bufio.NewReaderSize(conn, 4096)
+
+	var readErrFinal error
+	for {
+		payload, err := wsReadFrame(br)
+		if err != nil {
+			if err != io.EOF {
+				readErrFinal = fmt.Errorf("websocket read: %w", err)
+			}
+			break
+		}
+		if len(payload) == 0 {
+			continue
+		}
+
+		channel := payload[0]
+		data := payload[1:]
+
+		switch channel {
+		case channelStdout:
+			if stdout.Len()+len(data) > maxFrameSize {
+				return stdout.String(), fmt.Errorf("exec stdout too large (>%d bytes)", maxFrameSize)
+			}
+			stdout.Write(data)
+		case channelError:
+			msg := string(data)
+			if !strings.Contains(msg, `"Success"`) {
+				return stdout.String(), fmt.Errorf("exec error: %s", msg)
+			}
+		}
+	}
+
+	return stdout.String(), readErrFinal
+}
+
 // wsConnect performs a WebSocket upgrade handshake.
 func (c *Client) wsConnect(ctx context.Context, wsURL string) (io.ReadWriteCloser, error) {
 	// Convert wss:// back to https:// for the HTTP request.
@@ -161,6 +246,57 @@ func wsAcceptKey(key string) string {
 
 // maxFrameSize limits WebSocket frame payloads to 10MB to prevent OOM.
 const maxFrameSize = 10 << 20
+
+// wsWriteFrame writes a masked WebSocket binary frame.
+// Client-to-server frames must be masked per RFC 6455 §5.3.
+func wsWriteFrame(w io.Writer, payload []byte) error {
+	length := len(payload)
+
+	// Calculate header size: 2 base + 4 mask key + extended length.
+	headerSize := 2 + 4
+	switch {
+	case length <= 125:
+		// no extra
+	case length <= 65535:
+		headerSize += 2
+	default:
+		headerSize += 8
+	}
+
+	frame := make([]byte, 0, headerSize+length)
+
+	// FIN + binary opcode (0x2).
+	frame = append(frame, 0x82)
+
+	// Length with mask bit set.
+	switch {
+	case length <= 125:
+		frame = append(frame, 0x80|byte(length))
+	case length <= 65535:
+		frame = append(frame, 0x80|126)
+		frame = append(frame, byte(length>>8), byte(length))
+	default:
+		frame = append(frame, 0x80|127)
+		lenBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(lenBytes, uint64(length))
+		frame = append(frame, lenBytes...)
+	}
+
+	// Random mask key.
+	maskKey := make([]byte, 4)
+	if _, err := rand.Read(maskKey); err != nil {
+		return err
+	}
+	frame = append(frame, maskKey...)
+
+	// Mask and append payload.
+	for i, b := range payload {
+		frame = append(frame, b^maskKey[i%4])
+	}
+
+	_, err := w.Write(frame)
+	return err
+}
 
 // wsReadFrame reads a single WebSocket frame and returns its payload.
 func wsReadFrame(br *bufio.Reader) ([]byte, error) {

@@ -151,12 +151,6 @@ func TestKubeOps_ListContainers(t *testing.T) {
 func TestKubeOps_UnsupportedOps(t *testing.T) {
 	ops := NewOps(nil, "abc123", "test:latest")
 
-	if err := ops.CopyToContainer(context.Background(), "", "", nil); err != docker.ErrNotSupported {
-		t.Errorf("CopyToContainer: got %v, want ErrNotSupported", err)
-	}
-	if _, err := ops.CopyFromContainer(context.Background(), "", ""); err != docker.ErrNotSupported {
-		t.Errorf("CopyFromContainer: got %v, want ErrNotSupported", err)
-	}
 	if err := ops.AttachInteractive(context.Background(), "", nil); err != docker.ErrNotSupported {
 		t.Errorf("AttachInteractive: got %v, want ErrNotSupported", err)
 	}

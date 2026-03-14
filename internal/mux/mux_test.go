@@ -429,8 +429,8 @@ func TestSendAttachment_ContainerPath(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("expected 1 error message, got %d", len(msgs))
 	}
-	if !containsStr(msgs[0].text, "container path") {
-		t.Errorf("expected container path error, got %q", msgs[0].text)
+	if !containsStr(msgs[0].text, "could not be retrieved from container") {
+		t.Errorf("expected container retrieval error, got %q", msgs[0].text)
 	}
 }
 

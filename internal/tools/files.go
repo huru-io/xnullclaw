@@ -34,9 +34,6 @@ func registerFileTools(r *Registry, d Deps) {
 			},
 		},
 		func(ctx context.Context, args map[string]any) (string, error) {
-			if d.RuntimeMode == "kubernetes" {
-				return "", fmt.Errorf("file transfer is not supported in kubernetes mode")
-			}
 			agentName, err := stringArg(args, "agent")
 			if err != nil {
 				return "", err
@@ -97,9 +94,6 @@ func registerFileTools(r *Registry, d Deps) {
 			},
 		},
 		func(ctx context.Context, args map[string]any) (string, error) {
-			if d.RuntimeMode == "kubernetes" {
-				return "", fmt.Errorf("file transfer is not supported in kubernetes mode")
-			}
 			agentName, err := stringArg(args, "agent")
 			if err != nil {
 				return "", err
@@ -151,9 +145,6 @@ func registerFileTools(r *Registry, d Deps) {
 			},
 		},
 		func(ctx context.Context, args map[string]any) (string, error) {
-			if d.RuntimeMode == "kubernetes" {
-				return "", fmt.Errorf("file transfer is not supported in kubernetes mode")
-			}
 			agentName, err := stringArg(args, "agent")
 			if err != nil {
 				return "", err

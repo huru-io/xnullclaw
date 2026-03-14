@@ -29,16 +29,17 @@ import (
 // are wired after the Telegram bot and turn mutex are created. No connections are
 // established until Connect is called, which happens after wiring is complete.
 type Bridge struct {
-	home    string
-	backend agent.Backend
-	store   *memory.Store
-	bot     telegram.Sender
-	cfg     *config.Config
-	logger  *logging.Logger
-	mode    string
-	docker  docker.Ops
-	chatID  *int64 // pointer to mux's lastChatID
-	turnMu  *sync.Mutex
+	home        string
+	mediaTmpDir string // host path for retrieved container files
+	backend     agent.Backend
+	store       *memory.Store
+	bot         telegram.Sender
+	cfg         *config.Config
+	logger      *logging.Logger
+	mode        string
+	docker      docker.Ops
+	chatID      *int64 // pointer to mux's lastChatID
+	turnMu      *sync.Mutex
 
 	// done is closed on CloseAll to stop reconnect goroutines.
 	done chan struct{}
@@ -412,6 +413,13 @@ func (b *Bridge) deliverUnsolicited(name, content string) {
 
 	// Parse media attachments.
 	cleanText, attachments := media.Parse(content)
+
+	// Resolve container paths → host paths by retrieving files.
+	if len(attachments) > 0 && b.mediaTmpDir != "" {
+		retrieveCtx, retrieveCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		attachments = resolveContainerAttachments(retrieveCtx, b.docker, b.home, name, b.mediaTmpDir, attachments, b.logger.Error)
+		retrieveCancel()
+	}
 
 	if cleanText != "" {
 		if err := b.bot.Send(chatID, header+cleanText); err != nil {
