@@ -32,7 +32,7 @@ func registerSkillTools(r *Registry, d Deps) {
 			var dir string
 			var scope string
 			if agentName != "" {
-				if !agent.Exists(d.Home, agentName) {
+				if !d.Backend.Exists(agentName) {
 					return "", fmt.Errorf("agent %q does not exist", agentName)
 				}
 				dir = agent.AgentSkillsDir(d.Home, agentName)
@@ -122,7 +122,7 @@ func registerSkillTools(r *Registry, d Deps) {
 
 			if agentName != "" {
 				// Install to specific agent.
-				if !agent.Exists(d.Home, agentName) {
+				if !d.Backend.Exists(agentName) {
 					return "", fmt.Errorf("agent %q does not exist", agentName)
 				}
 				dir := agent.AgentSkillsDir(d.Home, agentName)
@@ -193,7 +193,7 @@ func registerSkillTools(r *Registry, d Deps) {
 			}
 
 			if agentName != "" {
-				if !agent.Exists(d.Home, agentName) {
+				if !d.Backend.Exists(agentName) {
 					return "", fmt.Errorf("agent %q does not exist", agentName)
 				}
 				dir := agent.AgentSkillsDir(d.Home, agentName)

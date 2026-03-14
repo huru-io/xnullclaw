@@ -18,6 +18,7 @@ import (
 	"github.com/jotavich/xnullclaw/internal/agent"
 	"github.com/jotavich/xnullclaw/internal/config"
 	"github.com/jotavich/xnullclaw/internal/docker"
+	"github.com/jotavich/xnullclaw/internal/kube"
 	"github.com/jotavich/xnullclaw/internal/llm"
 	"github.com/jotavich/xnullclaw/internal/logging"
 	"github.com/jotavich/xnullclaw/internal/loop"
@@ -113,47 +114,86 @@ func Run(mc Config) error {
 	// Apply environment variable overrides (env > config file > default).
 	cfg.ApplyEnvOverrides()
 
-	// Docker client.
-	dk, err := docker.NewClient()
-	if err != nil {
-		return fmt.Errorf("docker: %w", err)
-	}
-	defer dk.Close()
+	// Runtime initialization — Docker client or K8s client depending on mode.
+	var dk docker.Ops
+	var agentBackend agent.Backend
 
-	// Ensure Docker network exists (for docker runtime mode).
-	if cfg.Runtime.Network != "" {
-		if err := dk.EnsureNetwork(context.Background(), cfg.Runtime.Network); err != nil {
-			return fmt.Errorf("ensure network %s: %w", cfg.Runtime.Network, err)
+	switch cfg.Runtime.Mode {
+	case "kubernetes":
+		kubeClient, err := kube.NewInCluster(cfg.Runtime.Namespace)
+		if err != nil {
+			return fmt.Errorf("kube client: %w", err)
 		}
-		logger.Info("docker network ready", "network", cfg.Runtime.Network)
+		instanceID := os.Getenv("XNC_INSTANCE_ID")
+		if instanceID == "" {
+			instanceID = agent.InstanceID(mc.Home)
+		}
+		// Validate RBAC before proceeding — fail fast with a clear message
+		// rather than hitting opaque 403s later during operation.
+		rbacCtx, rbacCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		if err := kubeClient.ValidateRBAC(rbacCtx); err != nil {
+			rbacCancel()
+			return fmt.Errorf("kubernetes RBAC validation: %w", err)
+		}
+		rbacCancel()
+		logger.Info("kubernetes RBAC validated")
 
-		// If mux is running inside a container, attach it to the network
-		// so it can reach agents via Docker DNS.
-		if selfID := docker.SelfContainerID(); selfID != "" {
-			if err := dk.ConnectNetwork(context.Background(), cfg.Runtime.Network, selfID); err != nil {
-				logger.Error("failed to attach mux to network", "network", cfg.Runtime.Network, "error", err)
-			} else {
-				logger.Info("mux attached to network", "network", cfg.Runtime.Network, "container", selfID)
+		dk = kube.NewOps(kubeClient, instanceID, mc.Image)
+		agentBackend = kube.NewBackend(kubeClient, instanceID)
+
+		// Start liveness probe endpoint for K8s health checks.
+		healthSrv := startHealthServer(logger)
+		defer stopHealthServer(healthSrv)
+
+		logger.Info("runtime mode", "mode", "kubernetes", "namespace", kubeClient.Namespace(), "instance", instanceID)
+
+	default:
+		// local or docker — use Docker client + filesystem.
+		dockerClient, err := docker.NewClient()
+		if err != nil {
+			return fmt.Errorf("docker: %w", err)
+		}
+		defer dockerClient.Close()
+		dk = dockerClient
+
+		// Ensure Docker network exists (for docker runtime mode).
+		if cfg.Runtime.Network != "" {
+			if err := dk.EnsureNetwork(context.Background(), cfg.Runtime.Network); err != nil {
+				return fmt.Errorf("ensure network %s: %w", cfg.Runtime.Network, err)
 			}
-		} else if cfg.Runtime.Mode == "docker" {
-			logger.Warn("could not detect mux container ID — DNS-based agent communication may not work")
-		}
-	}
-	if cfg.Runtime.Mode == "docker" && cfg.Runtime.Network == "" {
-		logger.Warn("docker mode without a network — agents will not be reachable via DNS; set XNC_NETWORK")
-	}
-	logger.Info("runtime mode", "mode", cfg.Runtime.Mode)
+			logger.Info("docker network ready", "network", cfg.Runtime.Network)
 
-	// Ensure agent image exists — auto-pull from registry if missing.
-	if err := ensureAgentImage(context.Background(), dk, mc.Image, logger); err != nil {
-		logger.Error("agent image not available", "image", mc.Image, "error", err)
-		// Non-fatal: mux can still run, but agent starts will fail.
+			// If mux is running inside a container, attach it to the network
+			// so it can reach agents via Docker DNS.
+			if selfID := docker.SelfContainerID(); selfID != "" {
+				if err := dk.ConnectNetwork(context.Background(), cfg.Runtime.Network, selfID); err != nil {
+					logger.Error("failed to attach mux to network", "network", cfg.Runtime.Network, "error", err)
+				} else {
+					logger.Info("mux attached to network", "network", cfg.Runtime.Network, "container", selfID)
+				}
+			} else if cfg.Runtime.Mode == "docker" {
+				logger.Warn("could not detect mux container ID — DNS-based agent communication may not work")
+			}
+		}
+		if cfg.Runtime.Mode == "docker" && cfg.Runtime.Network == "" {
+			logger.Warn("docker mode without a network — agents will not be reachable via DNS; set XNC_NETWORK")
+		}
+		logger.Info("runtime mode", "mode", cfg.Runtime.Mode)
+
+		// Ensure agent image exists — auto-pull from registry if missing.
+		if err := ensureAgentImage(context.Background(), dk, mc.Image, logger); err != nil {
+			logger.Error("agent image not available", "image", mc.Image, "error", err)
+			// Non-fatal: mux can still run, but agent starts will fail.
+		}
+
+		agentBackend = &agent.LocalBackend{Home: mc.Home}
 	}
 
 	// Tool registry — all tools use direct Go calls.
 	registry := tools.NewRegistry()
 	deps := tools.Deps{
 		Docker:      dk,
+		Backend:     agentBackend,
 		Store:       store,
 		Cfg:         cfg,
 		CfgPath:     mc.CfgPath,
@@ -569,12 +609,16 @@ func Run(mc Config) error {
 				continue
 			}
 
-			if !agent.HasProviderKey(mc.Home, agentName) {
+			if !agentBackend.HasProviderKey(agentName) {
 				logger.Error("auto-start skipped: no API key", "agent", agentName)
 				continue
 			}
 
 			opts := agent.StartOpts(mc.Image, mc.Home, agentName, true, cfg.Runtime.Network)
+			if cfg.Runtime.Mode == "kubernetes" {
+				env, _ := agentBackend.ContainerEnv(agentName)
+				opts.Env = env
+			}
 			if err := dk.StartContainer(ctx, cn, opts); err != nil {
 				logger.Error("auto-start failed", "agent", agentName, "error", err)
 			} else {
@@ -603,13 +647,16 @@ func Run(mc Config) error {
 	drainDone := make(chan struct{})
 	var drainWg sync.WaitGroup
 	drainer := &Drainer{
-		home:   mc.Home,
-		store:  store,
-		bot:    tgBot,
-		cfg:    cfg,
-		logger: logger,
-		chatID: &lastChatID,
-		turnMu: &turnMu,
+		home:    mc.Home,
+		backend: agentBackend,
+		store:   store,
+		bot:     tgBot,
+		cfg:     cfg,
+		logger:  logger,
+		mode:    cfg.Runtime.Mode,
+		docker:  dk,
+		chatID:  &lastChatID,
+		turnMu:  &turnMu,
 	}
 	drainWg.Add(1)
 	go func() {

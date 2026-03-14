@@ -3,10 +3,12 @@
 package mux
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -15,11 +17,16 @@ import (
 
 	"github.com/jotavich/xnullclaw/internal/agent"
 	"github.com/jotavich/xnullclaw/internal/config"
+	"github.com/jotavich/xnullclaw/internal/docker"
 	"github.com/jotavich/xnullclaw/internal/logging"
 	"github.com/jotavich/xnullclaw/internal/media"
 	"github.com/jotavich/xnullclaw/internal/memory"
 	"github.com/jotavich/xnullclaw/internal/telegram"
 )
+
+// safeOutboxFilename matches only safe .msg filenames: must start with alphanumeric,
+// body may contain alphanumeric/dots/hyphens/underscores, must end with .msg.
+var safeOutboxFilename = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*\.msg$`)
 
 // Drain timing constants — co-located for easy tuning.
 const (
@@ -33,11 +40,18 @@ const (
 // Drainer periodically reads agent .outbox/ directories and sends
 // completed responses directly to Telegram with identity headers.
 type Drainer struct {
-	home   string
-	store  *memory.Store
-	bot    telegram.Sender
-	cfg    *config.Config
-	logger *logging.Logger
+	home    string
+	backend agent.Backend
+	store   *memory.Store
+	bot     telegram.Sender
+	cfg     *config.Config
+	logger  *logging.Logger
+
+	// mode is the runtime mode ("local", "docker", "kubernetes").
+	mode string
+
+	// docker is the container ops interface, used for exec-based drain in K8s mode.
+	docker docker.Ops
 
 	// chatID is the Telegram chat to send to. In group mode we use
 	// cfg.Telegram.GroupID; in private mode we use the last known chatID.
@@ -77,14 +91,21 @@ func (d *Drainer) safeDrainAll() {
 }
 
 // drainAll iterates all known agents and drains their outboxes.
+// In K8s mode, agents are drained in parallel to avoid sequential exec latency
+// (each exec round-trip takes 1-4s; sequential drain of N agents would take N*2-8s).
 func (d *Drainer) drainAll() {
-	agents, err := agent.ListAll(d.home)
+	agents, err := d.backend.ListAll()
 	if err != nil {
 		d.logger.Error("drain: list agents failed", "error", err)
 		return
 	}
-	for _, a := range agents {
-		d.drainAgent(a.Name)
+
+	if d.mode == "kubernetes" && len(agents) > 1 {
+		d.drainAllParallel(agents)
+	} else {
+		for _, a := range agents {
+			d.drainAgent(a.Name)
+		}
 	}
 	// Prune drain messages periodically (not every tick — once per minute is enough).
 	if time.Since(d.lastPrune) > drainPruneInterval {
@@ -97,8 +118,220 @@ func (d *Drainer) drainAll() {
 	}
 }
 
+// execResult holds the output of a parallel outbox read from a K8s agent pod.
+type execResult struct {
+	name   string
+	output string
+}
+
+// drainAllParallel reads all agent outboxes concurrently via K8s exec,
+// then delivers messages sequentially (Telegram + memory store are not concurrent-safe
+// and turnMu must be held during sends).
+//
+// Without parallelism, N agents would take N*2-8s of sequential exec round-trips,
+// easily exceeding the 5s drain interval.
+// maxConcurrentExec caps parallel K8s exec connections to avoid saturating
+// the API server and kubelet when there are many agents.
+const maxConcurrentExec = 8
+
+func (d *Drainer) drainAllParallel(agents []agent.Info) {
+	// Phase 1: parallel reads with bounded concurrency.
+	results := make([]execResult, len(agents))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, maxConcurrentExec)
+
+	for i, a := range agents {
+		wg.Add(1)
+		go func(idx int, name string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			cn := agent.ContainerName(d.home, name)
+
+			readScript := `cd /nullclaw-data/.outbox 2>/dev/null || exit 0
+for f in *.msg; do
+    [ -f "$f" ] || continue
+    printf '---FILE:%s---\n' "$f"
+    cat "$f"
+done`
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			output, err := d.docker.ExecSync(ctx, cn, []string{"sh", "-c", readScript}, nil)
+			if err != nil || output == "" {
+				return
+			}
+			results[idx] = execResult{name: name, output: output}
+		}(i, a.Name)
+	}
+	wg.Wait()
+
+	// Phase 2+3: sequential delivery + deletion (requires turnMu).
+	// Lock once for the entire batch — data is in memory so discarding
+	// the batch on contention wastes the exec work already done.
+	if !d.turnMu.TryLock() {
+		return // files preserved in pods for next tick
+	}
+	defer d.turnMu.Unlock()
+
+	for _, r := range results {
+		if r.output == "" {
+			continue
+		}
+		d.deliverAndDeleteExecLocked(r.name, r.output)
+	}
+}
+
 // drainAgent reads and sends all completed messages from a single agent's outbox.
 func (d *Drainer) drainAgent(name string) {
+	if d.mode == "kubernetes" {
+		d.drainAgentExec(name)
+		return
+	}
+	d.drainAgentFS(name)
+}
+
+// drainAgentExec drains a single agent's outbox via K8s exec API.
+// Used when draining a single agent (not in the parallel path).
+func (d *Drainer) drainAgentExec(name string) {
+	cn := agent.ContainerName(d.home, name)
+
+	readScript := `cd /nullclaw-data/.outbox 2>/dev/null || exit 0
+for f in *.msg; do
+    [ -f "$f" ] || continue
+    printf '---FILE:%s---\n' "$f"
+    cat "$f"
+done`
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	output, err := d.docker.ExecSync(ctx, cn, []string{"sh", "-c", readScript}, nil)
+	if err != nil || output == "" {
+		return
+	}
+
+	d.deliverAndDeleteExec(name, output)
+}
+
+// deliverAndDeleteExec handles Phase 2 (deliver to Telegram) and Phase 3 (delete files)
+// for exec-based outbox drain. Acquires turnMu itself — used by the single-agent path.
+func (d *Drainer) deliverAndDeleteExec(name, output string) {
+	// Determine target chat.
+	chatID := muxTargetChatID(d.cfg, d.chatID)
+	if chatID == 0 {
+		return
+	}
+
+	// Coordinate with turn sends.
+	if !d.turnMu.TryLock() {
+		return
+	}
+	defer d.turnMu.Unlock()
+
+	d.deliverAndDeleteExecCore(name, output, chatID)
+}
+
+// deliverAndDeleteExecLocked is the same as deliverAndDeleteExec but assumes
+// turnMu is already held. Used by drainAllParallel which locks once for the batch.
+func (d *Drainer) deliverAndDeleteExecLocked(name, output string) {
+	chatID := muxTargetChatID(d.cfg, d.chatID)
+	if chatID == 0 {
+		return
+	}
+	d.deliverAndDeleteExecCore(name, output, chatID)
+}
+
+// deliverAndDeleteExecCore is the shared implementation for exec-based delivery.
+// Caller must hold turnMu.
+func (d *Drainer) deliverAndDeleteExecCore(name, output string, chatID int64) {
+	header := agentIdentityHeader(d.cfg, name)
+
+	// Phase 2: Parse and deliver each file.
+	var deliveredFiles []string
+	sections := strings.Split(output, "---FILE:")
+	for _, sec := range sections {
+		if sec == "" {
+			continue
+		}
+		idx := strings.Index(sec, "---\n")
+		if idx < 0 {
+			continue
+		}
+		fileName := sec[:idx]
+		// Validate filename at parse time — only safe names enter deliveredFiles.
+		if !safeOutboxFilename.MatchString(fileName) {
+			d.logger.Error("drain: unsafe outbox filename, skipping", "agent", name, "file", fileName)
+			continue
+		}
+		content := strings.TrimSpace(sec[idx+4:])
+		if content == "" {
+			deliveredFiles = append(deliveredFiles, fileName)
+			continue
+		}
+
+		// Parse media attachments.
+		cleanText, attachments := media.Parse(content)
+
+		allOK := true
+		if cleanText != "" {
+			if err := d.bot.Send(chatID, header+cleanText); err != nil {
+				d.logger.Error("drain: telegram send (exec)", "agent", name, "error", err)
+				allOK = false
+			}
+		}
+
+		// Send attachments (no path restriction in K8s — files are inside the pod).
+		if allOK {
+			caption := strings.TrimSpace(header)
+			for _, att := range attachments {
+				sendAttachment(d.bot, d.logger, chatID, att, caption)
+			}
+		}
+
+		if allOK {
+			deliveredFiles = append(deliveredFiles, fileName)
+
+			// Store in memory.
+			sanitized := config.SanitizeText(content, 300)
+			agentName := name
+			if err := d.store.AddMessage(memory.Message{
+				Role:    "assistant",
+				Content: fmt.Sprintf("[%s]: %s", name, sanitized),
+				Agent:   &agentName,
+				Stream:  "drain",
+			}); err != nil {
+				d.logger.Error("drain: store message failed (exec)", "agent", name, "error", err)
+			}
+
+			d.logger.Info("drain: delivered (exec)", "agent", name, "len", len(content))
+		} else {
+			d.logger.Error("drain: keeping file for retry (exec)", "agent", name, "file", fileName)
+		}
+	}
+
+	// Phase 3: Delete only successfully delivered files.
+	if len(deliveredFiles) > 0 {
+		cn := agent.ContainerName(d.home, name)
+		// deliveredFiles are already validated by safeOutboxFilename at parse time.
+		rmParts := make([]string, len(deliveredFiles))
+		for i, f := range deliveredFiles {
+			rmParts[i] = fmt.Sprintf("/nullclaw-data/.outbox/%s", f)
+		}
+		if len(rmParts) > 0 {
+			rmCmd := "rm -f -- " + strings.Join(rmParts, " ")
+			rmCtx, rmCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer rmCancel()
+			if _, err := d.docker.ExecSync(rmCtx, cn, []string{"sh", "-c", rmCmd}, nil); err != nil {
+				d.logger.Error("drain: failed to delete delivered files (exec)", "agent", name, "error", err)
+			}
+		}
+	}
+}
+
+// drainAgentFS reads and sends all completed messages from a single agent's
+// outbox directory on the local filesystem.
+func (d *Drainer) drainAgentFS(name string) {
 	outboxDir := filepath.Join(agent.Dir(d.home, name), "data", ".outbox")
 
 	// Safety: verify the outbox path is within the agents directory.

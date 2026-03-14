@@ -5,9 +5,14 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"io"
 	"time"
 )
+
+// ErrNotSupported is returned by Ops implementations that do not support
+// a particular operation (e.g. KubeOps cannot do CopyToContainer).
+var ErrNotSupported = errors.New("operation not supported in this runtime mode")
 
 // Ops defines all Docker operations used by xnc.
 type Ops interface {
@@ -51,6 +56,7 @@ type Ops interface {
 type ContainerOpts struct {
 	Image       string
 	Cmd         []string
+	AgentName   string // agent name (used by KubeOps for labels; ignored by Docker)
 	AgentDir    string // host path to agent directory (for mounts)
 	ExposePort  bool   // expose gateway port (Docker auto-assigns host port)
 	Env         []string

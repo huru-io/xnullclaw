@@ -1,6 +1,8 @@
 package mux
 
 import (
+	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/jotavich/xnullclaw/internal/agent"
 	"github.com/jotavich/xnullclaw/internal/config"
+	"github.com/jotavich/xnullclaw/internal/docker"
 	"github.com/jotavich/xnullclaw/internal/memory"
 )
 
@@ -27,13 +30,14 @@ func newTestDrainer(t *testing.T, bot *mockSender) (*Drainer, string) {
 	var mu sync.Mutex
 
 	d := &Drainer{
-		home:   home,
-		store:  store,
-		bot:    bot,
-		cfg:    cfg,
-		logger: logger,
-		chatID: &chatID,
-		turnMu: &mu,
+		home:    home,
+		backend: &agent.LocalBackend{Home: home},
+		store:   store,
+		bot:     bot,
+		cfg:     cfg,
+		logger:  logger,
+		chatID:  &chatID,
+		turnMu:  &mu,
 	}
 	return d, home
 }
@@ -219,14 +223,16 @@ func TestSafeDrainAll_RecoversPanic(t *testing.T) {
 	// Since safeDrainAll wraps drainAll, and drainAll does not panic under
 	// normal circumstances, we test the recovery by constructing a scenario
 	// that would panic (nil pointer) via a nil store.
+	tmpHome := t.TempDir()
 	d := &Drainer{
-		home:   t.TempDir(),
-		store:  store,
-		bot:    &mockSender{},
-		cfg:    cfg,
-		logger: logger,
-		chatID: &chatID,
-		turnMu: &mu,
+		home:    tmpHome,
+		backend: &agent.LocalBackend{Home: tmpHome},
+		store:   store,
+		bot:     &mockSender{},
+		cfg:     cfg,
+		logger:  logger,
+		chatID:  &chatID,
+		turnMu:  &mu,
 	}
 
 	// Create an agent that will be found by ListAll.
@@ -394,13 +400,14 @@ func TestDrainAgent_StoreMessage_UsesMemory(t *testing.T) {
 	var mu sync.Mutex
 
 	d := &Drainer{
-		home:   home,
-		store:  store,
-		bot:    bot,
-		cfg:    cfg,
-		logger: logger,
-		chatID: &chatID,
-		turnMu: &mu,
+		home:    home,
+		backend: &agent.LocalBackend{Home: home},
+		store:   store,
+		bot:     bot,
+		cfg:     cfg,
+		logger:  logger,
+		chatID:  &chatID,
+		turnMu:  &mu,
 	}
 
 	outbox := createAgentOutbox(t, home, "bob")
@@ -498,5 +505,393 @@ func TestCleanStalePending_IgnoresNonPending(t *testing.T) {
 	// .msg file should be untouched.
 	if _, err := os.Stat(msgFile); err != nil {
 		t.Errorf(".msg file should be untouched, err = %v", err)
+	}
+}
+
+// --- drainAgentExec tests ---
+
+func TestDrainAgentExec_SingleMessage(t *testing.T) {
+	bot := &mockSender{}
+	d, home := newTestDrainer(t, bot)
+	d.mode = "kubernetes"
+
+	// Mock ExecSync to return outbox output.
+	d.docker = &docker.MockOps{
+		ExecSyncFn: func(ctx context.Context, name string, cmd []string, stdin io.Reader) (string, error) {
+			return "---FILE:20260101-120000.msg---\nhello from alice\n", nil
+		},
+	}
+
+	// Create agent so ListAll finds it (drainAll calls ListAll).
+	createAgentOutbox(t, home, "alice")
+
+	d.drainAgent("alice")
+
+	msgs := bot.sent()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 send, got %d", len(msgs))
+	}
+
+	header := agentIdentityHeader(d.cfg, "alice")
+	want := header + "hello from alice"
+	if msgs[0].text != want {
+		t.Errorf("sent text = %q, want %q", msgs[0].text, want)
+	}
+}
+
+func TestDrainAgentExec_MultipleMessages(t *testing.T) {
+	bot := &mockSender{}
+	d, home := newTestDrainer(t, bot)
+	d.mode = "kubernetes"
+
+	d.docker = &docker.MockOps{
+		ExecSyncFn: func(ctx context.Context, name string, cmd []string, stdin io.Reader) (string, error) {
+			return "---FILE:20260101-120000.msg---\nfirst\n---FILE:20260101-120001.msg---\nsecond\n", nil
+		},
+	}
+
+	createAgentOutbox(t, home, "alice")
+
+	d.drainAgent("alice")
+
+	msgs := bot.sent()
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 sends, got %d", len(msgs))
+	}
+	if !strings.HasSuffix(msgs[0].text, "first") {
+		t.Errorf("msg 0: got %q, want suffix %q", msgs[0].text, "first")
+	}
+	if !strings.HasSuffix(msgs[1].text, "second") {
+		t.Errorf("msg 1: got %q, want suffix %q", msgs[1].text, "second")
+	}
+}
+
+func TestDrainAgentExec_EmptyOutput(t *testing.T) {
+	bot := &mockSender{}
+	d, home := newTestDrainer(t, bot)
+	d.mode = "kubernetes"
+
+	d.docker = &docker.MockOps{
+		ExecSyncFn: func(ctx context.Context, name string, cmd []string, stdin io.Reader) (string, error) {
+			return "", nil
+		},
+	}
+
+	createAgentOutbox(t, home, "alice")
+
+	d.drainAgent("alice")
+
+	if len(bot.sent()) != 0 {
+		t.Errorf("expected no sends for empty exec output, got %d", len(bot.sent()))
+	}
+}
+
+func TestDrainAgentExec_ExecError(t *testing.T) {
+	bot := &mockSender{}
+	d, home := newTestDrainer(t, bot)
+	d.mode = "kubernetes"
+
+	d.docker = &docker.MockOps{
+		ExecSyncFn: func(ctx context.Context, name string, cmd []string, stdin io.Reader) (string, error) {
+			return "", context.DeadlineExceeded
+		},
+	}
+
+	createAgentOutbox(t, home, "alice")
+
+	// Should not panic or send anything.
+	d.drainAgent("alice")
+
+	if len(bot.sent()) != 0 {
+		t.Errorf("expected no sends on exec error, got %d", len(bot.sent()))
+	}
+}
+
+func TestDrainAgentExec_TurnMuLocked(t *testing.T) {
+	bot := &mockSender{}
+	d, home := newTestDrainer(t, bot)
+	d.mode = "kubernetes"
+
+	d.docker = &docker.MockOps{
+		ExecSyncFn: func(ctx context.Context, name string, cmd []string, stdin io.Reader) (string, error) {
+			return "---FILE:test.msg---\nhello\n", nil
+		},
+	}
+
+	createAgentOutbox(t, home, "alice")
+
+	// Lock turnMu — should cause drain to skip delivery.
+	d.turnMu.Lock()
+	d.drainAgent("alice")
+	d.turnMu.Unlock()
+
+	if len(bot.sent()) != 0 {
+		t.Errorf("expected no sends when turnMu is locked, got %d", len(bot.sent()))
+	}
+}
+
+func TestDrainAgentExec_NoChatID(t *testing.T) {
+	bot := &mockSender{}
+	d, home := newTestDrainer(t, bot)
+	d.mode = "kubernetes"
+
+	d.docker = &docker.MockOps{
+		ExecSyncFn: func(ctx context.Context, name string, cmd []string, stdin io.Reader) (string, error) {
+			return "---FILE:test.msg---\nhello\n", nil
+		},
+	}
+
+	createAgentOutbox(t, home, "alice")
+
+	// Set chatID to 0 — should skip delivery.
+	var zeroChatID int64
+	d.chatID = &zeroChatID
+
+	d.drainAgent("alice")
+
+	if len(bot.sent()) != 0 {
+		t.Errorf("expected no sends when chatID is 0, got %d", len(bot.sent()))
+	}
+}
+
+func TestDrainAgentExec_DeletesOnlyDelivered(t *testing.T) {
+	bot := &mockSender{}
+	d, home := newTestDrainer(t, bot)
+	d.mode = "kubernetes"
+
+	var execCalls []string
+	d.docker = &docker.MockOps{
+		ExecSyncFn: func(ctx context.Context, name string, cmd []string, stdin io.Reader) (string, error) {
+			script := strings.Join(cmd, " ")
+			execCalls = append(execCalls, script)
+			// First call: read script returns two files.
+			if strings.Contains(script, "printf") {
+				return "---FILE:a.msg---\nfirst\n---FILE:b.msg---\nsecond\n", nil
+			}
+			// Second call: rm command.
+			return "", nil
+		},
+	}
+
+	createAgentOutbox(t, home, "alice")
+
+	d.drainAgent("alice")
+
+	// Should have 2 exec calls: read + delete.
+	if len(execCalls) != 2 {
+		t.Fatalf("expected 2 exec calls, got %d", len(execCalls))
+	}
+	// Delete call should reference both files.
+	if !strings.Contains(execCalls[1], "a.msg") || !strings.Contains(execCalls[1], "b.msg") {
+		t.Errorf("delete cmd should reference both files: %q", execCalls[1])
+	}
+}
+
+func TestDrainAgentExec_StoresInMemory(t *testing.T) {
+	bot := &mockSender{}
+	d, home := newTestDrainer(t, bot)
+	d.mode = "kubernetes"
+
+	d.docker = &docker.MockOps{
+		ExecSyncFn: func(ctx context.Context, name string, cmd []string, stdin io.Reader) (string, error) {
+			return "---FILE:test.msg---\nremember this via exec\n", nil
+		},
+	}
+
+	createAgentOutbox(t, home, "alice")
+
+	d.drainAgent("alice")
+
+	msgs, err := d.store.RecentMessages("drain", 10)
+	if err != nil {
+		t.Fatalf("RecentMessages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 stored message, got %d", len(msgs))
+	}
+	if !strings.Contains(msgs[0].Content, "[alice]") {
+		t.Errorf("stored content should contain agent name, got %q", msgs[0].Content)
+	}
+}
+
+// --- drainAllParallel tests ---
+
+func TestDrainAllParallel_DeliversAllAgents(t *testing.T) {
+	bot := &mockSender{}
+	d, home := newTestDrainer(t, bot)
+	d.mode = "kubernetes"
+
+	// Track exec calls per agent.
+	var mu sync.Mutex
+	execCalls := map[string]int{}
+
+	d.docker = &docker.MockOps{
+		ExecSyncFn: func(ctx context.Context, name string, cmd []string, stdin io.Reader) (string, error) {
+			mu.Lock()
+			execCalls[name]++
+			mu.Unlock()
+			script := strings.Join(cmd, " ")
+			if strings.Contains(script, "printf") {
+				// Each agent returns a unique message.
+				agentName := strings.TrimPrefix(name, "xnc-")
+				agentName = agentName[strings.Index(agentName, "-")+1:] // strip instanceID
+				return "---FILE:test.msg---\nhello from " + agentName + "\n", nil
+			}
+			return "", nil
+		},
+	}
+
+	// Create 3 agents.
+	createAgentOutbox(t, home, "alice")
+	createAgentOutbox(t, home, "bob")
+	createAgentOutbox(t, home, "carol")
+
+	// drainAll with >1 agent in K8s mode should use the parallel path.
+	d.drainAll()
+
+	msgs := bot.sent()
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 sends (one per agent), got %d", len(msgs))
+	}
+
+	// All agents should have been drained.
+	var foundAlice, foundBob, foundCarol bool
+	for _, m := range msgs {
+		if strings.Contains(m.text, "hello from alice") {
+			foundAlice = true
+		}
+		if strings.Contains(m.text, "hello from bob") {
+			foundBob = true
+		}
+		if strings.Contains(m.text, "hello from carol") {
+			foundCarol = true
+		}
+	}
+	if !foundAlice || !foundBob || !foundCarol {
+		t.Errorf("not all agents drained: alice=%v bob=%v carol=%v", foundAlice, foundBob, foundCarol)
+	}
+}
+
+func TestDrainAllParallel_OneAgentError_OthersDelivered(t *testing.T) {
+	bot := &mockSender{}
+	d, home := newTestDrainer(t, bot)
+	d.mode = "kubernetes"
+
+	d.docker = &docker.MockOps{
+		ExecSyncFn: func(ctx context.Context, name string, cmd []string, stdin io.Reader) (string, error) {
+			script := strings.Join(cmd, " ")
+			if strings.Contains(script, "printf") {
+				// bob's exec fails.
+				if strings.Contains(name, "bob") {
+					return "", context.DeadlineExceeded
+				}
+				agentName := strings.TrimPrefix(name, "xnc-")
+				agentName = agentName[strings.Index(agentName, "-")+1:]
+				return "---FILE:test.msg---\nhello from " + agentName + "\n", nil
+			}
+			return "", nil
+		},
+	}
+
+	createAgentOutbox(t, home, "alice")
+	createAgentOutbox(t, home, "bob")
+
+	d.drainAll()
+
+	// Only alice should be delivered (bob's exec failed).
+	msgs := bot.sent()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 send (alice only, bob failed), got %d", len(msgs))
+	}
+	if !strings.Contains(msgs[0].text, "hello from alice") {
+		t.Errorf("expected alice's message, got %q", msgs[0].text)
+	}
+}
+
+func TestDrainAllParallel_TurnMuLocked_BatchSkipped(t *testing.T) {
+	bot := &mockSender{}
+	d, home := newTestDrainer(t, bot)
+	d.mode = "kubernetes"
+
+	d.docker = &docker.MockOps{
+		ExecSyncFn: func(ctx context.Context, name string, cmd []string, stdin io.Reader) (string, error) {
+			return "---FILE:test.msg---\nhello\n", nil
+		},
+	}
+
+	createAgentOutbox(t, home, "alice")
+	createAgentOutbox(t, home, "bob")
+
+	// Lock turnMu — entire batch should be skipped.
+	d.turnMu.Lock()
+	d.drainAll()
+	d.turnMu.Unlock()
+
+	if len(bot.sent()) != 0 {
+		t.Errorf("expected no sends when turnMu is locked, got %d", len(bot.sent()))
+	}
+}
+
+func TestDrainAll_SingleAgentK8s_UsesSerialPath(t *testing.T) {
+	bot := &mockSender{}
+	d, home := newTestDrainer(t, bot)
+	d.mode = "kubernetes"
+
+	d.docker = &docker.MockOps{
+		ExecSyncFn: func(ctx context.Context, name string, cmd []string, stdin io.Reader) (string, error) {
+			return "---FILE:test.msg---\nhello solo\n", nil
+		},
+	}
+
+	// Only one agent — should use the serial (non-parallel) path.
+	createAgentOutbox(t, home, "alice")
+
+	d.drainAll()
+
+	msgs := bot.sent()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 send, got %d", len(msgs))
+	}
+	if !strings.Contains(msgs[0].text, "hello solo") {
+		t.Errorf("expected 'hello solo', got %q", msgs[0].text)
+	}
+}
+
+// --- safeOutboxFilename regex tests ---
+
+func TestSafeOutboxFilename(t *testing.T) {
+	valid := []string{
+		"20260101-120000.msg",
+		"a.msg",
+		"test_file-1.2.msg",
+		"1msg.msg",
+	}
+	for _, f := range valid {
+		if !safeOutboxFilename.MatchString(f) {
+			t.Errorf("expected %q to match", f)
+		}
+	}
+
+	invalid := []string{
+		"../../etc/passwd.msg",      // path traversal
+		"-rf.msg",                   // leading dash
+		".hidden.msg",              // leading dot
+		"$(evil).msg",              // shell injection
+		"`cmd`.msg",                // backtick injection
+		"file name.msg",            // space
+		"file;rm -rf /.msg",        // semicolon
+		"file|cat /etc/passwd.msg", // pipe
+		"file\nname.msg",           // newline
+		"--no-preserve-root.msg",   // flag injection
+		"file.txt",                 // wrong extension
+		"",                         // empty
+		".msg",                     // just extension
+		"../evil.msg",              // relative path
+		"a/b.msg",                  // slash
+	}
+	for _, f := range invalid {
+		if safeOutboxFilename.MatchString(f) {
+			t.Errorf("expected %q to NOT match", f)
+		}
 	}
 }

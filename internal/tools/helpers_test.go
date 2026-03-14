@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/jotavich/xnullclaw/internal/agent"
 	"github.com/jotavich/xnullclaw/internal/config"
 	"github.com/jotavich/xnullclaw/internal/docker"
 )
@@ -17,5 +18,6 @@ func newTestDeps(t *testing.T) (Deps, *docker.MockOps) {
 	cfg := config.DefaultConfig()
 	mock := &docker.MockOps{}
 	cfgPath := filepath.Join(home, "mux", "config.json")
-	return Deps{Docker: mock, Store: store, Cfg: cfg, CfgPath: cfgPath, Home: home, Image: "test:latest"}, mock
+	backend := &agent.LocalBackend{Home: home}
+	return Deps{Docker: mock, Backend: backend, Store: store, Cfg: cfg, CfgPath: cfgPath, Home: home, Image: "test:latest"}, mock
 }

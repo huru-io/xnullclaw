@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/jotavich/xnullclaw/internal/agent"
 	"github.com/jotavich/xnullclaw/internal/config"
 	"github.com/jotavich/xnullclaw/internal/docker"
 	"github.com/jotavich/xnullclaw/internal/memory"
@@ -61,12 +62,13 @@ func (r *Registry) Execute(ctx context.Context, name string, args map[string]any
 // Deps holds all the dependencies that tools need.
 type Deps struct {
 	Docker      docker.Ops
+	Backend     agent.Backend  // agent state management (local filesystem or K8s)
 	Store       *memory.Store
 	Cfg         *config.Config
 	CfgPath     string
 	Home        string // XNC home directory
 	Image       string // Docker image name
-	RuntimeMode string // "local", "docker"
+	RuntimeMode string // "local", "docker", "kubernetes"
 	NetworkName string // Docker network for agents (empty = default bridge)
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -195,6 +196,9 @@ func TestAgentBaseURL(t *testing.T) {
 		{"local mode", "local", 49823, "xnc-abc-alice", "http://127.0.0.1:49823"},
 		{"docker mode", "docker", 0, "xnc-abc-alice", "http://xnc-abc-alice:3000"},
 		{"docker mode empty container", "docker", 8080, "", "http://127.0.0.1:8080"},
+		{"kubernetes mode", "kubernetes", 0, "xnc-abc-alice", "http://xnc-abc-alice:3000"},
+		{"kubernetes mode empty container", "kubernetes", 8080, "", "http://127.0.0.1:8080"},
+		{"kubernetes unsafe name", "kubernetes", 5000, "alice@evil.com", "http://127.0.0.1:5000"},
 		{"unknown mode", "bogus", 9999, "xnc-abc-alice", "http://127.0.0.1:9999"},
 		{"empty mode", "", 3000, "xnc-abc-alice", "http://127.0.0.1:3000"},
 		{"docker unsafe name", "docker", 5000, "alice@evil.com:3000/", "http://127.0.0.1:5000"},
@@ -239,6 +243,65 @@ func TestTrySendWebhook_DockerMode(t *testing.T) {
 	}
 	if resp != nil {
 		t.Error("expected nil response for docker mode with empty containerName and port 0")
+	}
+}
+
+func TestTrySendWebhook_TokenReaderCallback(t *testing.T) {
+	// Verify the variadic tokenReader callback is used when provided.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth := r.Header.Get("Authorization"); auth != "Bearer custom-token-123" {
+			t.Errorf("expected custom token, got %q", auth)
+		}
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok", "response": "pong"})
+	}))
+	defer srv.Close()
+
+	customReader := func(name string) (string, error) {
+		if name != "alice" {
+			t.Errorf("tokenReader called with %q, want %q", name, "alice")
+		}
+		return "custom-token-123", nil
+	}
+
+	// Use local mode with real port so we hit the test server.
+	port := srv.Listener.Addr().(*net.TCPAddr).Port
+	resp, err := TrySendWebhook(context.Background(), "local", port, "", "/nonexistent", "alice", "hi", customReader)
+	if err != nil {
+		t.Fatalf("TrySendWebhook: %v", err)
+	}
+	if resp == nil || resp.Response != "pong" {
+		t.Errorf("unexpected response: %v", resp)
+	}
+}
+
+func TestTrySendWebhook_TokenReaderError(t *testing.T) {
+	// Verify tokenReader errors propagate correctly.
+	errReader := func(name string) (string, error) {
+		return "", fmt.Errorf("token store unavailable")
+	}
+
+	_, err := TrySendWebhook(context.Background(), "local", 9999, "", "/nonexistent", "bob", "hi", errReader)
+	if err == nil {
+		t.Fatal("expected error when tokenReader fails")
+	}
+	if !strings.Contains(err.Error(), "token store unavailable") {
+		t.Errorf("error should propagate reader failure: %v", err)
+	}
+}
+
+func TestTrySendWebhook_KubernetesModeUsesDNS(t *testing.T) {
+	// In K8s mode with containerName, should attempt DNS even with port=0.
+	// Will fail to connect, but must NOT return (nil, nil).
+	home := t.TempDir()
+	Setup(home, "ktest", SetupOpts{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	_, err := TrySendWebhook(ctx, "kubernetes", 0, "xnc-abc-ktest", home, "ktest", "hello")
+	// Should get a connection error, NOT nil (which would mean "skip").
+	if err == nil {
+		t.Error("expected connection error for unreachable K8s service, got nil")
 	}
 }
 

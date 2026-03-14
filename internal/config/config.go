@@ -26,8 +26,9 @@ type Config struct {
 
 // RuntimeConfig holds settings for multi-environment deployment.
 type RuntimeConfig struct {
-	Mode    string `json:"mode"`    // "local" (default), "docker", "kubernetes"
-	Network string `json:"network"` // Docker network name (e.g. "xnc-net"), empty = default bridge
+	Mode      string `json:"mode"`                // "local" (default), "docker", "kubernetes"
+	Network   string `json:"network"`             // Docker network name (e.g. "xnc-net"), empty = default bridge
+	Namespace string `json:"namespace,omitempty"` // K8s namespace (default: "default"), only used in kubernetes mode
 }
 
 // SchedulerConfig holds settings for the mux's task scheduler and heartbeat.
@@ -273,6 +274,18 @@ func ValidRuntimeMode(m string) bool { return validRuntimeModes[m] }
 // ValidNetworkName reports whether n is a valid Docker network name.
 func ValidNetworkName(n string) bool { return networkNameRe.MatchString(n) }
 
+// namespaceRe validates Kubernetes namespace names: lowercase alphanumeric and hyphens,
+// must start and end with an alphanumeric character, max 63 chars.
+var namespaceRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$`)
+
+// ValidNamespace reports whether n is a valid Kubernetes namespace name.
+func ValidNamespace(n string) bool {
+	if len(n) == 1 {
+		return n[0] >= 'a' && n[0] <= 'z' || n[0] >= '0' && n[0] <= '9'
+	}
+	return namespaceRe.MatchString(n)
+}
+
 // ApplyEnvOverrides applies environment variable overrides on top of the
 // loaded config. Priority: env var > config file > default.
 // Only non-empty env vars take effect. Invalid values are logged to stderr
@@ -336,6 +349,13 @@ func (c *Config) ApplyEnvOverrides() {
 			c.Runtime.Network = v
 		} else {
 			fmt.Fprintf(os.Stderr, "config: ignoring invalid XNC_NETWORK=%q (must be alphanumeric/hyphens/underscores, 1-64 chars)\n", v)
+		}
+	}
+	if v := os.Getenv("XNC_NAMESPACE"); v != "" {
+		if ValidNamespace(v) {
+			c.Runtime.Namespace = v
+		} else {
+			fmt.Fprintf(os.Stderr, "config: ignoring invalid XNC_NAMESPACE=%q (must be a valid K8s namespace name)\n", v)
 		}
 	}
 }

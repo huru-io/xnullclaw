@@ -31,11 +31,12 @@ type WebhookResponse struct {
 // AgentBaseURL returns the base URL for reaching an agent's gateway.
 //   - mode "local": http://127.0.0.1:<port> (host port mapping)
 //   - mode "docker": http://<containerName>:3000 (Docker network DNS)
+//   - mode "kubernetes": http://<containerName>:3000 (K8s Service DNS)
 //
 // If containerName fails validation, falls back to localhost to prevent
 // URL injection / SSRF.
 func AgentBaseURL(mode string, port int, containerName string) string {
-	if mode == "docker" && containerName != "" && safeContainerNameRe.MatchString(containerName) {
+	if (mode == "docker" || mode == "kubernetes") && containerName != "" && safeContainerNameRe.MatchString(containerName) {
 		return fmt.Sprintf("http://%s:3000", containerName)
 	}
 	return fmt.Sprintf("http://127.0.0.1:%d", port)
@@ -111,18 +112,29 @@ func FriendlyWebhookError(err error) string {
 }
 
 // TrySendWebhook attempts to send a message via webhook.
-// In "local" mode, requires port > 0. In "docker" mode, uses container DNS.
+// In "local" mode, requires port > 0. In "docker"/"kubernetes" mode, uses container/service DNS.
 // Returns (nil, nil) if not reachable (caller should use fallback).
 // Returns (response, nil) on success, or (nil, err) on failure.
-func TrySendWebhook(ctx context.Context, mode string, port int, containerName, home, agentName, message string) (*WebhookResponse, error) {
-	// Docker mode with a container name uses DNS — no port needed.
+//
+// tokenReader is an optional function to read the auth token by agent name.
+// If nil, falls back to reading from the filesystem (local/docker mode).
+func TrySendWebhook(ctx context.Context, mode string, port int, containerName, home, agentName, message string, tokenReader ...func(string) (string, error)) (*WebhookResponse, error) {
+	// Docker/K8s mode with a container name uses DNS — no port needed.
 	// Local mode requires a mapped port; skip if unavailable.
-	if !(mode == "docker" && containerName != "") && port <= 0 {
+	usesDNS := (mode == "docker" || mode == "kubernetes") && containerName != ""
+	if !usesDNS && port <= 0 {
 		return nil, nil
 	}
 	baseURL := AgentBaseURL(mode, port, containerName)
-	agentDir := Dir(home, agentName)
-	token, err := ReadToken(agentDir)
+
+	var token string
+	var err error
+	if len(tokenReader) > 0 && tokenReader[0] != nil {
+		token, err = tokenReader[0](agentName)
+	} else {
+		agentDir := Dir(home, agentName)
+		token, err = ReadToken(agentDir)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read token for %s: %w", agentName, err)
 	}

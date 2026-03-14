@@ -27,7 +27,7 @@ var namePool = []string{
 
 func pickAgentName(d Deps) string {
 	existing := make(map[string]bool)
-	agents, _ := agent.ListAll(d.Home)
+	agents, _ := d.Backend.ListAll()
 	for _, a := range agents {
 		existing[strings.ToLower(a.Name)] = true
 	}
@@ -104,7 +104,7 @@ func sendToAgent(ctx context.Context, d Deps, agentName, message string) (string
 
 	// Try webhook first — query actual mapped port from Docker.
 	port, _ := d.Docker.MappedPort(ctx, cn)
-	resp, err := agent.TrySendWebhook(ctx, d.RuntimeMode, port, cn, d.Home, agentName, message)
+	resp, err := agent.TrySendWebhook(ctx, d.RuntimeMode, port, cn, d.Home, agentName, message, d.Backend.ReadToken)
 	if err != nil {
 		return "", fmt.Errorf("webhook to %s: %w", agentName, err)
 	}
@@ -113,6 +113,11 @@ func sendToAgent(ctx context.Context, d Deps, agentName, message string) (string
 			return resp.Response, nil
 		}
 		return fmt.Sprintf("Message delivered to %s (webhook).", agentName), nil
+	}
+
+	// K8s mode: no exec fallback — webhook is the only path.
+	if d.RuntimeMode == "kubernetes" {
+		return "", fmt.Errorf("webhook to %s failed and exec fallback is not available in kubernetes mode", agentName)
 	}
 
 	// Fallback: docker exec + outbox (legacy containers without port mapping).
@@ -132,8 +137,14 @@ func sendToAgent(ctx context.Context, d Deps, agentName, message string) (string
 }
 
 // startOpts returns ContainerOpts for starting an agent.
+// In K8s mode, reads env from Backend (K8s ConfigMap) instead of filesystem.
 func startOpts(d Deps, name string) docker.ContainerOpts {
-	return agent.StartOpts(d.Image, d.Home, name, true, d.NetworkName)
+	opts := agent.StartOpts(d.Image, d.Home, name, true, d.NetworkName)
+	if d.RuntimeMode == "kubernetes" {
+		env, _ := d.Backend.ContainerEnv(name)
+		opts.Env = env
+	}
+	return opts
 }
 
 // validatedAgentArg extracts and validates the "agent" argument from tool args.
@@ -263,7 +274,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			},
 		},
 		func(ctx context.Context, args map[string]any) (string, error) {
-			agents, err := agent.ListAll(d.Home)
+			agents, err := d.Backend.ListAll()
 			if err != nil {
 				return "", err
 			}
@@ -324,7 +335,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			if err != nil {
 				return "", err
 			}
-			if !agent.HasProviderKey(d.Home, agentName) {
+			if !d.Backend.HasProviderKey(agentName) {
 				return "", fmt.Errorf("agent %q has no API key configured", agentName)
 			}
 			cn := agent.ContainerName(d.Home, agentName)
@@ -380,7 +391,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			if err != nil {
 				return "", err
 			}
-			if !agent.HasProviderKey(d.Home, agentName) {
+			if !d.Backend.HasProviderKey(agentName) {
 				return "", fmt.Errorf("agent %q has no API key configured", agentName)
 			}
 			cn := agent.ContainerName(d.Home, agentName)
@@ -444,7 +455,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			steps = append(steps, "Stopped and removed container")
 
 			// Destroy agent directory.
-			if err := agent.Destroy(d.Home, agentName); err != nil {
+			if err := d.Backend.Destroy(agentName); err != nil {
 				steps = append(steps, fmt.Sprintf("Warning: directory cleanup failed: %v", err))
 			} else {
 				steps = append(steps, "Deleted agent directory")
@@ -495,7 +506,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			if err := agent.ValidateName(source); err != nil {
 				return "", fmt.Errorf("invalid source name: %w", err)
 			}
-			if err := agent.Clone(d.Home, source, agentName, agent.CloneOpts{}); err != nil {
+			if err := d.Backend.Clone(source, agentName, agent.CloneOpts{}); err != nil {
 				return "", err
 			}
 			return fmt.Sprintf("Cloned %s from %s", agentName, source), nil
@@ -528,7 +539,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			if err := agent.ValidateName(newName); err != nil {
 				return "", fmt.Errorf("invalid new name: %w", err)
 			}
-			if agent.Exists(d.Home, newName) {
+			if d.Backend.Exists(newName) {
 				return "", fmt.Errorf("agent %q already exists", newName)
 			}
 			if isReservedName(d.Cfg, newName) {
@@ -543,7 +554,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			}
 
 			// Filesystem rename.
-			if err := agent.Rename(d.Home, oldName, newName); err != nil {
+			if err := d.Backend.Rename(oldName, newName); err != nil {
 				return "", err
 			}
 
@@ -556,7 +567,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			steps = append(steps, fmt.Sprintf("Renamed %s → %s", oldName, newName))
 
 			// Start the agent and send identity-change message.
-			if agent.HasProviderKey(d.Home, newName) {
+			if d.Backend.HasProviderKey(newName) {
 				newCN := agent.ContainerName(d.Home, newName)
 				opts := startOpts(d, newName)
 				if err := d.Docker.StartContainer(ctx, newCN, opts); err != nil {
@@ -618,7 +629,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			}
 
 			// Propagate keys: env vars > existing agents (single-tenant: all share the same keys).
-			existingKeys := agent.CollectKeys(d.Home)
+			existingKeys := d.Backend.CollectKeys()
 			if setupOpts.OpenAIKey == "" {
 				setupOpts.OpenAIKey = existingKeys["openai"]
 			}
@@ -626,7 +637,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			setupOpts.OpenRouterKey = envOrDefault("XNC_OPENROUTER_API_KEY", existingKeys["openrouter"])
 			setupOpts.BraveKey = envOrDefault("XNC_BRAVE_API_KEY", existingKeys["brave"])
 
-			if err := agent.Setup(d.Home, agentName, setupOpts); err != nil {
+			if err := d.Backend.Setup(agentName, setupOpts); err != nil {
 				return "", fmt.Errorf("setup agent: %w", err)
 			}
 			steps = append(steps, "Created agent directory")
@@ -697,8 +708,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			if err != nil {
 				return "", err
 			}
-			dir := agent.Dir(d.Home, agentName)
-			all, err := agent.ConfigGetAllRedacted(dir)
+			all, err := d.Backend.ConfigGetAllRedacted(agentName)
 			if err != nil {
 				return "", err
 			}
@@ -746,8 +756,7 @@ func registerAgentTools(r *Registry, d Deps) {
 			if err != nil {
 				return "", err
 			}
-			dir := agent.Dir(d.Home, agentName)
-			if err := agent.ConfigSet(dir, key, value); err != nil {
+			if err := d.Backend.ConfigSet(agentName, key, value); err != nil {
 				return "", err
 			}
 			return fmt.Sprintf("Config %s set for %s", key, agentName), nil
@@ -872,8 +881,7 @@ func registerAgentTools(r *Registry, d Deps) {
 				Creativity: p.Creativity,
 			}
 			sysPrompt := buildAgentSystemPrompt(agentName, variant)
-			dir := agent.Dir(d.Home, agentName)
-			agent.ConfigSet(dir, "system_prompt", sysPrompt)
+			d.Backend.ConfigSet(agentName, "system_prompt", sysPrompt)
 
 			return fmt.Sprintf("Updated %s persona: %s\nSystem prompt regenerated. Restart agent to apply.", agentName, strings.Join(changed, ", ")), nil
 		},
@@ -890,11 +898,14 @@ func sendToMultiple(ctx context.Context, d Deps, names []string, message string)
 
 	results := make([]result, len(names))
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, 8) // cap concurrent webhook connections
 
 	for i, n := range names {
 		wg.Add(1)
 		go func(idx int, name string) {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			_, err := sendToAgent(ctx, d, name, message)
 			if err != nil {
 				results[idx] = result{Agent: name, Status: "error", Error: err.Error()}

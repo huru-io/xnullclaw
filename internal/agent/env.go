@@ -42,6 +42,7 @@ func StartOpts(image, home, name string, exposePort bool, networkName string) do
 	return docker.ContainerOpts{
 		Image:       image,
 		Cmd:         []string{ContainerCmd},
+		AgentName:   CanonicalName(name),
 		AgentDir:    mountDir,
 		ExposePort:  exposePort,
 		Env:         ContainerEnv(agentDir), // read config from container-local path

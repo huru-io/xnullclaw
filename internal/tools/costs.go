@@ -86,7 +86,7 @@ func registerCostTools(r *Registry, d Deps) {
 				return "", err
 			}
 
-			dir := agent.Dir(d.Home, agentName)
+			dir := d.Backend.Dir(agentName)
 
 			var since time.Time
 			now := time.Now().UTC()
