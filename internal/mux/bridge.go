@@ -310,7 +310,9 @@ func (b *Bridge) readLoop(ac *agentConn) {
 
 	for {
 		// Read deadline detects connections where pongs stop arriving.
-		ac.ws.SetReadDeadline(time.Now().Add(readDeadline))
+		// Pong frames refresh the deadline inside ReadMessage, preventing
+		// false timeouts on idle-but-alive connections.
+		ac.ws.SetReadDeadline(readDeadline)
 
 		payload, err := ac.ws.ReadMessage()
 		if err != nil {

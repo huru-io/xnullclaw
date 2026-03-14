@@ -34,9 +34,10 @@ const (
 
 // wsConn wraps a raw TCP connection with WebSocket framing.
 type wsConn struct {
-	conn net.Conn
-	br   *bufio.Reader
-	mu   sync.Mutex // protects writes
+	conn            net.Conn
+	br              *bufio.Reader
+	mu              sync.Mutex     // protects writes
+	readDeadlineDur time.Duration  // if >0, refreshed on pong receipt
 }
 
 // handshakeTimeout is the maximum time allowed for the WebSocket upgrade handshake,
@@ -215,7 +216,10 @@ func (c *wsConn) ReadMessage() ([]byte, error) {
 				return nil, fmt.Errorf("ws pong write failed: %w", err)
 			}
 			continue
-		case opcode == 0xA: // pong — ignore
+		case opcode == 0xA: // pong — connection is alive, refresh read deadline
+			if c.readDeadlineDur > 0 {
+				c.conn.SetReadDeadline(time.Now().Add(c.readDeadlineDur))
+			}
 			continue
 		case opcode == 0x1 || opcode == 0x2: // text or binary — start of message
 			if fragmented {
@@ -322,8 +326,11 @@ func (c *wsConn) Ping() error {
 }
 
 // SetReadDeadline sets the read deadline on the underlying connection.
-func (c *wsConn) SetReadDeadline(t time.Time) error {
-	return c.conn.SetReadDeadline(t)
+// The duration is remembered so that pong frames can refresh the deadline
+// (preventing false timeouts on idle-but-alive connections).
+func (c *wsConn) SetReadDeadline(d time.Duration) error {
+	c.readDeadlineDur = d
+	return c.conn.SetReadDeadline(time.Now().Add(d))
 }
 
 // wsAcceptValue computes the expected Sec-WebSocket-Accept value per RFC 6455.

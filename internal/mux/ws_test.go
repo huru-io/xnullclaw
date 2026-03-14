@@ -1055,7 +1055,7 @@ func TestSetReadDeadline(t *testing.T) {
 	ws := &wsConn{conn: client, br: bufio.NewReader(client)}
 
 	// Set a very short deadline so the read times out.
-	if err := ws.SetReadDeadline(time.Now().Add(10 * time.Millisecond)); err != nil {
+	if err := ws.SetReadDeadline(10 * time.Millisecond); err != nil {
 		t.Fatalf("SetReadDeadline: %v", err)
 	}
 
