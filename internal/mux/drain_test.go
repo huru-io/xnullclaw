@@ -1,6 +1,8 @@
 package mux
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"io"
 	"os"
@@ -893,5 +895,86 @@ func TestSafeOutboxFilename(t *testing.T) {
 		if safeOutboxFilename.MatchString(f) {
 			t.Errorf("expected %q to NOT match", f)
 		}
+	}
+}
+
+// --- media attachment tests ---
+
+// drainTestTar builds a tar archive containing a single file, suitable for
+// CopyFromContainer mock return values.
+func drainTestTar(t *testing.T, name string, content []byte) io.ReadCloser {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0644, Size: int64(len(content))}); err != nil {
+		t.Fatalf("tar header: %v", err)
+	}
+	if _, err := tw.Write(content); err != nil {
+		t.Fatalf("tar write: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close: %v", err)
+	}
+	return io.NopCloser(&buf)
+}
+
+func TestDrainAgentExec_WithMediaAttachment(t *testing.T) {
+	bot := &mockSender{}
+	d, home := newTestDrainer(t, bot)
+	d.mode = "kubernetes"
+	d.mediaTmpDir = t.TempDir()
+
+	d.docker = &docker.MockOps{
+		ExecSyncFn: func(ctx context.Context, name string, cmd []string, stdin io.Reader) (string, error) {
+			script := strings.Join(cmd, " ")
+			if strings.Contains(script, "printf") {
+				return "---FILE:20260101-120000.msg---\nCheck this out [IMAGE:/nullclaw-data/workspace/photo.jpg]\n", nil
+			}
+			// rm call for cleanup.
+			return "", nil
+		},
+		CopyFromContainerFn: func(ctx context.Context, name, path string) (io.ReadCloser, error) {
+			return drainTestTar(t, "photo.jpg", []byte{0xFF, 0xD8, 0xFF, 0xE0}), nil
+		},
+	}
+
+	createAgentOutbox(t, home, "alice")
+
+	d.drainAgent("alice")
+
+	// Text part should be sent via Send (marker stripped).
+	msgs := bot.sent()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 text send, got %d", len(msgs))
+	}
+	if !strings.Contains(msgs[0].text, "Check this out") {
+		t.Errorf("text should contain cleaned content, got %q", msgs[0].text)
+	}
+	if strings.Contains(msgs[0].text, "[IMAGE:") {
+		t.Errorf("text should not contain media marker, got %q", msgs[0].text)
+	}
+
+	// Photo should be sent via SendPhoto.
+	mediaMsgs := bot.sentMedia()
+	if len(mediaMsgs) != 1 {
+		t.Fatalf("expected 1 media send, got %d", len(mediaMsgs))
+	}
+	if mediaMsgs[0].method != "photo" {
+		t.Errorf("method = %q, want photo", mediaMsgs[0].method)
+	}
+	if mediaMsgs[0].chatID != 42 {
+		t.Errorf("chatID = %d, want 42", mediaMsgs[0].chatID)
+	}
+
+	// Memory should be stored.
+	stored, err := d.store.RecentMessages("drain", 10)
+	if err != nil {
+		t.Fatalf("RecentMessages: %v", err)
+	}
+	if len(stored) != 1 {
+		t.Fatalf("expected 1 stored message, got %d", len(stored))
+	}
+	if !strings.Contains(stored[0].Content, "[alice]") {
+		t.Errorf("stored content should contain [alice], got %q", stored[0].Content)
 	}
 }

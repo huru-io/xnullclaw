@@ -1,15 +1,19 @@
 package mux
 
 import (
+	"archive/tar"
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -1502,5 +1506,239 @@ func TestBridge_DeliverUnsolicited_MemoryContent(t *testing.T) {
 	maxExpected := 300 + len("[alice]: ")
 	if len(stored) > maxExpected {
 		t.Errorf("stored content should be at most %d chars, got %d", maxExpected, len(stored))
+	}
+}
+
+// --- media attachment tests ---
+
+// bridgeTestTar builds a tar archive containing a single file, suitable for
+// CopyFromContainer mock return values.
+func bridgeTestTar(t *testing.T, name string, content []byte) io.ReadCloser {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0644, Size: int64(len(content))}); err != nil {
+		t.Fatalf("tar header: %v", err)
+	}
+	if _, err := tw.Write(content); err != nil {
+		t.Fatalf("tar write: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close: %v", err)
+	}
+	return io.NopCloser(&buf)
+}
+
+func TestBridge_DeliverUnsolicited_WithImageAttachment(t *testing.T) {
+	jpegHeader := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10}
+
+	dops := &docker.MockOps{
+		CopyFromContainerFn: func(ctx context.Context, name, path string) (io.ReadCloser, error) {
+			return bridgeTestTar(t, "pic.jpg", jpegHeader), nil
+		},
+	}
+	bot := &mockSender{}
+	b := newTestBridge(t, bot, dops)
+	b.mediaTmpDir = t.TempDir()
+
+	b.deliverUnsolicited("alice", "Here is the image [IMAGE:/nullclaw-data/workspace/pic.jpg]")
+
+	// Text part should be sent via Send (marker stripped).
+	msgs := bot.sent()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 text send, got %d", len(msgs))
+	}
+	if !strings.Contains(msgs[0].text, "Here is the image") {
+		t.Errorf("text should contain cleaned content, got %q", msgs[0].text)
+	}
+	if strings.Contains(msgs[0].text, "[IMAGE:") {
+		t.Errorf("text should not contain media marker, got %q", msgs[0].text)
+	}
+
+	// Photo should be sent via SendPhoto.
+	media := bot.sentMedia()
+	if len(media) != 1 {
+		t.Fatalf("expected 1 media send, got %d", len(media))
+	}
+	if media[0].method != "photo" {
+		t.Errorf("method = %q, want photo", media[0].method)
+	}
+	if media[0].chatID != 42 {
+		t.Errorf("chatID = %d, want 42", media[0].chatID)
+	}
+	// The file should exist at the sent path.
+	if _, err := os.Stat(media[0].path); err != nil {
+		t.Errorf("sent photo file should exist: %v", err)
+	}
+
+	// Memory should record the original content (with markers).
+	stored, err := b.store.RecentMessages("bridge", 10)
+	if err != nil {
+		t.Fatalf("RecentMessages: %v", err)
+	}
+	if len(stored) != 1 {
+		t.Fatalf("expected 1 stored message, got %d", len(stored))
+	}
+	if !strings.Contains(stored[0].Content, "[alice]") {
+		t.Errorf("stored content should contain [alice], got %q", stored[0].Content)
+	}
+}
+
+func TestBridge_DeliverUnsolicited_WithDocumentAttachment(t *testing.T) {
+	dops := &docker.MockOps{
+		CopyFromContainerFn: func(ctx context.Context, name, path string) (io.ReadCloser, error) {
+			return bridgeTestTar(t, "report.md", []byte("# Report\nAll good.")), nil
+		},
+	}
+	bot := &mockSender{}
+	b := newTestBridge(t, bot, dops)
+	b.mediaTmpDir = t.TempDir()
+
+	b.deliverUnsolicited("alice", "Here is your report [DOCUMENT:/nullclaw-data/workspace/report.md]")
+
+	msgs := bot.sent()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 text send, got %d", len(msgs))
+	}
+	if strings.Contains(msgs[0].text, "[DOCUMENT:") {
+		t.Errorf("text should not contain media marker, got %q", msgs[0].text)
+	}
+
+	media := bot.sentMedia()
+	if len(media) != 1 {
+		t.Fatalf("expected 1 media send, got %d", len(media))
+	}
+	if media[0].method != "document" {
+		t.Errorf("method = %q, want document", media[0].method)
+	}
+}
+
+func TestBridge_DeliverUnsolicited_WithVoiceAttachment(t *testing.T) {
+	dops := &docker.MockOps{
+		CopyFromContainerFn: func(ctx context.Context, name, path string) (io.ReadCloser, error) {
+			return bridgeTestTar(t, "voice.ogg", []byte("OggS fake audio")), nil
+		},
+	}
+	bot := &mockSender{}
+	b := newTestBridge(t, bot, dops)
+	b.mediaTmpDir = t.TempDir()
+
+	b.deliverUnsolicited("alice", "[VOICE:/nullclaw-data/workspace/voice.ogg]")
+
+	// No text remaining after marker removal — Send should not be called for text.
+	msgs := bot.sent()
+	if len(msgs) != 0 {
+		t.Errorf("expected no text sends (marker-only content), got %d: %+v", len(msgs), msgs)
+	}
+
+	media := bot.sentMedia()
+	if len(media) != 1 {
+		t.Fatalf("expected 1 media send, got %d", len(media))
+	}
+	if media[0].method != "voice" {
+		t.Errorf("method = %q, want voice (ogg extension)", media[0].method)
+	}
+}
+
+func TestBridge_DeliverUnsolicited_WithMultipleAttachments(t *testing.T) {
+	dops := &docker.MockOps{
+		CopyFromContainerFn: func(ctx context.Context, name, path string) (io.ReadCloser, error) {
+			base := path[strings.LastIndex(path, "/")+1:]
+			return bridgeTestTar(t, base, []byte("data")), nil
+		},
+	}
+	bot := &mockSender{}
+	b := newTestBridge(t, bot, dops)
+	b.mediaTmpDir = t.TempDir()
+
+	b.deliverUnsolicited("alice", "Results: [IMAGE:/nullclaw-data/workspace/chart.png] and [DOCUMENT:/nullclaw-data/workspace/data.csv]")
+
+	msgs := bot.sent()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 text send, got %d", len(msgs))
+	}
+	if strings.Contains(msgs[0].text, "[IMAGE:") || strings.Contains(msgs[0].text, "[DOCUMENT:") {
+		t.Errorf("text should have markers stripped, got %q", msgs[0].text)
+	}
+	if !strings.Contains(msgs[0].text, "Results:") {
+		t.Errorf("text should contain 'Results:', got %q", msgs[0].text)
+	}
+
+	media := bot.sentMedia()
+	if len(media) != 2 {
+		t.Fatalf("expected 2 media sends, got %d", len(media))
+	}
+	if media[0].method != "photo" {
+		t.Errorf("first media method = %q, want photo", media[0].method)
+	}
+	if media[1].method != "document" {
+		t.Errorf("second media method = %q, want document", media[1].method)
+	}
+}
+
+func TestBridge_DeliverUnsolicited_AttachmentRetrievalFails(t *testing.T) {
+	dops := &docker.MockOps{
+		CopyFromContainerFn: func(ctx context.Context, name, path string) (io.ReadCloser, error) {
+			return nil, errors.New("container not found")
+		},
+	}
+	bot := &mockSender{}
+	b := newTestBridge(t, bot, dops)
+	b.mediaTmpDir = t.TempDir()
+
+	b.deliverUnsolicited("alice", "Check this [IMAGE:/nullclaw-data/workspace/pic.jpg]")
+
+	// Text should still be delivered.
+	msgs := bot.sent()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 text send, got %d", len(msgs))
+	}
+	if !strings.Contains(msgs[0].text, "Check this") {
+		t.Errorf("text should still be delivered, got %q", msgs[0].text)
+	}
+
+	// No media should be sent (retrieval failed, attachment dropped).
+	media := bot.sentMedia()
+	if len(media) != 0 {
+		t.Errorf("expected 0 media sends after retrieval failure, got %d", len(media))
+	}
+}
+
+func TestBridge_DeliverUnsolicited_NoMediaTmpDir(t *testing.T) {
+	dops := &docker.MockOps{}
+	bot := &mockSender{}
+	b := newTestBridge(t, bot, dops)
+	// mediaTmpDir is empty string (default from newTestBridge).
+	b.mediaTmpDir = ""
+
+	b.deliverUnsolicited("alice", "See this [IMAGE:/nullclaw-data/workspace/pic.jpg]")
+
+	// With mediaTmpDir empty, resolveContainerAttachments is skipped, so
+	// the attachment still has its container path. sendAttachment detects this
+	// and sends a warning text via Send. So we expect 2 Send calls:
+	//   1. The cleaned text ("See this")
+	//   2. Warning about unretrieved container path
+	msgs := bot.sent()
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 text sends (content + warning), got %d: %+v", len(msgs), msgs)
+	}
+	if !strings.Contains(msgs[0].text, "See this") {
+		t.Errorf("first send should contain cleaned text, got %q", msgs[0].text)
+	}
+
+	foundWarning := false
+	for _, m := range msgs {
+		if strings.Contains(m.text, "Could not send attachment") {
+			foundWarning = true
+			break
+		}
+	}
+	if !foundWarning {
+		t.Errorf("expected warning message about unretrieved container path in sends: %+v", msgs)
+	}
+
+	// No actual media sent.
+	if len(bot.sentMedia()) != 0 {
+		t.Errorf("expected 0 media sends, got %d", len(bot.sentMedia()))
 	}
 }

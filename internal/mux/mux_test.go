@@ -14,15 +14,24 @@ import (
 	"github.com/jotavich/xnullclaw/internal/memory"
 )
 
-// mockSender records all Send calls for test assertions.
+// mockSender records all Send and media-send calls for test assertions.
 type mockSender struct {
 	mu       sync.Mutex
 	messages []mockMsg
+	mediaMsgs []mockMediaMsg
 }
 
 type mockMsg struct {
 	chatID int64
 	text   string
+}
+
+// mockMediaMsg records a call to one of the media-send methods.
+type mockMediaMsg struct {
+	chatID  int64
+	path    string
+	caption string
+	method  string // "photo", "document", "voice", "audio", "video"
 }
 
 func (m *mockSender) Send(chatID int64, text string) error {
@@ -31,17 +40,49 @@ func (m *mockSender) Send(chatID int64, text string) error {
 	m.messages = append(m.messages, mockMsg{chatID, text})
 	return nil
 }
-func (m *mockSender) SendTyping(int64) error                          { return nil }
-func (m *mockSender) SendPhoto(int64, string, string) error           { return nil }
-func (m *mockSender) SendDocument(int64, string, string) error        { return nil }
-func (m *mockSender) SendVoice(int64, string) error                   { return nil }
-func (m *mockSender) SendAudio(int64, string, string) error           { return nil }
-func (m *mockSender) SendVideo(int64, string, string) error           { return nil }
+func (m *mockSender) SendTyping(int64) error { return nil }
+func (m *mockSender) SendPhoto(chatID int64, path, caption string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mediaMsgs = append(m.mediaMsgs, mockMediaMsg{chatID, path, caption, "photo"})
+	return nil
+}
+func (m *mockSender) SendDocument(chatID int64, path, caption string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mediaMsgs = append(m.mediaMsgs, mockMediaMsg{chatID, path, caption, "document"})
+	return nil
+}
+func (m *mockSender) SendVoice(chatID int64, path string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mediaMsgs = append(m.mediaMsgs, mockMediaMsg{chatID, path, "", "voice"})
+	return nil
+}
+func (m *mockSender) SendAudio(chatID int64, path, caption string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mediaMsgs = append(m.mediaMsgs, mockMediaMsg{chatID, path, caption, "audio"})
+	return nil
+}
+func (m *mockSender) SendVideo(chatID int64, path, caption string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.mediaMsgs = append(m.mediaMsgs, mockMediaMsg{chatID, path, caption, "video"})
+	return nil
+}
 func (m *mockSender) sent() []mockMsg {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cp := make([]mockMsg, len(m.messages))
 	copy(cp, m.messages)
+	return cp
+}
+func (m *mockSender) sentMedia() []mockMediaMsg {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]mockMediaMsg, len(m.mediaMsgs))
+	copy(cp, m.mediaMsgs)
 	return cp
 }
 

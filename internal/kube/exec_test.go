@@ -7,6 +7,7 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -478,5 +479,333 @@ func TestExec_UpgradeFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "websocket") {
 		t.Errorf("error should mention websocket: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// wsWriteFrame tests
+// ---------------------------------------------------------------------------
+
+func TestWsWriteFrame_SmallPayload(t *testing.T) {
+	payload := []byte{channelStdout, 'h', 'e', 'l', 'l', 'o'}
+
+	var buf bytes.Buffer
+	if err := wsWriteFrame(&buf, payload); err != nil {
+		t.Fatalf("wsWriteFrame: %v", err)
+	}
+
+	raw := buf.Bytes()
+
+	// Verify FIN + binary opcode.
+	if raw[0] != 0x82 {
+		t.Errorf("first byte = 0x%02x, want 0x82 (FIN + binary)", raw[0])
+	}
+
+	// Verify mask bit set and correct length.
+	if raw[1]&0x80 == 0 {
+		t.Error("mask bit not set")
+	}
+	length := int(raw[1] & 0x7F)
+	if length != len(payload) {
+		t.Errorf("length = %d, want %d", length, len(payload))
+	}
+
+	// Verify 4-byte mask key exists (bytes 2..5).
+	maskKey := raw[2:6]
+	maskedPayload := raw[6:]
+
+	if len(maskedPayload) != len(payload) {
+		t.Fatalf("masked payload length = %d, want %d", len(maskedPayload), len(payload))
+	}
+
+	// Unmask and verify payload.
+	for i, b := range maskedPayload {
+		unmasked := b ^ maskKey[i%4]
+		if unmasked != payload[i] {
+			t.Errorf("byte %d: unmasked 0x%02x, want 0x%02x", i, unmasked, payload[i])
+		}
+	}
+
+	// Roundtrip: wsReadFrame should read it back correctly.
+	br := bufio.NewReader(bytes.NewReader(buf.Bytes()))
+	got, err := wsReadFrame(br)
+	if err != nil {
+		t.Fatalf("wsReadFrame roundtrip: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Errorf("roundtrip payload = %q, want %q", got, payload)
+	}
+}
+
+func TestWsWriteFrame_ExtendedLength16(t *testing.T) {
+	payload := bytes.Repeat([]byte{0xAB}, 200) // >125, triggers 16-bit extended length
+
+	var buf bytes.Buffer
+	if err := wsWriteFrame(&buf, payload); err != nil {
+		t.Fatalf("wsWriteFrame: %v", err)
+	}
+
+	raw := buf.Bytes()
+
+	// Verify FIN + binary opcode.
+	if raw[0] != 0x82 {
+		t.Errorf("first byte = 0x%02x, want 0x82", raw[0])
+	}
+
+	// Length byte should be 0x80 | 126 (mask bit + 16-bit indicator).
+	if raw[1] != (0x80 | 126) {
+		t.Errorf("length byte = 0x%02x, want 0x%02x", raw[1], 0x80|126)
+	}
+
+	// 16-bit extended length in bytes 2..3.
+	extLen := binary.BigEndian.Uint16(raw[2:4])
+	if extLen != 200 {
+		t.Errorf("extended length = %d, want 200", extLen)
+	}
+
+	// Roundtrip via wsReadFrame.
+	br := bufio.NewReader(bytes.NewReader(buf.Bytes()))
+	got, err := wsReadFrame(br)
+	if err != nil {
+		t.Fatalf("wsReadFrame roundtrip: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Errorf("roundtrip: payload length = %d, want %d", len(got), len(payload))
+	}
+}
+
+func TestWsWriteFrame_ExtendedLength64(t *testing.T) {
+	payload := bytes.Repeat([]byte{0xCD}, 70000) // >65535, triggers 64-bit extended length
+
+	var buf bytes.Buffer
+	if err := wsWriteFrame(&buf, payload); err != nil {
+		t.Fatalf("wsWriteFrame: %v", err)
+	}
+
+	// Roundtrip via wsReadFrame.
+	br := bufio.NewReader(bytes.NewReader(buf.Bytes()))
+	got, err := wsReadFrame(br)
+	if err != nil {
+		t.Fatalf("wsReadFrame roundtrip: %v", err)
+	}
+	if len(got) != 70000 {
+		t.Errorf("roundtrip: payload length = %d, want 70000", len(got))
+	}
+	if !bytes.Equal(got, payload) {
+		t.Error("roundtrip: payload content mismatch")
+	}
+}
+
+func TestWsWriteFrame_EmptyPayload(t *testing.T) {
+	var buf bytes.Buffer
+	if err := wsWriteFrame(&buf, nil); err != nil {
+		t.Fatalf("wsWriteFrame: %v", err)
+	}
+
+	raw := buf.Bytes()
+
+	// FIN + binary opcode.
+	if raw[0] != 0x82 {
+		t.Errorf("first byte = 0x%02x, want 0x82", raw[0])
+	}
+
+	// Mask bit set, length 0.
+	if raw[1] != 0x80 {
+		t.Errorf("length byte = 0x%02x, want 0x80 (masked, length 0)", raw[1])
+	}
+
+	// Total frame: 2 header + 4 mask key + 0 payload = 6 bytes.
+	if len(raw) != 6 {
+		t.Errorf("frame size = %d, want 6", len(raw))
+	}
+
+	// Roundtrip via wsReadFrame.
+	br := bufio.NewReader(bytes.NewReader(buf.Bytes()))
+	got, err := wsReadFrame(br)
+	if err != nil {
+		t.Fatalf("wsReadFrame roundtrip: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("roundtrip: expected empty payload, got %d bytes", len(got))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ExecWithStdin integration tests
+// ---------------------------------------------------------------------------
+
+func TestExecWithStdin_Integration(t *testing.T) {
+	const stdinData = "hello stdin"
+	const stdoutReply = "got your stdin"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Validate stdin=true in query.
+		if r.URL.Query().Get("stdin") != "true" {
+			t.Error("expected stdin=true")
+		}
+
+		// Perform WebSocket upgrade.
+		wsKey := r.Header.Get("Sec-WebSocket-Key")
+		const magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+		h := sha1.New()
+		h.Write([]byte(wsKey + magic))
+		acceptKey := base64.StdEncoding.EncodeToString(h.Sum(nil))
+
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("server does not support hijacking")
+		}
+		conn, bw, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("hijack: %v", err)
+		}
+		defer conn.Close()
+
+		bw.WriteString("HTTP/1.1 101 Switching Protocols\r\n")
+		bw.WriteString("Upgrade: websocket\r\n")
+		bw.WriteString("Connection: Upgrade\r\n")
+		bw.WriteString("Sec-WebSocket-Accept: " + acceptKey + "\r\n")
+		bw.WriteString("Sec-WebSocket-Protocol: v4.channel.k8s.io\r\n")
+		bw.WriteString("\r\n")
+		bw.Flush()
+
+		// Read stdin frames from the client (client frames are masked).
+		br := bufio.NewReaderSize(conn, 4096)
+		var received bytes.Buffer
+		for {
+			payload, err := wsReadFrame(br)
+			if err != nil {
+				break
+			}
+			if len(payload) == 0 {
+				continue
+			}
+			if payload[0] != channelStdin {
+				t.Errorf("expected channel %d, got %d", channelStdin, payload[0])
+				continue
+			}
+			received.Write(payload[1:])
+			// We know the test sends a small payload, so one frame is enough.
+			break
+		}
+
+		if received.String() != stdinData {
+			t.Errorf("server received stdin = %q, want %q", received.String(), stdinData)
+		}
+
+		// Send stdout reply.
+		stdoutFrame := []byte{channelStdout}
+		stdoutFrame = append(stdoutFrame, []byte(stdoutReply)...)
+		conn.Write(buildFrame(0x2, stdoutFrame))
+
+		// Send Success status.
+		errFrame := []byte{channelError}
+		errFrame = append(errFrame, []byte(`{"status":"Success"}`)...)
+		conn.Write(buildFrame(0x2, errFrame))
+
+		// Close.
+		conn.Write(buildFrame(0x8, nil))
+	}))
+	defer srv.Close()
+
+	c := NewFromConfig(srv.URL, "test-token", "default", srv.Client())
+
+	stdout, err := c.ExecWithStdin(
+		context.Background(),
+		"test-pod",
+		[]string{"cat"},
+		strings.NewReader(stdinData),
+	)
+	if err != nil {
+		t.Fatalf("ExecWithStdin: %v", err)
+	}
+	if stdout != stdoutReply {
+		t.Errorf("stdout = %q, want %q", stdout, stdoutReply)
+	}
+}
+
+func TestExecWithStdin_LargeStdin(t *testing.T) {
+	// 100KB of stdin data — tests chunking at the 32KB boundary.
+	const totalSize = 100 * 1024
+	inputData := bytes.Repeat([]byte{0x5A}, totalSize)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wsKey := r.Header.Get("Sec-WebSocket-Key")
+		const magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+		h := sha1.New()
+		h.Write([]byte(wsKey + magic))
+		acceptKey := base64.StdEncoding.EncodeToString(h.Sum(nil))
+
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("server does not support hijacking")
+		}
+		conn, bw, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("hijack: %v", err)
+		}
+		defer conn.Close()
+
+		bw.WriteString("HTTP/1.1 101 Switching Protocols\r\n")
+		bw.WriteString("Upgrade: websocket\r\n")
+		bw.WriteString("Connection: Upgrade\r\n")
+		bw.WriteString("Sec-WebSocket-Accept: " + acceptKey + "\r\n")
+		bw.WriteString("Sec-WebSocket-Protocol: v4.channel.k8s.io\r\n")
+		bw.WriteString("\r\n")
+		bw.Flush()
+
+		// Collect all stdin frames until no more data.
+		br := bufio.NewReaderSize(conn, 65536)
+		var collected bytes.Buffer
+		for {
+			payload, err := wsReadFrame(br)
+			if err != nil {
+				break
+			}
+			if len(payload) == 0 {
+				continue
+			}
+			if payload[0] != channelStdin {
+				continue
+			}
+			collected.Write(payload[1:])
+			if collected.Len() >= totalSize {
+				break
+			}
+		}
+
+		if collected.Len() != totalSize {
+			t.Errorf("server received %d bytes of stdin, want %d", collected.Len(), totalSize)
+		}
+
+		// Send stdout confirming receipt size.
+		reply := fmt.Sprintf("received:%d", collected.Len())
+		stdoutFrame := []byte{channelStdout}
+		stdoutFrame = append(stdoutFrame, []byte(reply)...)
+		conn.Write(buildFrame(0x2, stdoutFrame))
+
+		// Success status + close.
+		errFrame := []byte{channelError}
+		errFrame = append(errFrame, []byte(`{"status":"Success"}`)...)
+		conn.Write(buildFrame(0x2, errFrame))
+		conn.Write(buildFrame(0x8, nil))
+	}))
+	defer srv.Close()
+
+	c := NewFromConfig(srv.URL, "test-token", "default", srv.Client())
+
+	stdout, err := c.ExecWithStdin(
+		context.Background(),
+		"test-pod",
+		[]string{"cat"},
+		bytes.NewReader(inputData),
+	)
+	if err != nil {
+		t.Fatalf("ExecWithStdin: %v", err)
+	}
+
+	expected := fmt.Sprintf("received:%d", totalSize)
+	if stdout != expected {
+		t.Errorf("stdout = %q, want %q", stdout, expected)
 	}
 }

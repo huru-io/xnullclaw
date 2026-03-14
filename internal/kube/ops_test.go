@@ -1,8 +1,13 @@
 package kube
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"crypto/sha1"
+	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -282,6 +287,235 @@ func TestKubeOps_StartContainer_RollbackOnServiceFailure(t *testing.T) {
 	}
 	if !hasPVC {
 		t.Error("expected PVC rollback deletion")
+	}
+}
+
+// wsUpgrade performs the server-side WebSocket upgrade handshake on a hijacked
+// connection. It returns the raw net.Conn and a *bufio.ReadWriter for I/O.
+func wsUpgrade(t *testing.T, w http.ResponseWriter, r *http.Request) (io.ReadWriteCloser, *bufio.ReadWriter) {
+	t.Helper()
+	wsKey := r.Header.Get("Sec-WebSocket-Key")
+	const magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+	h := sha1.New()
+	h.Write([]byte(wsKey + magic))
+	acceptKey := base64.StdEncoding.EncodeToString(h.Sum(nil))
+
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		t.Fatal("server does not support hijacking")
+	}
+	conn, buf, err := hj.Hijack()
+	if err != nil {
+		t.Fatalf("hijack: %v", err)
+	}
+
+	buf.WriteString("HTTP/1.1 101 Switching Protocols\r\n")
+	buf.WriteString("Upgrade: websocket\r\n")
+	buf.WriteString("Connection: Upgrade\r\n")
+	buf.WriteString("Sec-WebSocket-Accept: " + acceptKey + "\r\n")
+	buf.WriteString("Sec-WebSocket-Protocol: v4.channel.k8s.io\r\n")
+	buf.WriteString("\r\n")
+	buf.Flush()
+	return conn, buf
+}
+
+func TestKubeOps_CopyToContainer(t *testing.T) {
+	tarData := []byte("fake-tar-content-12345")
+
+	var capturedCmd []string
+	var capturedStdin []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/exec") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		// Capture the command from query params.
+		capturedCmd = r.URL.Query()["command"]
+
+		// Verify stdin=true is in the query.
+		if r.URL.Query().Get("stdin") != "true" {
+			t.Error("expected stdin=true in exec query")
+		}
+
+		conn, _ := wsUpgrade(t, w, r)
+		defer conn.Close()
+
+		// Read the stdin frame(s) that the client sends. ExecWithStdin
+		// writes all stdin before reading the response, so the server
+		// can safely read first, then reply.
+		br := bufio.NewReaderSize(conn, 4096)
+		var received bytes.Buffer
+		// The test payload is small (< 32KB chunk size), so one frame.
+		// Read all available frames from stdin.
+		payload, err := wsReadFrame(br)
+		if err == nil && len(payload) > 0 {
+			if payload[0] != channelStdin {
+				t.Errorf("expected channel 0 (stdin), got %d", payload[0])
+			}
+			received.Write(payload[1:])
+		}
+		capturedStdin = received.Bytes()
+
+		// Send Success status on channel 3 + close.
+		errData := []byte{channelError}
+		errData = append(errData, []byte(`{"status":"Success"}`)...)
+		conn.Write(buildFrame(0x2, errData))
+		conn.Write(buildFrame(0x8, nil))
+	}))
+	defer srv.Close()
+
+	c := NewFromConfig(srv.URL, "test-token", "default", srv.Client())
+	ops := NewOps(c, "abc123", "test-image:latest")
+
+	err := ops.CopyToContainer(context.Background(), "xnc-abc123-alice", "/dest/path", bytes.NewReader(tarData))
+	if err != nil {
+		t.Fatalf("CopyToContainer: %v", err)
+	}
+
+	// Verify the command includes tar xf - -C /dest/path.
+	expectedCmd := []string{"tar", "xf", "-", "-C", "/dest/path"}
+	if len(capturedCmd) != len(expectedCmd) {
+		t.Fatalf("command = %v, want %v", capturedCmd, expectedCmd)
+	}
+	for i, c := range expectedCmd {
+		if capturedCmd[i] != c {
+			t.Errorf("command[%d] = %q, want %q", i, capturedCmd[i], c)
+		}
+	}
+
+	// Verify the server received the tar data on channel 0.
+	if !bytes.Equal(capturedStdin, tarData) {
+		t.Errorf("stdin data = %q, want %q", capturedStdin, tarData)
+	}
+}
+
+func TestKubeOps_CopyToContainer_TooLarge(t *testing.T) {
+	// Create a reader that produces > 50MB of data.
+	// Use an io.LimitReader wrapping a zero-reader to avoid allocating 50MB+.
+	bigReader := io.LimitReader(zeroReader{}, maxCopySize+1)
+
+	// No server needed — the size check should happen before any exec request.
+	execCalled := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		execCalled = true
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := NewFromConfig(srv.URL, "test-token", "default", srv.Client())
+	ops := NewOps(c, "abc123", "test-image:latest")
+
+	err := ops.CopyToContainer(context.Background(), "xnc-abc123-alice", "/dest/path", bigReader)
+	if err == nil {
+		t.Fatal("expected error for content exceeding maxCopySize")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Errorf("error should mention 'too large': %v", err)
+	}
+	if execCalled {
+		t.Error("exec request should NOT be made when content is too large")
+	}
+}
+
+// zeroReader is an io.Reader that produces an infinite stream of zero bytes.
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
+}
+
+func TestKubeOps_CopyFromContainer(t *testing.T) {
+	tarPayload := []byte("fake-tar-archive-bytes")
+
+	var capturedCmd []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/exec") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		capturedCmd = r.URL.Query()["command"]
+
+		conn, _ := wsUpgrade(t, w, r)
+		defer conn.Close()
+
+		// Send tar data on stdout channel.
+		stdoutData := []byte{channelStdout}
+		stdoutData = append(stdoutData, tarPayload...)
+		conn.Write(buildFrame(0x2, stdoutData))
+
+		// Send Success status on channel 3.
+		errData := []byte{channelError}
+		errData = append(errData, []byte(`{"status":"Success"}`)...)
+		conn.Write(buildFrame(0x2, errData))
+
+		// Close frame.
+		conn.Write(buildFrame(0x8, nil))
+	}))
+	defer srv.Close()
+
+	c := NewFromConfig(srv.URL, "test-token", "default", srv.Client())
+	ops := NewOps(c, "abc123", "test-image:latest")
+
+	rc, err := ops.CopyFromContainer(context.Background(), "xnc-abc123-alice", "/some/dir/file.txt")
+	if err != nil {
+		t.Fatalf("CopyFromContainer: %v", err)
+	}
+	defer rc.Close()
+
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !bytes.Equal(got, tarPayload) {
+		t.Errorf("returned data = %q, want %q", got, tarPayload)
+	}
+
+	// Verify filepath.Dir/Base splitting: command should have -C /some/dir file.txt.
+	expectedCmd := []string{"tar", "cf", "-", "-C", "/some/dir", "file.txt"}
+	if len(capturedCmd) != len(expectedCmd) {
+		t.Fatalf("command = %v, want %v", capturedCmd, expectedCmd)
+	}
+	for i, c := range expectedCmd {
+		if capturedCmd[i] != c {
+			t.Errorf("command[%d] = %q, want %q", i, capturedCmd[i], c)
+		}
+	}
+}
+
+func TestKubeOps_CopyFromContainer_ExecError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/exec") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		conn, _ := wsUpgrade(t, w, r)
+		defer conn.Close()
+
+		// Send Failure status on channel 3.
+		errData := []byte{channelError}
+		errData = append(errData, []byte(`{"status":"Failure","message":"command not found"}`)...)
+		conn.Write(buildFrame(0x2, errData))
+
+		conn.Write(buildFrame(0x8, nil))
+	}))
+	defer srv.Close()
+
+	c := NewFromConfig(srv.URL, "test-token", "default", srv.Client())
+	ops := NewOps(c, "abc123", "test-image:latest")
+
+	_, err := ops.CopyFromContainer(context.Background(), "xnc-abc123-alice", "/some/dir/file.txt")
+	if err == nil {
+		t.Fatal("expected error when exec fails")
+	}
+	if !strings.Contains(err.Error(), "copy from") {
+		t.Errorf("error should mention 'copy from': %v", err)
 	}
 }
 
