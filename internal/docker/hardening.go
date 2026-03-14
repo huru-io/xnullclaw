@@ -74,12 +74,21 @@ func HardenedConfig(agentDir, image string, cmd []string) (*container.Config, *c
 // gatewayPort is the container port used by the nullclaw gateway.
 const gatewayPort nat.Port = "3000/tcp"
 
-// WithPort declares the exposed gateway port. In local mode (networkName=""),
-// it adds a localhost-only dynamic host port mapping. In docker mode, it only
-// declares the exposed port — containers communicate via Docker network DNS
-// and no host port binding is needed.
+// webChannelPort is the container port for the nullclaw web channel WebSocket.
+const webChannelPort nat.Port = "32123/tcp"
+
+// WebChannelPort is the numeric web channel port (used by bridge connections).
+const WebChannelPort = 32123
+
+// WithPort declares the exposed gateway and web channel ports.
+// In local mode (networkName=""), it adds localhost-only dynamic host port
+// mappings for both. In docker mode, it only declares the exposed ports —
+// containers communicate via Docker network DNS.
 func WithPort(cfg *container.Config, hostCfg *container.HostConfig, networkName string) {
-	cfg.ExposedPorts = nat.PortSet{gatewayPort: struct{}{}}
+	cfg.ExposedPorts = nat.PortSet{
+		gatewayPort:    struct{}{},
+		webChannelPort: struct{}{},
+	}
 	if networkName != "" {
 		// Docker mode: containers use network DNS, no host port mapping.
 		return
@@ -87,10 +96,10 @@ func WithPort(cfg *container.Config, hostCfg *container.HostConfig, networkName 
 	// Local mode: bind to localhost with dynamic port.
 	hostCfg.PortBindings = nat.PortMap{
 		gatewayPort: {
-			{
-				HostIP:   "127.0.0.1",
-				HostPort: "", // Docker picks an available port
-			},
+			{HostIP: "127.0.0.1", HostPort: ""},
+		},
+		webChannelPort: {
+			{HostIP: "127.0.0.1", HostPort: ""},
 		},
 	}
 }

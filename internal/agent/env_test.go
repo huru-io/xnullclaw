@@ -16,11 +16,15 @@ func TestContainerEnv_WithKey(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "config.json"), data, 0600)
 
 	env := ContainerEnv(dir)
-	if len(env) != 1 {
-		t.Fatalf("expected 1 env var, got %d", len(env))
+	// 2 gateway vars + 1 brave key = 3
+	if len(env) != 3 {
+		t.Fatalf("expected 3 env vars, got %d: %v", len(env), env)
 	}
-	if env[0] != "BRAVE_API_KEY=BSA-test-key-123" {
-		t.Errorf("unexpected env var: %s", env[0])
+	if env[0] != "NULLCLAW_GATEWAY_HOST=0.0.0.0" {
+		t.Errorf("env[0] = %q, want gateway host", env[0])
+	}
+	if env[2] != "BRAVE_API_KEY=BSA-test-key-123" {
+		t.Errorf("env[2] = %q, want brave key", env[2])
 	}
 }
 
@@ -32,8 +36,9 @@ func TestContainerEnv_EmptyKey(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "config.json"), data, 0600)
 
 	env := ContainerEnv(dir)
-	if len(env) != 0 {
-		t.Errorf("expected empty env for blank key, got %v", env)
+	// Only the 2 gateway vars (no brave key since it's empty).
+	if len(env) != 2 {
+		t.Errorf("expected 2 gateway env vars, got %v", env)
 	}
 }
 
@@ -44,17 +49,18 @@ func TestContainerEnv_MissingKey(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "config.json"), data, 0600)
 
 	env := ContainerEnv(dir)
-	if len(env) != 0 {
-		t.Errorf("expected empty env for missing key, got %v", env)
+	// Only the 2 gateway vars (no brave key in default config).
+	if len(env) != 2 {
+		t.Errorf("expected 2 gateway env vars, got %v", env)
 	}
 }
 
 func TestContainerEnv_MissingConfig(t *testing.T) {
 	dir := t.TempDir()
-	// No config.json — should return nil, not panic.
+	// No config.json — gateway vars still present, config-driven vars skipped.
 	env := ContainerEnv(dir)
-	if len(env) != 0 {
-		t.Errorf("expected nil env for missing config, got %v", env)
+	if len(env) != 2 {
+		t.Errorf("expected 2 gateway env vars even without config, got %v", env)
 	}
 }
 
@@ -75,9 +81,12 @@ func TestStartOpts(t *testing.T) {
 	if !strings.HasSuffix(opts.AgentDir, "alice") {
 		t.Errorf("unexpected agent dir: %s", opts.AgentDir)
 	}
-	// No brave key → no env vars.
-	if len(opts.Env) != 0 {
-		t.Errorf("expected no env vars, got %v", opts.Env)
+	// 2 gateway vars + 1 web token = 3 (Setup creates a .token file).
+	if len(opts.Env) != 3 {
+		t.Errorf("expected 3 env vars, got %v", opts.Env)
+	}
+	if !strings.HasPrefix(opts.Env[2], "NULLCLAW_WEB_TOKEN=") {
+		t.Errorf("env[2] = %q, want NULLCLAW_WEB_TOKEN=...", opts.Env[2])
 	}
 	// Empty network name.
 	if opts.NetworkName != "" {
@@ -125,11 +134,15 @@ func TestStartOpts_WithBraveKey(t *testing.T) {
 	if opts.ExposePort {
 		t.Error("expected ExposePort=false when passed false")
 	}
-	if len(opts.Env) != 1 {
-		t.Fatalf("expected 1 env var, got %d: %v", len(opts.Env), opts.Env)
+	// 2 gateway vars + 1 web token + 1 brave key = 4
+	if len(opts.Env) != 4 {
+		t.Fatalf("expected 4 env vars, got %d: %v", len(opts.Env), opts.Env)
 	}
-	if opts.Env[0] != "BRAVE_API_KEY=BSA-test-key" {
-		t.Errorf("unexpected env var: %s", opts.Env[0])
+	if !strings.HasPrefix(opts.Env[2], "NULLCLAW_WEB_TOKEN=") {
+		t.Errorf("env[2] = %q, want NULLCLAW_WEB_TOKEN=...", opts.Env[2])
+	}
+	if opts.Env[3] != "BRAVE_API_KEY=BSA-test-key" {
+		t.Errorf("env[3] = %q, want brave key", opts.Env[3])
 	}
 }
 

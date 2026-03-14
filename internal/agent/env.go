@@ -9,8 +9,22 @@ const ContainerCmd = "gateway"
 // that need to be passed into the container at start time.
 // The mappings are driven by ConfigKey.EnvVar — any config key with
 // a non-empty EnvVar field is automatically included.
+//
+// Gateway bind: nullclaw defaults to 127.0.0.1 which is unreachable via
+// Docker port mapping. We inject NULLCLAW_GATEWAY_HOST=0.0.0.0 and
+// NULLCLAW_ALLOW_PUBLIC_BIND=true so the gateway listens on all interfaces.
 func ContainerEnv(agentDir string) []string {
-	var env []string
+	env := []string{
+		"NULLCLAW_GATEWAY_HOST=0.0.0.0",
+		"NULLCLAW_ALLOW_PUBLIC_BIND=true",
+	}
+
+	// Web channel auth token — nullclaw reads NULLCLAW_WEB_TOKEN and uses it
+	// for message-level auth_token validation on the web channel.
+	if token, err := ReadToken(agentDir); err == nil && token != "" {
+		env = append(env, "NULLCLAW_WEB_TOKEN="+token)
+	}
+
 	for _, ck := range ConfigKeys {
 		if ck.EnvVar == "" {
 			continue

@@ -78,6 +78,9 @@ func TestWithPort_LocalMode(t *testing.T) {
 	if _, ok := cfg.ExposedPorts["3000/tcp"]; !ok {
 		t.Error("expected ExposedPorts to contain 3000/tcp")
 	}
+	if _, ok := cfg.ExposedPorts["32123/tcp"]; !ok {
+		t.Error("expected ExposedPorts to contain 32123/tcp")
+	}
 
 	bindings, ok := hostCfg.PortBindings["3000/tcp"]
 	if !ok {
@@ -93,6 +96,21 @@ func TestWithPort_LocalMode(t *testing.T) {
 	if bindings[0].HostPort != "" {
 		t.Errorf("expected empty HostPort (dynamic), got %q", bindings[0].HostPort)
 	}
+
+	// Web channel port binding.
+	webBindings, ok := hostCfg.PortBindings["32123/tcp"]
+	if !ok {
+		t.Fatal("expected port binding for 32123/tcp")
+	}
+	if len(webBindings) != 1 {
+		t.Fatalf("expected 1 web channel binding, got %d", len(webBindings))
+	}
+	if webBindings[0].HostIP != "127.0.0.1" {
+		t.Errorf("expected localhost binding for web channel, got %q", webBindings[0].HostIP)
+	}
+	if webBindings[0].HostPort != "" {
+		t.Errorf("expected empty HostPort (dynamic) for web channel, got %q", webBindings[0].HostPort)
+	}
 }
 
 func TestWithPort_DockerMode(t *testing.T) {
@@ -104,10 +122,17 @@ func TestWithPort_DockerMode(t *testing.T) {
 	if _, ok := cfg.ExposedPorts["3000/tcp"]; !ok {
 		t.Error("expected ExposedPorts to contain 3000/tcp even in docker mode")
 	}
+	if _, ok := cfg.ExposedPorts["32123/tcp"]; !ok {
+		t.Error("expected ExposedPorts to contain 32123/tcp even in docker mode")
+	}
 
 	// PortBindings should NOT be set — containers communicate via Docker network DNS.
 	if hostCfg.PortBindings != nil && len(hostCfg.PortBindings) > 0 {
 		t.Errorf("expected no PortBindings in docker mode, got %v", hostCfg.PortBindings)
+	}
+	// Specifically verify web channel port is NOT host-bound.
+	if _, ok := hostCfg.PortBindings["32123/tcp"]; ok {
+		t.Error("expected no host port binding for 32123/tcp in docker mode")
 	}
 }
 

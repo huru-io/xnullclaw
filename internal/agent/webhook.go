@@ -16,6 +16,11 @@ import (
 // characters for embedding in a URL hostname (prevents SSRF/URL injection).
 var safeContainerNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 
+// SafeContainerName returns true if the name is safe for embedding in URLs.
+func SafeContainerName(name string) bool {
+	return safeContainerNameRe.MatchString(name)
+}
+
 // webhookClient is used for sending messages to agent gateways.
 var webhookClient = &http.Client{Timeout: 60 * time.Second}
 
@@ -36,7 +41,7 @@ type WebhookResponse struct {
 // If containerName fails validation, falls back to localhost to prevent
 // URL injection / SSRF.
 func AgentBaseURL(mode string, port int, containerName string) string {
-	if (mode == "docker" || mode == "kubernetes") && containerName != "" && safeContainerNameRe.MatchString(containerName) {
+	if (mode == "docker" || mode == "kubernetes") && containerName != "" && SafeContainerName(containerName) {
 		return fmt.Sprintf("http://%s:3000", containerName)
 	}
 	return fmt.Sprintf("http://127.0.0.1:%d", port)

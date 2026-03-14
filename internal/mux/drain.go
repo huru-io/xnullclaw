@@ -37,6 +37,15 @@ const (
 	maxOutboxFileSize  = 1 << 20 // 1 MB
 )
 
+// outboxReadScript is the shell script used to read agent outbox files via exec.
+// Shared between single-agent and parallel drain paths.
+const outboxReadScript = `cd /nullclaw-data/.outbox 2>/dev/null || exit 0
+for f in *.msg; do
+    [ -f "$f" ] || continue
+    printf '---FILE:%s---\n' "$f"
+    cat "$f"
+done`
+
 // Drainer periodically reads agent .outbox/ directories and sends
 // completed responses directly to Telegram with identity headers.
 type Drainer struct {
@@ -59,6 +68,10 @@ type Drainer struct {
 
 	// turnMu prevents drain sends from interleaving with turn sends.
 	turnMu *sync.Mutex
+
+	// bridge, when non-nil, is checked to skip agents that are connected
+	// via WebSocket (their output comes through the bridge, not .outbox/).
+	bridge *Bridge
 
 	// lastPrune tracks when we last pruned old drain messages.
 	lastPrune time.Time
@@ -107,12 +120,14 @@ func (d *Drainer) drainAll() {
 			d.drainAgent(a.Name)
 		}
 	}
-	// Prune drain messages periodically (not every tick — once per minute is enough).
+	// Prune drain and bridge messages periodically (not every tick — once per minute is enough).
 	if time.Since(d.lastPrune) > drainPruneInterval {
-		if n, err := d.store.PruneOldMessages("drain", drainPruneTTL); err != nil {
-			d.logger.Error("drain: prune failed", "error", err)
-		} else if n > 0 {
-			d.logger.Info("drain: pruned old messages", "count", n)
+		for _, stream := range []string{"drain", "bridge"} {
+			if n, err := d.store.PruneOldMessages(stream, drainPruneTTL); err != nil {
+				d.logger.Error("prune failed", "stream", stream, "error", err)
+			} else if n > 0 {
+				d.logger.Info("pruned old messages", "stream", stream, "count", n)
+			}
 		}
 		d.lastPrune = time.Now()
 	}
@@ -141,6 +156,9 @@ func (d *Drainer) drainAllParallel(agents []agent.Info) {
 	sem := make(chan struct{}, maxConcurrentExec)
 
 	for i, a := range agents {
+		if d.bridge != nil && d.bridge.IsConnected(a.Name) {
+			continue
+		}
 		wg.Add(1)
 		go func(idx int, name string) {
 			defer wg.Done()
@@ -148,16 +166,10 @@ func (d *Drainer) drainAllParallel(agents []agent.Info) {
 			defer func() { <-sem }()
 			cn := agent.ContainerName(d.home, name)
 
-			readScript := `cd /nullclaw-data/.outbox 2>/dev/null || exit 0
-for f in *.msg; do
-    [ -f "$f" ] || continue
-    printf '---FILE:%s---\n' "$f"
-    cat "$f"
-done`
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			output, err := d.docker.ExecSync(ctx, cn, []string{"sh", "-c", readScript}, nil)
+			output, err := d.docker.ExecSync(ctx, cn, []string{"sh", "-c", outboxReadScript}, nil)
 			if err != nil || output == "" {
 				return
 			}
@@ -183,7 +195,11 @@ done`
 }
 
 // drainAgent reads and sends all completed messages from a single agent's outbox.
+// Skips agents connected via WebSocket bridge (their output arrives in real-time).
 func (d *Drainer) drainAgent(name string) {
+	if d.bridge != nil && d.bridge.IsConnected(name) {
+		return
+	}
 	if d.mode == "kubernetes" {
 		d.drainAgentExec(name)
 		return
@@ -196,17 +212,10 @@ func (d *Drainer) drainAgent(name string) {
 func (d *Drainer) drainAgentExec(name string) {
 	cn := agent.ContainerName(d.home, name)
 
-	readScript := `cd /nullclaw-data/.outbox 2>/dev/null || exit 0
-for f in *.msg; do
-    [ -f "$f" ] || continue
-    printf '---FILE:%s---\n' "$f"
-    cat "$f"
-done`
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	output, err := d.docker.ExecSync(ctx, cn, []string{"sh", "-c", readScript}, nil)
+	output, err := d.docker.ExecSync(ctx, cn, []string{"sh", "-c", outboxReadScript}, nil)
 	if err != nil || output == "" {
 		return
 	}
@@ -318,13 +327,11 @@ func (d *Drainer) deliverAndDeleteExecCore(name, output string, chatID int64) {
 		for i, f := range deliveredFiles {
 			rmParts[i] = fmt.Sprintf("/nullclaw-data/.outbox/%s", f)
 		}
-		if len(rmParts) > 0 {
-			rmCmd := "rm -f -- " + strings.Join(rmParts, " ")
-			rmCtx, rmCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer rmCancel()
-			if _, err := d.docker.ExecSync(rmCtx, cn, []string{"sh", "-c", rmCmd}, nil); err != nil {
-				d.logger.Error("drain: failed to delete delivered files (exec)", "agent", name, "error", err)
-			}
+		rmCmd := "rm -f -- " + strings.Join(rmParts, " ")
+		rmCtx, rmCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer rmCancel()
+		if _, err := d.docker.ExecSync(rmCtx, cn, []string{"sh", "-c", rmCmd}, nil); err != nil {
+			d.logger.Error("drain: failed to delete delivered files (exec)", "agent", name, "error", err)
 		}
 	}
 }

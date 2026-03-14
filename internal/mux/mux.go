@@ -189,11 +189,29 @@ func Run(mc Config) error {
 		agentBackend = &agent.LocalBackend{Home: mc.Home}
 	}
 
+	// WebSocket bridge — persistent connections to agent web channels.
+	// Created in two phases: base fields now (for tools.Deps), Telegram/turnMu later.
+	var bridge *Bridge
+	if cfg.Runtime.Mode == "docker" || cfg.Runtime.Mode == "kubernetes" {
+		bridge = &Bridge{
+			home:    mc.Home,
+			backend: agentBackend,
+			store:   store,
+			cfg:     cfg,
+			logger:  logger,
+			mode:    cfg.Runtime.Mode,
+			docker:  dk,
+			done:    make(chan struct{}),
+			conns:   make(map[string]*agentConn),
+		}
+	}
+
 	// Tool registry — all tools use direct Go calls.
 	registry := tools.NewRegistry()
 	deps := tools.Deps{
 		Docker:      dk,
 		Backend:     agentBackend,
+		Bridge:      bridge,
 		Store:       store,
 		Cfg:         cfg,
 		CfgPath:     mc.CfgPath,
@@ -267,6 +285,13 @@ func Run(mc Config) error {
 	// Restore lastChatID from a previous run (SIGHUP reload).
 	if mc.LastChatID != nil {
 		lastChatID = *mc.LastChatID
+	}
+
+	// Wire remaining bridge fields now that tgBot and turnMu are available.
+	if bridge != nil {
+		bridge.bot = tgBot
+		bridge.turnMu = &turnMu
+		bridge.chatID = &lastChatID
 	}
 
 	// maxTurnDuration caps how long a single agentic loop turn can run.
@@ -605,6 +630,11 @@ func Run(mc Config) error {
 			running, err := dk.IsRunning(ctx, cn)
 			if err == nil && running {
 				logger.LogLifecycle("already-running", agentName, "")
+				if bridge != nil {
+					if err := bridge.Connect(ctx, agentName); err != nil {
+						logger.Error("bridge connect failed", "agent", agentName, "error", err)
+					}
+				}
 				started++
 				continue
 			}
@@ -627,6 +657,12 @@ func Run(mc Config) error {
 				baseURL := agent.AgentBaseURL(cfg.Runtime.Mode, port, cn)
 				if err := agent.WaitForHealthy(ctx, baseURL, 30*time.Second); err != nil {
 					logger.Error("gateway health check failed", "agent", agentName, "error", err)
+				}
+				// Connect WebSocket bridge for real-time communication.
+				if bridge != nil {
+					if err := bridge.Connect(ctx, agentName); err != nil {
+						logger.Error("bridge connect failed", "agent", agentName, "error", err)
+					}
 				}
 				started++
 			}
@@ -657,6 +693,7 @@ func Run(mc Config) error {
 		docker:  dk,
 		chatID:  &lastChatID,
 		turnMu:  &turnMu,
+		bridge:  bridge,
 	}
 	drainWg.Add(1)
 	go func() {
@@ -702,6 +739,11 @@ func Run(mc Config) error {
 		tgBot.Stop()
 		close(schedulerDone)
 
+		// Close bridge connections (will be re-established on reload).
+		if bridge != nil {
+			bridge.CloseAll()
+		}
+
 		// 2. Cancel context to abort any in-flight LLM calls so goroutines
 		//    exit quickly instead of blocking up to maxTurnDuration.
 		cancel()
@@ -728,10 +770,11 @@ func Run(mc Config) error {
 	//   1. Goodbye message (bot still running, message actually sends)
 	//   2. Stop bot + scheduler, cancel ctx (no new turns, in-flight aborted)
 	//   3. Wait for all goroutines (resources safe to tear down after this)
-	//   4. Stop agents (no callbacks can restart them)
-	//   5. Final drain (turnMu guaranteed free)
-	//   6. Stop drain goroutine
-	//   7. Return (defers close store/docker/logger — all goroutines dead)
+	//   4. Close bridge connections
+	//   5. Stop agents (no callbacks can restart them)
+	//   6. Final drain (turnMu guaranteed free)
+	//   7. Stop drain goroutine
+	//   8. Return (defers close store/docker/logger — all goroutines dead)
 
 	// 1. Send goodbye while the bot can still deliver it.
 	if cid := atomic.LoadInt64(&lastChatID); cid != 0 {
@@ -753,7 +796,12 @@ func Run(mc Config) error {
 	schedulerWg.Wait()
 	autoStartWg.Wait()
 
-	// 4. Stop agents in parallel (bounded concurrency).
+	// 4. Close bridge connections before stopping agents.
+	if bridge != nil {
+		bridge.CloseAll()
+	}
+
+	// 5. Stop agents in parallel (bounded concurrency).
 	//    Timeout: 10s per agent batch (5 agents per batch), minimum 30s.
 	nAgents := len(cfg.Agents.MuxManaged)
 	const maxParallelStops = 5
@@ -784,10 +832,10 @@ func Run(mc Config) error {
 			"timeout", stopTimeout, "agents", nAgents)
 	}
 
-	// 5. Final drain — turnMu is guaranteed free (all turn holders exited).
+	// 6. Final drain — turnMu is guaranteed free (all turn holders exited).
 	drainer.safeDrainAll()
 
-	// 6. Stop drain goroutine.
+	// 7. Stop drain goroutine.
 	close(drainDone)
 	drainWg.Wait()
 

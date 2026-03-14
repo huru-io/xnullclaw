@@ -150,6 +150,28 @@ func (c *Client) MappedPort(ctx context.Context, name string) (int, error) {
 	return port, nil
 }
 
+// WebPort returns the host port mapped to the web channel container port.
+// Returns 0 if no mapping exists (container not running or port not exposed).
+func (c *Client) WebPort(ctx context.Context, name string) (int, error) {
+	raw, err := c.cli.ContainerInspect(ctx, name)
+	if err != nil {
+		return 0, fmt.Errorf("docker: inspect %s: %w", name, err)
+	}
+	bindings, ok := raw.NetworkSettings.Ports[webChannelPort]
+	if !ok || len(bindings) == 0 {
+		return 0, nil
+	}
+	hp := bindings[0].HostPort
+	if hp == "" {
+		return 0, nil
+	}
+	port, err := strconv.Atoi(hp)
+	if err != nil {
+		return 0, fmt.Errorf("docker: parse web port %q for %s: %w", hp, name, err)
+	}
+	return port, nil
+}
+
 // InspectContainer returns info about a container.
 func (c *Client) InspectContainer(ctx context.Context, name string) (*ContainerInfo, error) {
 	raw, err := c.cli.ContainerInspect(ctx, name)

@@ -26,6 +26,7 @@ type Ops interface {
 
 	// Port mapping
 	MappedPort(ctx context.Context, name string) (int, error)
+	WebPort(ctx context.Context, name string) (int, error)
 
 	// Container interaction
 	ContainerLogs(ctx context.Context, name string, opts LogOpts) (io.ReadCloser, error)

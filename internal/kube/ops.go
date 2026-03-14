@@ -104,10 +104,10 @@ func (k *KubeOps) StartContainer(ctx context.Context, name string, opts docker.C
 				Image:   opts.Image,
 				Command: opts.Cmd,
 				Env:     envVars,
-				Ports: []ContainerPort{{
-					Name:          "http",
-					ContainerPort: gatewayPort,
-				}},
+				Ports: []ContainerPort{
+					{Name: "http", ContainerPort: gatewayPort},
+					{Name: "ws", ContainerPort: webChannelPort},
+				},
 				VolumeMounts: []VolumeMount{
 					{Name: "data", MountPath: "/nullclaw-data"},
 					{Name: "tmp", MountPath: "/tmp"},
@@ -156,11 +156,10 @@ func (k *KubeOps) StartContainer(ctx context.Context, name string, opts docker.C
 			Spec: ServiceSpec{
 				Type:     "ClusterIP",
 				Selector: labels,
-				Ports: []ServicePort{{
-					Name:       "http",
-					Port:       gatewayPort,
-					TargetPort: gatewayPort,
-				}},
+				Ports: []ServicePort{
+					{Name: "http", Port: gatewayPort, TargetPort: gatewayPort},
+					{Name: "ws", Port: webChannelPort, TargetPort: webChannelPort},
+				},
 			},
 		}
 		if err := k.client.Create(ctx, "services", svc, nil); err != nil && !IsConflict(err) {
@@ -258,6 +257,13 @@ func (k *KubeOps) MappedPort(_ context.Context, name string) (int, error) {
 	// uses the Service DNS name directly, so we return the container port.
 	return gatewayPort, nil
 }
+
+func (k *KubeOps) WebPort(_ context.Context, _ string) (int, error) {
+	return webChannelPort, nil
+}
+
+// webChannelPort is the port for the nullclaw web channel WebSocket server.
+const webChannelPort = 32123
 
 // ---------------------------------------------------------------------------
 // Container interaction

@@ -589,7 +589,23 @@ func (b *KubeBackend) ContainerEnv(name string) ([]string, error) {
 		hasSecret = true
 	}
 
-	var env []string
+	// Gateway bind: nullclaw defaults to 127.0.0.1 which is unreachable
+	// from outside the pod. Bind to all interfaces so Services can reach it.
+	env := []string{
+		"NULLCLAW_GATEWAY_HOST=0.0.0.0",
+		"NULLCLAW_ALLOW_PUBLIC_BIND=true",
+	}
+
+	// Web channel auth token — read from Secret and pass as env var.
+	if hasSecret {
+		if v, ok := secret.Data["auth_token"]; ok && v != "" {
+			if decoded := decodeSecretValue(v); decoded != "" {
+				env = append(env, "NULLCLAW_WEB_TOKEN="+decoded)
+			}
+		} else if v, ok := secret.StringData["auth_token"]; ok && v != "" {
+			env = append(env, "NULLCLAW_WEB_TOKEN="+v)
+		}
+	}
 	for _, ck := range agent.ConfigKeys {
 		if ck.EnvVar == "" {
 			continue

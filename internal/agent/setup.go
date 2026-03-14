@@ -89,22 +89,25 @@ func Setup(home, name string, opts SetupOpts) error {
 		cfg["http_request"].(map[string]any)["brave_api_key"] = opts.BraveKey
 	}
 
-	// Telegram — only add when there's something to configure.
+	// Telegram — merge into existing channels (don't overwrite web channel config).
 	if len(opts.TelegramAllow) > 0 {
 		allow := make([]any, len(opts.TelegramAllow))
 		for i, v := range opts.TelegramAllow {
 			allow[i] = v
 		}
-		cfg["channels"] = map[string]any{
-			"telegram": map[string]any{
-				"accounts": map[string]any{
-					"main": map[string]any{
-						"bot_token":  "",
-						"allow_from": allow,
-					},
+		channels, _ := cfg["channels"].(map[string]any)
+		if channels == nil {
+			channels = map[string]any{}
+		}
+		channels["telegram"] = map[string]any{
+			"accounts": map[string]any{
+				"main": map[string]any{
+					"bot_token":  "",
+					"allow_from": allow,
 				},
 			},
 		}
+		cfg["channels"] = channels
 	}
 
 	cfgData, err := json.MarshalIndent(cfg, "", "  ")
@@ -167,12 +170,22 @@ func DefaultAgentConfig() map[string]any {
 			"providers": map[string]any{},
 		},
 		"http_request": map[string]any{
-			"enabled":                    true,
-			"timeout_secs":               30,
-			"max_response_size":          100000,
-			"allowed_domains":            []any{},
-			"search_provider":            "brave",
-			"search_fallback_providers":  []any{"duckduckgo"},
+			"enabled":                   true,
+			"timeout_secs":              30,
+			"max_response_size":         100000,
+			"allowed_domains":           []any{},
+			"search_provider":           "brave",
+			"search_fallback_providers": []any{"duckduckgo"},
+		},
+		"channels": map[string]any{
+			"web": []any{map[string]any{
+				"port":              32123,
+				"listen":            "0.0.0.0",
+				"path":              "/ws",
+				"transport":         "local",
+				"message_auth_mode": "token",
+				"max_connections":   4,
+			}},
 		},
 	}
 }

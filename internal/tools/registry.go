@@ -59,10 +59,21 @@ func (r *Registry) Execute(ctx context.Context, name string, args map[string]any
 	return exec(ctx, args)
 }
 
+// AgentSender sends messages to agents via WebSocket bridge.
+// Send must establish a connection if one does not already exist (lazy connect).
+// Implemented by mux.Bridge; nil in bare-metal mode.
+type AgentSender interface {
+	Send(ctx context.Context, name, message string) (string, error)
+	IsConnected(name string) bool
+	Connect(ctx context.Context, name string) error
+	Disconnect(name string)
+}
+
 // Deps holds all the dependencies that tools need.
 type Deps struct {
 	Docker      docker.Ops
 	Backend     agent.Backend  // agent state management (local filesystem or K8s)
+	Bridge      AgentSender    // WebSocket bridge to agents (nil = no bridge)
 	Store       *memory.Store
 	Cfg         *config.Config
 	CfgPath     string

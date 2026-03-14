@@ -97,15 +97,29 @@ func buildAgentSystemPrompt(name string, v personaVariant) string {
 	return strings.Join(lines, "\n")
 }
 
-// sendToAgent sends a message to an agent via HTTP webhook (preferred) or
-// falls back to docker exec + outbox for legacy containers without port mapping.
+// sendToAgent sends a message to an agent. Preferred path is WebSocket bridge
+// (real-time bidirectional). Falls back to HTTP webhook, then docker exec + outbox.
 func sendToAgent(ctx context.Context, d Deps, agentName, message string) (string, error) {
+	// WebSocket bridge — synchronous, returns agent's response directly.
+	var bridgeErr error
+	if d.Bridge != nil {
+		resp, err := d.Bridge.Send(ctx, agentName, message)
+		if err == nil {
+			return resp, nil
+		}
+		bridgeErr = err
+		// Bridge failed — fall through to webhook/exec path.
+	}
+
 	cn := agent.ContainerName(d.Home, agentName)
 
-	// Try webhook first — query actual mapped port from Docker.
+	// Try webhook — query actual mapped port from Docker.
 	port, _ := d.Docker.MappedPort(ctx, cn)
 	resp, err := agent.TrySendWebhook(ctx, d.RuntimeMode, port, cn, d.Home, agentName, message, d.Backend.ReadToken)
 	if err != nil {
+		if bridgeErr != nil {
+			return "", fmt.Errorf("agent %s unreachable: bridge: %v, webhook: %w", agentName, bridgeErr, err)
+		}
 		return "", fmt.Errorf("webhook to %s: %w", agentName, err)
 	}
 	if resp != nil {
@@ -117,6 +131,9 @@ func sendToAgent(ctx context.Context, d Deps, agentName, message string) (string
 
 	// K8s mode: no exec fallback — webhook is the only path.
 	if d.RuntimeMode == "kubernetes" {
+		if bridgeErr != nil {
+			return "", fmt.Errorf("agent %s unreachable: bridge: %v", agentName, bridgeErr)
+		}
 		return "", fmt.Errorf("webhook to %s failed and exec fallback is not available in kubernetes mode", agentName)
 	}
 
@@ -250,6 +267,10 @@ func registerAgentTools(r *Registry, d Deps) {
 			if len(agents) == 0 {
 				return "", fmt.Errorf("agents list must not be empty")
 			}
+			const maxBroadcastAgents = 50
+			if len(agents) > maxBroadcastAgents {
+				return "", fmt.Errorf("too many agents: %d (max %d)", len(agents), maxBroadcastAgents)
+			}
 			for _, n := range agents {
 				if err := agent.ValidateName(n); err != nil {
 					return "", fmt.Errorf("invalid agent name %q: %w", n, err)
@@ -365,6 +386,10 @@ func registerAgentTools(r *Registry, d Deps) {
 			if err != nil {
 				return "", err
 			}
+			// Disconnect bridge before stopping container to prevent spurious reconnects.
+			if d.Bridge != nil {
+				d.Bridge.Disconnect(agentName)
+			}
 			cn := agent.ContainerName(d.Home, agentName)
 			if err := d.Docker.StopContainer(ctx, cn); err != nil {
 				return "", err
@@ -393,6 +418,10 @@ func registerAgentTools(r *Registry, d Deps) {
 			}
 			if !d.Backend.HasProviderKey(agentName) {
 				return "", fmt.Errorf("agent %q has no API key configured", agentName)
+			}
+			// Disconnect bridge before stopping to prevent spurious reconnects.
+			if d.Bridge != nil {
+				d.Bridge.Disconnect(agentName)
 			}
 			cn := agent.ContainerName(d.Home, agentName)
 			// Best-effort stop — container may already be stopped or not exist.
@@ -447,6 +476,11 @@ func registerAgentTools(r *Registry, d Deps) {
 			}
 
 			var steps []string
+
+			// Disconnect bridge before stopping.
+			if d.Bridge != nil {
+				d.Bridge.Disconnect(agentName)
+			}
 
 			// Stop container.
 			cn := agent.ContainerName(d.Home, agentName)
