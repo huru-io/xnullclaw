@@ -1742,3 +1742,122 @@ func TestBridge_DeliverUnsolicited_NoMediaTmpDir(t *testing.T) {
 		t.Errorf("expected 0 media sends, got %d", len(bot.sentMedia()))
 	}
 }
+
+// TestBridge_ReadLoop_UnsolicitedWithMedia simulates a cron/scheduled agent
+// producing output with media markers via WebSocket. The full path:
+// agent container → WS assistant_final → readLoop → deliverUnsolicited →
+// media.Parse → resolveContainerAttachments → CopyFromContainer → sendAttachment → Telegram.
+// No Send() is in progress, so readLoop treats it as unsolicited (cron/autonomous).
+func TestBridge_ReadLoop_UnsolicitedWithMedia(t *testing.T) {
+	srv := newFakeWSServer(t)
+
+	dops := &docker.MockOps{
+		WebPortFn: func(_ context.Context, _ string) (int, error) {
+			return srv.port, nil
+		},
+		CopyFromContainerFn: func(_ context.Context, name, path string) (io.ReadCloser, error) {
+			// Return a tar for any container path — simulates file retrieval.
+			base := path[strings.LastIndex(path, "/")+1:]
+			return bridgeTestTar(t, base, []byte("cron-generated-content")), nil
+		},
+	}
+	bot := &mockSender{}
+	b := newTestBridge(t, bot, dops)
+	b.mediaTmpDir = t.TempDir()
+
+	// Connect via real WebSocket.
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- b.Connect(context.Background(), "alice")
+	}()
+
+	conn := srv.accept(t)
+	defer conn.Close()
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	// No Send() in progress — simulate cron/scheduled agent output with media.
+	// Agent generated a report and an image as part of a scheduled task.
+	event := map[string]any{
+		"v": 1, "type": "assistant_final", "session_id": "mux",
+		"payload": map[string]any{
+			"content": "Scheduled report complete. [DOCUMENT:/nullclaw-data/workspace/report.pdf] [IMAGE:/nullclaw-data/workspace/chart.png]",
+		},
+	}
+	data, _ := json.Marshal(event)
+	writeServerFrame(t, conn, 0x1, data)
+
+	// Wait for text delivery.
+	deadline := time.After(5 * time.Second)
+	for {
+		msgs := bot.sent()
+		if len(msgs) > 0 {
+			found := false
+			for _, m := range msgs {
+				if strings.Contains(m.text, "Scheduled report complete") {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("expected 'Scheduled report complete' in text sends, got %+v", msgs)
+			}
+			// Markers should be stripped from the text.
+			for _, m := range msgs {
+				if strings.Contains(m.text, "[DOCUMENT:") || strings.Contains(m.text, "[IMAGE:") {
+					t.Errorf("media markers should be stripped from text, got %q", m.text)
+				}
+			}
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("unsolicited delivery timed out")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// Wait briefly for media delivery (runs after text).
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify media sends: 1 document + 1 photo.
+	mediaMsgs := bot.sentMedia()
+	if len(mediaMsgs) != 2 {
+		t.Fatalf("expected 2 media sends (document + photo), got %d: %+v", len(mediaMsgs), mediaMsgs)
+	}
+
+	methods := map[string]bool{}
+	for _, m := range mediaMsgs {
+		methods[m.method] = true
+		if m.chatID != 42 {
+			t.Errorf("media chatID = %d, want 42", m.chatID)
+		}
+		// File should exist on host (retrieved from container).
+		if _, err := os.Stat(m.path); err != nil {
+			t.Errorf("media file should exist at %q: %v", m.path, err)
+		}
+	}
+	if !methods["document"] {
+		t.Error("expected a document media send")
+	}
+	if !methods["photo"] {
+		t.Error("expected a photo media send")
+	}
+
+	// Verify memory store recorded the message.
+	stored, err := b.store.RecentMessages("bridge", 10)
+	if err != nil {
+		t.Fatalf("RecentMessages: %v", err)
+	}
+	if len(stored) != 1 {
+		t.Fatalf("expected 1 stored message, got %d", len(stored))
+	}
+	if stored[0].Stream != "bridge" {
+		t.Errorf("stream = %q, want 'bridge'", stored[0].Stream)
+	}
+	if stored[0].Agent == nil || *stored[0].Agent != "alice" {
+		t.Errorf("agent should be 'alice', got %v", stored[0].Agent)
+	}
+}
