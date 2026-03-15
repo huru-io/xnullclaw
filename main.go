@@ -96,8 +96,9 @@ func runMux(args []string) {
 
 	switch sub {
 	case "start":
-		// Check if already running.
-		if pid := readPID(pidFile); pid > 0 && processAlive(pid) {
+		// Check if already running. Skip if the PID matches our own process
+		// (stale file from a previous container run where PID was also 1).
+		if pid := readPID(pidFile); pid > 0 && pid != os.Getpid() && processAlive(pid) {
 			fmt.Fprintf(os.Stderr, "mux already running (PID %d)\n", pid)
 			os.Exit(1)
 		}
