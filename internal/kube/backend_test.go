@@ -433,9 +433,9 @@ func TestKubeBackend_ContainerEnv_Empty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ContainerEnv: %v", err)
 	}
-	// Gateway vars always present (NULLCLAW_GATEWAY_HOST, NULLCLAW_ALLOW_PUBLIC_BIND).
-	if len(env) != 2 {
-		t.Errorf("expected 2 gateway env vars, got: %v", env)
+	// Gateway vars always present (NULLCLAW_GATEWAY_HOST, NULLCLAW_ALLOW_PUBLIC_BIND, NULLCLAW_WEB_TOKEN).
+	if len(env) != 3 {
+		t.Errorf("expected 3 gateway env vars, got: %v", env)
 	}
 }
 

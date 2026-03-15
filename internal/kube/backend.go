@@ -165,6 +165,12 @@ func (b *KubeBackend) Setup(name string, opts agent.SetupOpts) error {
 		return fmt.Errorf("create secret: %w", err)
 	}
 
+	// Generate webhook auth token — pre-configures gateway.paired_tokens
+	// so the gateway accepts Bearer auth immediately on first start.
+	if _, err := b.SetupWebhookAuth(name); err != nil {
+		return fmt.Errorf("setup webhook auth: %w", err)
+	}
+
 	return nil
 }
 
