@@ -158,6 +158,7 @@ func (k *KubeOps) StartContainer(ctx context.Context, name string, opts docker.C
 				},
 				VolumeMounts: []VolumeMount{
 					{Name: "data", MountPath: "/nullclaw-data"},
+					{Name: "config", MountPath: "/nullclaw-data/.nullclaw", ReadOnly: true},
 					{Name: "tmp", MountPath: "/tmp"},
 				},
 				Resources: ResourceRequirements{
@@ -184,6 +185,10 @@ func (k *KubeOps) StartContainer(ctx context.Context, name string, opts docker.C
 				{
 					Name:                  "data",
 					PersistentVolumeClaim: &PVCVolumeSource{ClaimName: name},
+				},
+				{
+					Name:      "config",
+					ConfigMap: &ConfigMapVolumeSource{Name: name},
 				},
 				{
 					Name:     "tmp",

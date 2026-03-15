@@ -68,9 +68,15 @@ type VolumeMount struct {
 
 // Volume describes a pod volume.
 type Volume struct {
-	Name                  string                `json:"name"`
-	PersistentVolumeClaim *PVCVolumeSource      `json:"persistentVolumeClaim,omitempty"`
-	EmptyDir              *EmptyDirVolumeSource `json:"emptyDir,omitempty"`
+	Name                  string                   `json:"name"`
+	PersistentVolumeClaim *PVCVolumeSource         `json:"persistentVolumeClaim,omitempty"`
+	EmptyDir              *EmptyDirVolumeSource    `json:"emptyDir,omitempty"`
+	ConfigMap             *ConfigMapVolumeSource   `json:"configMap,omitempty"`
+}
+
+// ConfigMapVolumeSource adapts a ConfigMap into a volume.
+type ConfigMapVolumeSource struct {
+	Name string `json:"name"`
 }
 
 // PVCVolumeSource references a PVC.
