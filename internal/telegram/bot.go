@@ -272,6 +272,9 @@ func (b *Bot) handleUpdate(update tgbotapi.Update, threadID int) {
 		return
 	}
 
+	// Acknowledge receipt with a reaction so the user knows the mux is processing.
+	b.ReactToMessage(chatID, msg.MessageID, "👀")
+
 	// Voice message.
 	if msg.Voice != nil {
 		if b.onVoice != nil {
@@ -395,6 +398,22 @@ func (b *Bot) Send(chatID int64, text string) error {
 func (b *Bot) SendTyping(chatID int64) error {
 	action := tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)
 	return b.enqueueSend(action, PriorityHeartbeat)
+}
+
+// ReactToMessage adds an emoji reaction to a message to acknowledge receipt.
+// Uses the Telegram Bot API setMessageReaction method (Bot API 7.0+).
+// Errors are silently ignored — reactions are best-effort.
+func (b *Bot) ReactToMessage(chatID int64, messageID int, emoji string) {
+	if b.api == nil {
+		return
+	}
+	params := tgbotapi.Params{}
+	params.AddNonZero64("chat_id", chatID)
+	params.AddNonZero("message_id", messageID)
+	// reaction JSON: [{"type":"emoji","emoji":"👀"}]
+	reaction := fmt.Sprintf(`[{"type":"emoji","emoji":"%s"}]`, emoji)
+	params["reaction"] = reaction
+	_, _ = b.api.MakeRequest("setMessageReaction", params)
 }
 
 // SendPhoto sends a photo to the user.
