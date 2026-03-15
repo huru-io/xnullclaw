@@ -664,6 +664,14 @@ func registerAgentTools(r *Registry, d Deps) {
 				SystemPrompt:  sysPrompt,
 				TelegramAllow: d.Cfg.Telegram.AllowFrom,
 			}
+
+			// Set agent model: use mux's OpenAI model prefixed with "openai/".
+			if m := d.Cfg.OpenAI.Model; m != "" {
+				setupOpts.Model = "openai/" + m
+			} else {
+				setupOpts.Model = "openai/gpt-5-mini"
+			}
+
 			if d.Cfg.OpenAI.APIKey != "" {
 				setupOpts.OpenAIKey = d.Cfg.OpenAI.APIKey
 			}
