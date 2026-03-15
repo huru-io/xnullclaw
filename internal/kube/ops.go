@@ -158,7 +158,7 @@ func (k *KubeOps) StartContainer(ctx context.Context, name string, opts docker.C
 				},
 				VolumeMounts: []VolumeMount{
 					{Name: "data", MountPath: "/nullclaw-data"},
-					{Name: "config", MountPath: "/nullclaw-data/.nullclaw", ReadOnly: true},
+					{Name: "config", MountPath: "/nullclaw-data/config.json", SubPath: "config.json", ReadOnly: true},
 					{Name: "tmp", MountPath: "/tmp"},
 				},
 				Resources: ResourceRequirements{
