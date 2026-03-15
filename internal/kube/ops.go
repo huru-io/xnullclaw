@@ -150,7 +150,7 @@ func (k *KubeOps) StartContainer(ctx context.Context, name string, opts docker.C
 				Name:            "agent",
 				Image:           opts.Image,
 				ImagePullPolicy: "Always",
-				Command:         opts.Cmd,
+				Args:            opts.Cmd,
 				Env:     envVars,
 				Ports: []ContainerPort{
 					{Name: "http", ContainerPort: gatewayPort},

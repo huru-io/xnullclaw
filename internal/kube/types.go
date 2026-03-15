@@ -38,6 +38,7 @@ type Container struct {
 	Image           string               `json:"image"`
 	ImagePullPolicy string               `json:"imagePullPolicy,omitempty"`
 	Command         []string             `json:"command,omitempty"`
+	Args            []string             `json:"args,omitempty"`
 	Env             []EnvVar             `json:"env,omitempty"`
 	Ports           []ContainerPort      `json:"ports,omitempty"`
 	VolumeMounts    []VolumeMount        `json:"volumeMounts,omitempty"`
