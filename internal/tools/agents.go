@@ -439,6 +439,14 @@ func registerAgentTools(r *Registry, d Deps) {
 			if err := d.Docker.StartContainer(ctx, cn, opts); err != nil {
 				return "", err
 			}
+			// Reconnect WebSocket bridge after restart.
+			if d.Bridge != nil {
+				baseURL := agent.AgentBaseURL(d.RuntimeMode, 0, cn)
+				_ = agent.WaitForHealthy(ctx, baseURL, 30*time.Second)
+				if err := d.Bridge.Connect(ctx, agentName); err != nil {
+					return fmt.Sprintf("Agent %s restarted (bridge failed: %v)", agentName, err), nil
+				}
+			}
 			return fmt.Sprintf("Agent %s restarted", agentName), nil
 		},
 	)
@@ -716,6 +724,13 @@ func registerAgentTools(r *Registry, d Deps) {
 			baseURL := agent.AgentBaseURL(d.RuntimeMode, port, cn)
 			if err := agent.WaitForHealthy(ctx, baseURL, 30*time.Second); err != nil {
 				steps = append(steps, fmt.Sprintf("Warning: gateway health check: %v", err))
+			}
+
+			// Connect WebSocket bridge for real-time communication.
+			if d.Bridge != nil {
+				if err := d.Bridge.Connect(ctx, agentName); err != nil {
+					steps = append(steps, fmt.Sprintf("Warning: bridge connect: %v", err))
+				}
 			}
 
 			// 5. Hello — returns response directly via webhook.
