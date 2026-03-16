@@ -103,8 +103,9 @@ func (b *KubeBackend) Setup(name string, opts agent.SetupOpts) error {
 	resName := b.resourceName(name)
 	labels := b.labels(name)
 
-	// Build config data (mirrors agent.Setup's config.json).
-	cfg := map[string]any{}
+	// Build config data using DefaultAgentConfig as base (mirrors agent.Setup).
+	// This includes web channel (port 32123), http_request settings, etc.
+	cfg := agent.DefaultAgentConfig()
 	if opts.Model != "" {
 		setNestedPath(cfg, "agents.defaults.model.primary", opts.Model)
 	}

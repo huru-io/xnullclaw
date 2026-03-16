@@ -189,6 +189,18 @@ func TestKubeBackend_Setup(t *testing.T) {
 		t.Errorf("label xnc.io/agent = %q", cm.Metadata.Labels["xnc.io/agent"])
 	}
 
+	// Verify config.json includes web channel (port 32123) for WebSocket bridge.
+	cfgJSON := cm.Data["config.json"]
+	if cfgJSON == "" {
+		t.Fatal("config.json missing from ConfigMap")
+	}
+	if !strings.Contains(cfgJSON, "32123") {
+		t.Errorf("config.json missing web channel port 32123: %s", cfgJSON)
+	}
+	if !strings.Contains(cfgJSON, `"web"`) {
+		t.Errorf("config.json missing channels.web: %s", cfgJSON)
+	}
+
 	// Verify Secret was created with key.
 	sec, ok := store.secrets["xnc-abc123-alice"]
 	if !ok {
