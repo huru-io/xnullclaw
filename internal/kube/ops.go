@@ -236,7 +236,20 @@ func (k *KubeOps) StopContainer(ctx context.Context, name string) error {
 	if err != nil && !IsNotFound(err) {
 		return err
 	}
-	return nil
+
+	// Wait for pod to be fully gone (avoids 409 AlreadyExists on recreate).
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		var pod Pod
+		if err := k.client.Get(ctx, "pods", name, &pod); err != nil {
+			if IsNotFound(err) {
+				return nil // pod fully deleted
+			}
+			return err
+		}
+		time.Sleep(time.Second)
+	}
+	return fmt.Errorf("timeout waiting for pod %s to terminate", name)
 }
 
 func (k *KubeOps) RemoveContainer(ctx context.Context, name string, force bool) error {

@@ -62,6 +62,12 @@ func TestKubeOps_StopContainer(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
+		// After DELETE, GET returns 404 (pod gone).
+		if r.Method == http.MethodGet && deleted {
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"kind":"Status","status":"Failure","reason":"NotFound","code":404}`))
+			return
+		}
 	}))
 
 	if err := ops.StopContainer(context.Background(), "xnc-abc123-alice"); err != nil {
