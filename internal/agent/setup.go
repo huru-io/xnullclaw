@@ -178,14 +178,18 @@ func DefaultAgentConfig() map[string]any {
 			"search_fallback_providers": []any{"duckduckgo"},
 		},
 		"channels": map[string]any{
-			"web": []any{map[string]any{
-				"port":              32123,
-				"listen":            "0.0.0.0",
-				"path":              "/ws",
-				"transport":         "local",
-				"message_auth_mode": "token",
-				"max_connections":   4,
-			}},
+			"web": map[string]any{
+				"accounts": map[string]any{
+					"default": map[string]any{
+						"port":              32123,
+						"listen":            "0.0.0.0",
+						"path":              "/ws",
+						"transport":         "local",
+						"message_auth_mode": "token",
+						"max_connections":   4,
+					},
+				},
+			},
 		},
 	}
 }
