@@ -64,6 +64,7 @@ func (r *Registry) Execute(ctx context.Context, name string, args map[string]any
 // Implemented by mux.Bridge; nil in bare-metal mode.
 type AgentSender interface {
 	Send(ctx context.Context, name, message string) (string, error)
+	SendAsync(ctx context.Context, name, message string) error
 	IsConnected(name string) bool
 	Connect(ctx context.Context, name string) error
 	Disconnect(name string)

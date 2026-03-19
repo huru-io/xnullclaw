@@ -954,15 +954,14 @@ func registerAgentTools(r *Registry, d Deps) {
 // sendToMultiple sends a message to multiple agents in parallel (fire-and-forget).
 func sendToMultiple(ctx context.Context, d Deps, names []string, message string) (string, error) {
 	type result struct {
-		Agent    string `json:"agent"`
-		Status   string `json:"status"`
-		Response string `json:"response,omitempty"`
-		Error    string `json:"error,omitempty"`
+		Agent  string `json:"agent"`
+		Status string `json:"status"`
+		Error  string `json:"error,omitempty"`
 	}
 
 	results := make([]result, len(names))
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 8) // cap concurrent webhook connections
+	sem := make(chan struct{}, 8) // cap concurrent connections
 
 	for i, n := range names {
 		wg.Add(1)
@@ -970,11 +969,20 @@ func sendToMultiple(ctx context.Context, d Deps, names []string, message string)
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			resp, err := sendToAgent(ctx, d, name, message)
+
+			// Prefer async bridge send — response will be delivered directly
+			// to Telegram via deliverUnsolicited (with identity header).
+			if d.Bridge != nil {
+				if err := d.Bridge.SendAsync(ctx, name, message); err == nil {
+					results[idx] = result{Agent: name, Status: "sent"}
+					return
+				}
+				// Bridge failed — fall through to synchronous sendToAgent.
+			}
+
+			_, err := sendToAgent(ctx, d, name, message)
 			if err != nil {
 				results[idx] = result{Agent: name, Status: "error", Error: err.Error()}
-			} else if resp != "" {
-				results[idx] = result{Agent: name, Status: "responded", Response: resp}
 			} else {
 				results[idx] = result{Agent: name, Status: "delivered"}
 			}

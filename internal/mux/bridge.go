@@ -85,30 +85,11 @@ func (b *Bridge) Send(ctx context.Context, name, message string) (string, error)
 	ac.waiter = responseCh
 	ac.mu.Unlock()
 
-	// Build and send user_message.
-	msg := map[string]any{
-		"v":          1,
-		"type":       "user_message",
-		"session_id": sessionID,
-		"payload": map[string]any{
-			"auth_token": ac.token,
-			"content":    message,
-			"sender_id":  "mux",
-		},
-	}
-	data, err := json.Marshal(msg)
-	if err != nil {
+	if err := b.writeUserMessage(ac, message); err != nil {
 		ac.mu.Lock()
 		ac.waiter = nil
 		ac.mu.Unlock()
 		return "", err
-	}
-
-	if err := ac.ws.WriteText(data); err != nil {
-		ac.mu.Lock()
-		ac.waiter = nil
-		ac.mu.Unlock()
-		return "", fmt.Errorf("bridge: ws write to %s: %w", name, err)
 	}
 
 	// Wait for response, timeout, or connection close.
@@ -127,6 +108,39 @@ func (b *Bridge) Send(ctx context.Context, name, message string) (string, error)
 		ac.mu.Unlock()
 		return "", fmt.Errorf("bridge: timeout waiting for response from %s", name)
 	}
+}
+
+// SendAsync sends a message to an agent without waiting for a response.
+// The agent's response will arrive as an unsolicited message via the bridge
+// reader loop, which delivers it directly to Telegram with an identity header.
+func (b *Bridge) SendAsync(ctx context.Context, name, message string) error {
+	ac, err := b.getOrConnect(ctx, name)
+	if err != nil {
+		return err
+	}
+	return b.writeUserMessage(ac, message)
+}
+
+// writeUserMessage builds and sends a user_message to the agent via WebSocket.
+func (b *Bridge) writeUserMessage(ac *agentConn, message string) error {
+	msg := map[string]any{
+		"v":          1,
+		"type":       "user_message",
+		"session_id": sessionID,
+		"payload": map[string]any{
+			"auth_token": ac.token,
+			"content":    message,
+			"sender_id":  "mux",
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	if err := ac.ws.WriteText(data); err != nil {
+		return fmt.Errorf("bridge: ws write to %s: %w", ac.name, err)
+	}
+	return nil
 }
 
 // IsConnected returns true if there is an active WebSocket connection to the agent.
@@ -402,12 +416,27 @@ func (b *Bridge) deliverUnsolicited(name, content string) {
 		return
 	}
 
-	// Coordinate with turn sends.
+	// Coordinate with turn sends. If a turn is active, queue for delivery
+	// after the turn completes rather than dropping.
 	if !b.turnMu.TryLock() {
-		b.logger.Warn("bridge: unsolicited message dropped (turn active)", "agent", name, "len", len(content))
+		go func() {
+			b.turnMu.Lock()
+			defer b.turnMu.Unlock()
+			b.sendAgentResponse(name, content)
+		}()
 		return
 	}
 	defer b.turnMu.Unlock()
+	b.sendAgentResponse(name, content)
+}
+
+// sendAgentResponse sends an agent's response to Telegram with an identity
+// header and stores it in memory. Must be called with turnMu held.
+func (b *Bridge) sendAgentResponse(name, content string) {
+	chatID := muxTargetChatID(b.cfg, b.chatID)
+	if chatID == 0 {
+		return
+	}
 
 	header := agentIdentityHeader(b.cfg, name)
 
@@ -445,7 +474,7 @@ func (b *Bridge) deliverUnsolicited(name, content string) {
 		b.logger.Error("bridge: store message failed", "agent", name, "error", err)
 	}
 
-	b.logger.Info("bridge: delivered unsolicited", "agent", name, "len", len(content))
+	b.logger.Info("bridge: delivered agent response", "agent", name, "len", len(content))
 }
 
 // reconnect attempts to re-establish a WebSocket connection with exponential backoff.
