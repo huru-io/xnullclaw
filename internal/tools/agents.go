@@ -707,6 +707,15 @@ func registerAgentTools(r *Registry, d Deps) {
 			steps = append(steps, "Created agent directory")
 			steps = append(steps, fmt.Sprintf("Personality: %s", variant.Trait))
 
+			// Store agent state with deterministic emoji.
+			emoji := agent.EmojiForName(agentName)
+			if err := d.Store.UpsertAgentState(memory.AgentState{
+				Agent: agentName,
+				Emoji: &emoji,
+			}); err != nil {
+				steps = append(steps, fmt.Sprintf("Warning: agent state store failed: %v", err))
+			}
+
 			// Store persona in mux SQLite.
 			if err := d.Store.UpsertAgentPersona(memory.AgentPersona{
 				Agent: agentName, Trait: variant.Trait,

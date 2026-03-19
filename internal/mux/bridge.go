@@ -439,10 +439,14 @@ func (b *Bridge) sendAgentResponse(name, content string) {
 	}
 
 	// Build identity header with emoji from store (persona) or config.
+	// Try both original name and lowercase (persona store uses canonical lowercase).
 	var emoji string
 	if b.store != nil {
-		if state, err := b.store.GetAgentState(name); err == nil && state != nil && state.Emoji != nil {
-			emoji = *state.Emoji
+		for _, lookup := range []string{name, strings.ToLower(name)} {
+			if state, err := b.store.GetAgentState(lookup); err == nil && state != nil && state.Emoji != nil && *state.Emoji != "" {
+				emoji = *state.Emoji
+				break
+			}
 		}
 	}
 	if emoji == "" {
@@ -458,6 +462,7 @@ func (b *Bridge) sendAgentResponse(name, content string) {
 	} else {
 		header = fmt.Sprintf("%s\n\n", name)
 	}
+	b.logger.Info("bridge: sending agent response", "agent", name, "emoji", emoji, "header_len", len(header))
 
 	// Parse media attachments.
 	cleanText, attachments := media.Parse(content)
