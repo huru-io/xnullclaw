@@ -954,9 +954,10 @@ func registerAgentTools(r *Registry, d Deps) {
 // sendToMultiple sends a message to multiple agents in parallel (fire-and-forget).
 func sendToMultiple(ctx context.Context, d Deps, names []string, message string) (string, error) {
 	type result struct {
-		Agent  string `json:"agent"`
-		Status string `json:"status"`
-		Error  string `json:"error,omitempty"`
+		Agent    string `json:"agent"`
+		Status   string `json:"status"`
+		Response string `json:"response,omitempty"`
+		Error    string `json:"error,omitempty"`
 	}
 
 	results := make([]result, len(names))
@@ -969,9 +970,11 @@ func sendToMultiple(ctx context.Context, d Deps, names []string, message string)
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			_, err := sendToAgent(ctx, d, name, message)
+			resp, err := sendToAgent(ctx, d, name, message)
 			if err != nil {
 				results[idx] = result{Agent: name, Status: "error", Error: err.Error()}
+			} else if resp != "" {
+				results[idx] = result{Agent: name, Status: "responded", Response: resp}
 			} else {
 				results[idx] = result{Agent: name, Status: "delivered"}
 			}

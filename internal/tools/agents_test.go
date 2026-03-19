@@ -320,8 +320,8 @@ func TestSendToMultiple_Parallel(t *testing.T) {
 		t.Fatalf("expected 2 results, got %d", len(results))
 	}
 	for _, r := range results {
-		if r.Status != "delivered" {
-			t.Errorf("agent %s: status = %q, want delivered", r.Agent, r.Status)
+		if r.Status != "delivered" && r.Status != "responded" {
+			t.Errorf("agent %s: status = %q, want delivered or responded", r.Agent, r.Status)
 		}
 	}
 }
