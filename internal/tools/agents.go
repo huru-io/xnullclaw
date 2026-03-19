@@ -750,7 +750,8 @@ func registerAgentTools(r *Registry, d Deps) {
 				}
 			}
 
-			// 5. Hello — returns response directly via webhook.
+			// 5. Hello — send async via bridge so the response goes
+			// directly to Telegram via deliverUnsolicited.
 			ownerName := d.Cfg.Persona.OwnerName
 			if ownerName == "" {
 				ownerName = "Controller"
@@ -760,10 +761,16 @@ func registerAgentTools(r *Registry, d Deps) {
 					"The human controller is named %s. You will address the human directly, not me. "+
 					"Say hello back briefly, in character.",
 				agentName, d.Cfg.Persona.Name, ownerName)
-			if _, err := sendToAgent(ctx, d, agentName, greeting); err != nil {
+			if d.Bridge != nil {
+				if err := d.Bridge.SendAsync(ctx, agentName, greeting); err != nil {
+					steps = append(steps, fmt.Sprintf("Warning: hello failed: %v", err))
+				} else {
+					steps = append(steps, "Greeting sent — response will appear in chat")
+				}
+			} else if _, err := sendToAgent(ctx, d, agentName, greeting); err != nil {
 				steps = append(steps, fmt.Sprintf("Warning: hello failed: %v", err))
 			} else {
-				steps = append(steps, "Greeting sent — response will appear shortly")
+				steps = append(steps, "Greeting sent")
 			}
 
 			return strings.Join(steps, "\n"), nil
