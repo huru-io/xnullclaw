@@ -206,6 +206,14 @@ func registerAgentTools(r *Registry, d Deps) {
 			if err != nil {
 				return "", err
 			}
+			// Use async bridge so the response goes directly to Telegram
+			// with an identity header via deliverUnsolicited.
+			if d.Bridge != nil {
+				if err := d.Bridge.SendAsync(ctx, agentName, message); err == nil {
+					return fmt.Sprintf("Message sent to %s. Response will appear in chat.", agentName), nil
+				}
+			}
+			// Fallback to synchronous path.
 			return sendToAgent(ctx, d, agentName, message)
 		},
 	)
