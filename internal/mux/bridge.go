@@ -438,7 +438,26 @@ func (b *Bridge) sendAgentResponse(name, content string) {
 		return
 	}
 
-	header := agentIdentityHeader(b.cfg, name)
+	// Build identity header with emoji from store (persona) or config.
+	var emoji string
+	if b.store != nil {
+		if state, err := b.store.GetAgentState(name); err == nil && state != nil && state.Emoji != nil {
+			emoji = *state.Emoji
+		}
+	}
+	if emoji == "" {
+		if b.cfg.Agents.Identities != nil {
+			if id, ok := b.cfg.Agents.Identities[name]; ok {
+				emoji = id.Emoji
+			}
+		}
+	}
+	var header string
+	if emoji != "" {
+		header = fmt.Sprintf("%s %s\n\n", emoji, name)
+	} else {
+		header = fmt.Sprintf("%s\n\n", name)
+	}
 
 	// Parse media attachments.
 	cleanText, attachments := media.Parse(content)

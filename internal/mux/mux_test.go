@@ -185,7 +185,7 @@ func TestAgentIdentityHeader_WithEmoji(t *testing.T) {
 		"alice": {Emoji: "🔮"},
 	}
 	got := agentIdentityHeader(cfg, "alice")
-	want := "🔮 *alice*\n\n"
+	want := "🔮 alice\n\n"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -194,7 +194,7 @@ func TestAgentIdentityHeader_WithEmoji(t *testing.T) {
 func TestAgentIdentityHeader_NoEmoji(t *testing.T) {
 	cfg := config.DefaultConfig()
 	got := agentIdentityHeader(cfg, "bob")
-	want := "*bob*\n\n"
+	want := "bob\n\n"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}

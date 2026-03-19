@@ -918,17 +918,15 @@ func sendAttachment(tgBot telegram.Sender, logger *logging.Logger, chatID int64,
 }
 
 
-// agentIdentityHeader returns "emoji *name*\n\n" for a given agent,
+// agentIdentityHeader returns "emoji name\n\n" for a given agent,
 // using the mux config identities map.
 func agentIdentityHeader(cfg *config.Config, name string) string {
 	if cfg.Agents.Identities != nil {
 		if id, ok := cfg.Agents.Identities[name]; ok && id.Emoji != "" {
-			return fmt.Sprintf("%s *%s*\n\n", id.Emoji, name)
+			return fmt.Sprintf("%s %s\n\n", id.Emoji, name)
 		}
 	}
-	// No emoji — bold name only. Markdown fallback in doSend strips
-	// formatting if Telegram rejects it, so raw "name\n\n" is the worst case.
-	return fmt.Sprintf("*%s*\n\n", name)
+	return fmt.Sprintf("%s\n\n", name)
 }
 
 // redactToolArgs returns a copy of args with sensitive values masked.
